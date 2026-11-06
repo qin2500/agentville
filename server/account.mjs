@@ -49,8 +49,8 @@ const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutabl
 
 function run(bin, args, timeout) {
   return new Promise((resolve) => {
-    execFile(bin, args, { timeout, maxBuffer: 256 * 1024, env: process.env }, (err, stdout) => {
-      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), stdout: String(stdout || '') })
+    execFile(bin, args, { timeout, maxBuffer: 256 * 1024, env: process.env }, (err, stdout, stderr) => {
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), stdout: String(stdout || ''), stderr: String(stderr || '') })
     })
   })
 }
@@ -110,6 +110,36 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     return out
   }
 
+  /**
+   * Jobs the user has reopened in a terminal (`claude --resume <id>`): a live registry entry of kind
+   * 'interactive' for the job's session. `claude respawn` refuses them ("running in another
+   * terminal"), so a switch leaves them to the user, like any interactive session.
+   */
+  async function openInTerminal(jobs) {
+    const bySession = new Map()
+    for (const j of jobs) for (const id of [j.state.sessionId, j.state.resumeSessionId]) if (id) bySession.set(id, j.short)
+    const out = new Set()
+    const dir = path.join(claudeHome(), 'sessions')
+    for (const f of await fsp.readdir(dir).catch(() => [])) {
+      if (!f.endsWith('.json')) continue
+      let s
+      try { s = JSON.parse(await fsp.readFile(path.join(dir, f), 'utf8')) } catch { continue }
+      const short = s?.kind === 'interactive' && bySession.get(s.sessionId)
+      if (!short) continue
+      try { process.kill(s.pid, 0); out.add(short) } catch (e) { if (e.code === 'EPERM') out.add(short) }
+    }
+    return out
+  }
+  /** Live jobs a switch restarts, and live sessions (incl. reopened jobs) the user restarts by hand. */
+  async function splitLive(agents, allJobs) {
+    const liveIds = new Set(agents.filter((a) => a.jobId && a.live).map((a) => a.jobId))
+    const live = allJobs.filter((j) => liveIds.has(j.short))
+    const term = await openInTerminal(live)
+    const sessions = agents.filter((a) => a.harness === 'claude-code' && a.live && (a.kind === 'session' || term.has(a.jobId)))
+      .map((a) => ({ id: a.id, name: a.name, cwd: a.cwd, resume: a.resume, ...(term.has(a.jobId) && { note: 'Open in a terminal: restart it there' }) }))
+    return { jobs: live.filter((j) => !term.has(j.short)), sessions }
+  }
+
   const profileOf = (settings) => (settings.json?.env && Object.hasOwn(settings.json.env, 'ANTHROPIC_BASE_URL') ? 'pool' : 'personal')
 
   /**
@@ -149,12 +179,11 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     const byJob = new Map(agents.filter((a) => a.jobId).map((a) => [a.jobId, a]))
     // Only jobs whose process is running now are restarted; dormant ones stay dormant.
     const liveIds = new Set(agents.filter((a) => a.jobId && a.live).map((a) => a.jobId))
-    const jobs = (await activeJobs(liveIds)).filter((j) => liveIds.has(j.short))
+    const { jobs, sessions } = await splitLive(agents, await activeJobs(liveIds))
     const profile = profileOf(settings)
     const plan = {
       jobs: jobs.map((j) => ({ id: j.short, name: byJob.get(j.short)?.name || j.state.name || j.short, live: Boolean(byJob.get(j.short)?.live), model: modelOf(j.state.respawnFlags) })),
-      sessions: agents.filter((a) => a.harness === 'claude-code' && a.kind === 'session' && a.live)
-        .map((a) => ({ id: a.id, name: a.name, cwd: a.cwd, resume: a.resume })),
+      sessions,
     }
     const confirm = crypto.randomUUID()
     for (const [k, v] of plans) if (Date.now() > v.expires) plans.delete(k)
@@ -401,7 +430,7 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
       // ones running now are restarted: a switch must never revive a dormant job.
       const liveIds = new Set(agents.filter((a) => a.jobId && a.live).map((a) => a.jobId))
       const allJobs = await activeJobs(liveIds)
-      const jobs = allJobs.filter((j) => liveIds.has(j.short))
+      const { jobs, sessions } = await splitLive(agents, allJobs)
       // An automatic switch (autoswitch.mjs) is decided on the server and has no preview to confirm.
       const plan = typeof body.confirm === 'string' && plans.get(body.confirm)
       if (!auto && (!plan || Date.now() > plan.expires || plan.jobs !== jobs.map((j) => j.short).sort().join(','))) {
@@ -430,9 +459,17 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
       }
 
       const results = []
-      for (const [i, j] of jobs.entries()) {
+      let tested = false // the first job actually restarted is the canary
+      for (const j of jobs) {
         const since = Date.now()
         const r = await run(bin, ['respawn', j.short], RESPAWN_MS)
+        // Reopened in a terminal since the preview: the user restarts it there; not a failure.
+        if (r.code !== 0 && /another terminal/i.test(r.stderr + r.stdout)) {
+          results.push({ id: j.short, status: 'skipped', detail: 'Open in a terminal: restart it there' })
+          continue
+        }
+        const i = tested ? 1 : 0
+        tested = true
         let detail = r.code === 0 ? '' : r.timedOut ? 'Respawn timed out' : `Respawn failed (exit ${r.code})`
         let verified
         if (!detail && i === 0) {
@@ -448,14 +485,13 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
           await restore(dir)
           if (r.code === 0) {
             const again = await run(bin, ['respawn', j.short], RESPAWN_MS)
-            results[0].restarted = again.code === 0 ? 'back on the previous settings' : 'could not be restarted; restart it by hand'
+            results.at(-1).restarted = again.code === 0 ? 'back on the previous settings' : 'could not be restarted; restart it by hand'
           }
-          for (const rest of jobs.slice(1)) results.push({ id: rest.short, status: 'skipped', detail: 'Not attempted after the first respawn failed' })
+          for (const rest of jobs.slice(jobs.indexOf(j) + 1)) results.push({ id: rest.short, status: 'skipped', detail: 'Not attempted after the first respawn failed' })
           await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...(auto && { auto }), restored: true, results })
           return { to: body.to, restored: true, results, sessions: [] }
         }
       }
-      const sessions = agents.filter((a) => a.harness === 'claude-code' && a.kind === 'session' && a.live).map((a) => ({ id: a.id, name: a.name, cwd: a.cwd, resume: a.resume }))
       await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...(auto && { auto }), restored: false, results })
       return { to: body.to, restored: false, results, sessions }
     } finally { busy = false }

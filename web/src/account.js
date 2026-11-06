@@ -296,7 +296,7 @@ export function createAccount(app, { open: openAgent, termName }) {
     if (!sessions.length) return '';
     return `<section class="manual"><h3>${title} · ${sessions.length}</h3>
       <p class="lede small">Agentville never touches these. Quit each one in its terminal, then reopen it.</p>
-      <ul>${sessions.map(s => `<li data-session="${esc(s.id)}"><b>${esc(s.name)}</b><span class="resume"><code title="${esc(s.resume || s.cwd || '')}">${esc(s.resume || s.cwd || '')}</code>${s.resume ? `<button class="linkbtn inline" type="button" data-copy="${esc(s.resume)}" aria-label="Copy the resume command for ${esc(s.name)}">Copy</button>` : ''}</span>
+      <ul>${sessions.map(s => `<li data-session="${esc(s.id)}"><b>${esc(s.name)}</b>${s.note ? ` <span class="dim">· ${esc(s.note)}</span>` : ''}<span class="resume"><code title="${esc(s.resume || s.cwd || '')}">${esc(s.resume || s.cwd || '')}</code>${s.resume ? `<button class="linkbtn inline" type="button" data-copy="${esc(s.resume)}" aria-label="Copy the resume command for ${esc(s.name)}">Copy</button>` : ''}</span>
         <button class="ghost" type="button" data-open-session="${esc(s.id)}">Open in ${esc(termName() || 'a terminal')}</button>
         <p class="err" id="sess-err-${esc(s.id)}" hidden></p></li>`).join('')}</ul></section>`;
   }

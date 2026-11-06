@@ -69,6 +69,8 @@ if (a[0] === 'respawn') {
   const n = fs.readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter((l) => l.includes('respawn')).length
   const wait = Number(process.env.FAKE_RESPAWN_MS || 0); const t = Date.now(); while (Date.now() - t < wait) {}
   if (process.env.FAKE_RESPAWN_FAIL === String(n)) process.exit(7)
+  // Like the real CLI for a job the user reopened with \`claude --resume\`.
+  if (process.env.FAKE_RESPAWN_TERMINAL === a[1]) { process.stderr.write("Can't open — this session is running in another terminal\\n"); process.exit(1) }
   // Like the daemon: the job comes back (a fresh registry entry), may reply, may rewrite its state.
   const home = process.env.AGENTVILLE_CLAUDE_HOME, short = a[1]
   const stateFile = home + '/jobs/' + short + '/state.json'

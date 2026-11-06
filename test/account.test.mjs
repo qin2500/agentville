@@ -16,7 +16,7 @@ async function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-account-'))
   const { env, home, log, files } = makeAccountHome(root)
   Object.assign(process.env, env)
-  for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY']) delete process.env[k]
+  for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY', 'FAKE_RESPAWN_TERMINAL']) delete process.env[k]
   const dataDir = path.join(root, 'data')
   const server = createServer({ dataDir })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
@@ -202,4 +202,34 @@ test('a job marked done whose process is still running is switched and restarted
     assert.deepEqual(JSON.parse(t.read('aaaa0003')).respawnFlags, ['--model', 'claude-opus-5-5'])
     assert.ok(!t.respawns().some((a) => a[1] === 'aaaa0004'), 'a dormant job still is not')
   } finally { t.done() }
+})
+
+test('a job reopened in a terminal is left to the user, never restarted, and never blocks the switch', async () => {
+  const t = await setup()
+  try {
+    // The user ran `claude --resume` on aaaa0001: its live registry entry is interactive, not bg.
+    fs.writeFileSync(path.join(t.home, 'sessions', 'aaaa0001.json'), JSON.stringify({ pid: process.pid, sessionId: 'aaaa0001-0000-4000-8000-000000000000', kind: 'interactive', status: 'idle' }))
+    const s = await t.status()
+    assert.deepEqual(s.plan.jobs.map((j) => j.id), ['aaaa0002'])
+    assert.ok(s.plan.sessions.some((x) => x.note === 'Open in a terminal: restart it there'), 'listed to restart by hand')
+    const r = await t.post('/api/account/switch', { to: 'personal', confirm: s.confirm })
+    assert.equal(r.status, 200, r.text)
+    assert.equal(r.json.restored, false)
+    assert.deepEqual(t.respawns(), [['respawn', 'aaaa0002']])
+    assert.deepEqual(JSON.parse(t.read('aaaa0001')).respawnFlags, ['--name', 'API Lead', '--model', 'claude-opus-5-5'], 'its settings still change for its next start')
+  } finally { t.done() }
+})
+
+test('a job reopened in a terminal after the preview is skipped; the next job is the canary', async () => {
+  const t = await setup()
+  try {
+    process.env.FAKE_RESPAWN_TERMINAL = 'aaaa0001'
+    const r = await t.post('/api/account/switch', { to: 'personal', confirm: (await t.status()).confirm })
+    assert.equal(r.status, 200, r.text)
+    assert.equal(r.json.restored, false)
+    assert.deepEqual(r.json.results, [
+      { id: 'aaaa0001', status: 'skipped', detail: 'Open in a terminal: restart it there' },
+      { id: 'aaaa0002', status: 'respawned', verified: 'no reply yet (job idle)' },
+    ])
+  } finally { delete process.env.FAKE_RESPAWN_TERMINAL; t.done() }
 })
