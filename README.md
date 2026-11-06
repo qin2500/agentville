@@ -135,8 +135,12 @@ has the details.
 
 **What it reads:** Claude Code's folder (`~/.claude`: transcripts, background jobs, the live-session
 registry, `settings.json`) and Codex's (`~/.codex`: its state database and rollouts). The UI shows
-titles, first-prompt summaries, statuses and counts, never tool arguments, commands or outputs.
-Token counts come from local transcripts only.
+titles, first-prompt summaries, statuses and counts, never conversation text: no replies, tool
+arguments, commands, outputs or file contents. The only other strings it shows are short ones Claude
+Code writes for this purpose: a background job's `needs` line and its suggested reply. Token counts
+come from local transcripts only. Changed files come from `git` in each agent's folder (paths and line
+counts, never content), and PR state and CI checks from the cache Claude Code itself keeps
+(`~/.claude/gh-pr-status-cache.json`); Agentville never asks GitHub.
 
 **What it sends, and to whom:** only these calls. Usage checks go to Anthropic, about your own
 Claude logins:
@@ -173,6 +177,10 @@ Code keeps it: the macOS Keychain (read and written with `security`, never on a 
 
 - **Open** and **Terminal** run the resume command the server chose for that agent.
 - **Fleet** sends messages only after you confirm a preview listing every recipient.
+- **Reply / Message** sends one message to one live Claude session, after you confirm the exact text.
+- **New agent**, **Stop job** and **Fork** run `claude --bg`, `claude stop` or
+  `claude --resume --fork-session --bg`, after you confirm the exact command (see
+  [Acting on one agent](#acting-on-one-agent)).
 - **Switch account** changes Claude Code's login (and, from the pool, its settings) and restarts
   running background jobs, with backups and automatic rollback.
 - **Auto-switch** does that same switch by itself when an account runs out, and tells you, with
@@ -247,10 +255,70 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
   On that network quarantine accounts are never used, and Agentville moves off one straight away.
   Anywhere else they're preferred when they have room. Being offline never counts as leaving.
 
+## Acting on one agent
+
+Everything here starts in an agent's inspector (or, for a new agent, the **+ New agent** button in
+the Team view's header). Each action has a confirm step that shows exactly what will happen: the
+exact text that lands in the session, or the exact command and the folder it runs in. The confirmation
+is good once, for 2 minutes. The page never supplies a command, a flag or a program: the server builds
+it from fixed choices. Each action is logged to `fleet-log.jsonl` (ids and outcomes, never the text or
+prompt), and at most 10 messages and 10 starts, stops or forks a minute are allowed.
+
+- **Reply.** An agent that needs your input shows what it's asking (the job's `needs` line) and a
+  reply box, prefilled with Claude Code's suggested reply when it has one. **Send to <name>…** shows
+  the exact text, then **Send to <name>** delivers it.
+- **Message.** Any live Claude session has a **Message <name>** box in its inspector, collapsed
+  until you open it. Same confirm step.
+  - Delivery is the same as Fleet's: the session's own message socket. The message arrives wrapped
+    in a `<cross-session-message from-name="Agentville">` tag, so the agent reads it as a message
+    from another session, not as you typing.
+  - The result says **Delivered** (the session recorded it), **Sent, no receipt yet** (it reached
+    the socket but wasn't recorded within 10 seconds), or **Failed** with the reason.
+  - Codex threads, subagents and sessions that aren't running say why they can't be messaged.
+- **New agent.** Pick a project (folders your agents have worked in), write a prompt, and optionally
+  a name, model, effort, permission mode (bypassing permissions isn't offered) and a new git
+  worktree. **Review…** shows the command, e.g. `claude --bg --name=Docs --model=sonnet -- 'Update
+  the docs'`, run in the project's folder; **Start agent** runs it and the new job appears in the list.
+- **Stop job…** (background jobs) runs `claude stop <job>` after you confirm. The conversation is
+  kept: `claude attach <job>` opens it again. Interactive sessions and Codex threads are refused,
+  with the reason (stop those in their own terminal).
+- **Fork…** (Claude sessions and jobs) runs `claude --resume <session> --fork-session --bg`, with
+  an optional name, in the session's folder: a new background job with a copy of the conversation.
+  The original is left as it is.
+
+Under test (`AGENTVILLE_TEST=1`), nothing is started, stopped or forked unless a fake Claude home and
+a fake `claude` (`AGENTVILLE_CLAUDE_BIN`) are both set.
+
+### Changes and pull requests
+
+- **Changes.** In the Team view, an agent whose folder (its worktree for a job) has changes shows a
+  small chip, e.g. `+412 −37 · 6 files`. The inspector lists the files with their line counts. It
+  compares against the merge base with the default branch, so a branch's commits count as well as
+  uncommitted and untracked files. Only paths and counts are read, never file content.
+  - git runs with `--no-optional-locks` (it never takes the lock an agent's own git needs) and a
+    timeout. Each folder is read at most once a minute, in the background, and never for resting
+    agents.
+- **Pull requests.** PR chips are coloured by state: open, draft, merged or closed. A PR with failing
+  checks is amber (it needs attention). The inspector lists each PR with its checks (failed, pending,
+  passed) and review state. PRs come from a job's own PR list and from the PR links Claude Code
+  records in a session's transcript.
+
+### Notifications and search
+
+- **Notifications** (Settings, all off by default except the existing "needs a click" one): when
+  an agent needs your input, when one finishes (its turn ends after building, or its job is done),
+  and when a PR's checks start failing. Each event notifies once, and each agent has one
+  notification at a time.
+- **Search** also looks through conversation names: custom titles, AI titles, agent names and job
+  names, including old and resting sessions, never prompt text. Matches that aren't already in the
+  list show under **Conversations by name**; choosing one opens the agent. The names come from an
+  index the server keeps as it reads transcripts (only new bytes each time), so typing never
+  triggers a scan.
+
 ## Fleet actions (experimental)
 
-The **Fleet** menu is the only part of Agentville that writes to an agent, and only after you confirm
-a preview of every recipient and message.
+The **Fleet** menu messages your agents in one go. Like a reply from the inspector, it only ever does
+so after you confirm a preview of every recipient and message.
 
 - **Prep for internet loss** and **Prep for laptop reboot** go to each live top-level Claude session.
   Each one is asked to commit its work locally (no push), write a resume note inside its own workspace
@@ -265,8 +333,8 @@ a preview of every recipient and message.
 How it works: each running Claude Code session has a local message socket (the channel Claude's own
 agents use to message each other), and Agentville writes one message to each. This is an internal
 Claude Code mechanism, so an update can break it; Agentville then reports agents as unreachable
-rather than guessing. It only uses sockets owned by you, and it never starts, stops or resumes an
-agent this way.
+rather than guessing. It only uses sockets owned by you, and Fleet never starts, stops or resumes an
+agent.
 
 ## Development
 

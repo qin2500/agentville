@@ -195,7 +195,8 @@ Content top → bottom:
      for 6s. Hidden agents are excluded from counts, village, and list unless "Show hidden"
      filter is on, where they render at 50% with a "Hidden" tag and an "Unhide" action.
 
-The server never runs commands; nothing in the UI suggests it will. No transcript text anywhere.
+No transcript text anywhere. (Superseded in part by §16: the server now runs a few fixed commands,
+only on an explicit, previewed confirm.)
 
 ## 9. Top bar, attention, and app states
 
@@ -499,3 +500,45 @@ Where the build differs from the sections above, and why:
   - The default view fits the whole town (2×, else 1×, else Map). Stalled tags show from 1×.
   - Flags no longer blink (a negative frame index left of x = 0). Chickens, the cat and crate
     carriers face the way they walk and step only while moving.
+
+## 16. Acting on one agent (2026-11-06)
+
+Agentville may now message, start, stop and fork agents, each only on an explicit
+confirm that first shows exactly what will happen. It still shows **no conversation text**.
+
+### Rules
+- **Preview, then confirm.** Every action is two steps. The first shows the exact text that will land
+  in the session (inside its `<cross-session-message>` wrapper) or the exact command and folder. The
+  second spends a one-time, 2-minute confirm token. A message token can't run a command, and the
+  other way round.
+- **The server builds commands.** The page sends choices (a project from the known list, an
+  allowlisted model, effort, permission mode); the server builds the argv itself and passes the
+  prompt as one argument after `--`, with no shell. `bypassPermissions` isn't offered.
+- **Never disabled for bad input.** An empty message or prompt explains itself ("Write a message
+  first.", "Write a prompt for the new agent.") and focuses the field. Buttons are disabled only
+  while their request is in flight.
+- **Explain refusals.** Codex threads, subagents, sessions that aren't running, and Stop on an
+  interactive session each say why, in the server's own words, where the action would have been.
+- **What may be shown.** Session titles and names, a job's `needs` line and its suggested reply,
+  file paths with line counts, PR numbers with state, checks and review. Never prompts, replies, tool
+  input or output, diffs or file contents.
+
+### Where things live (the expanded Team view is the main working view)
+- **Team cards** get small chips only: `+412 −37 · 6 files` (muted, shrinks before the name does)
+  and PR chips coloured by state: open green, draft dim, merged blue, closed struck through.
+  Failing checks make a PR chip amber, never red. In the docked panel the change chip shows only
+  when the panel is wide.
+- **Team header:** a small **+ New agent** button at the right of the tools row (Team view only).
+  It opens a sheet: project, prompt, name, model, effort, permissions, worktree; **Review…** shows
+  the command; **Start agent** runs it; the result offers **Show it** once the job is in the list.
+- **Inspector**, top to bottom: facts; then the **reply** block (amber, "<name> is asking", the
+  `needs` line, a prefilled box) for an agent that needs you, or a collapsed **Message <name>**
+  toggle for any other non-resting agent; then the actions row, now with **Fork…** and **Stop
+  job…**; then the stop/fork confirm box, **Changes** (file list) and **Pull requests** (state,
+  checks, review).
+- **Results** are honest: Delivered (green), Sent, no receipt yet (amber), Failed (red, with the
+  reason).
+- **Search** adds a "Conversations by name" group under the list for title matches that aren't
+  already rows.
+- **Settings** add three notification toggles under the existing "needs a click" one, all off by
+  default.
