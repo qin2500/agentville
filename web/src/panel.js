@@ -4,6 +4,7 @@ import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, b
 import { createTable } from './table.js';
 import { createModels } from './models.js';
 import { rank, byRank, enteredAt, syncNodes } from './order.js';
+import { createInspect, prTone, changesLabel } from './inspect.js';
 
 const LIVE = ['stalled', 'waiting', 'building'];
 const EMPTY_NOTE = { stalled: 'Nobody needs you.', waiting: 'Nothing is waiting.', building: 'Nobody is building right now.' };
@@ -114,10 +115,12 @@ export function createPanel(app) {
     // with role, bucket and duration spelled out in a screen-reader-only tail.
     const tail = [ROLE_NAME[a.role] || a.role, `${BUCKET_NAME[a.bucket]} for ${agoLong(t)}`, parent ? `under ${parent.name}` : '',
       a.live ? '' : 'not running'].filter(Boolean).join(', ');
-    const sig = [a.name, dup, a.role, a.roleSource, a.bucket, a.severity, a.prompt, a.live, a.hidden, l2, prs.map(p => p.id).join(), t > 30 * 60e3, tail].join('|');
+    // Changed files in its folder: a small chip where there is room (expanded, or a wide panel).
+    const chg = a.changes && (S.panel === 'full' || wide) ? changesLabel(a.changes) : '';
+    const sig = [a.name, dup, a.role, a.roleSource, a.bucket, a.severity, a.prompt, a.live, a.hidden, l2, prs.map(p => `${p.id}:${p.state}:${p.checks?.failed}:${p.checks?.pending}`).join(), chg, t > 30 * 60e3, tail].join('|');
     if (btn._sig !== sig) {
       btn.innerHTML = `<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}${a.roleSource === 'override' ? '<i class="ov"></i>' : ''}</span>
-        <span class="nm"><span>${esc(a.name)}</span>${dup ? `<span class="dup">${esc(dup)}</span>` : ''}<span class="nmx">${a.hidden ? '<span class="htag">Hidden</span>' : ''}${prs.slice(0, 2).map(p => chip(p)).join('')}${prs.length > 2 ? `<span class="chip">+${prs.length - 2}</span>` : ''}</span></span>
+        <span class="nm"><span>${esc(a.name)}</span>${dup ? `<span class="dup">${esc(dup)}</span>` : ''}<span class="nmx">${a.hidden ? '<span class="htag">Hidden</span>' : ''}${prs.slice(0, 2).map(p => chip(p)).join('')}${prs.length > 2 ? `<span class="chip">+${prs.length - 2}</span>` : ''}${chg ? `<span class="chip chg" title="Changed in its folder: ${esc(chg)}"><span class="sr">Changes: </span>${esc(chg)}</span>` : ''}</span></span>
         <span class="meta"><i class="live ${a.live ? '' : 'no'}" aria-hidden="true"></i><span class="num ${a.bucket === 'stalled' && t > 30 * 60e3 ? 'old' : ''}">${ago(t)}</span></span>
         <span class="l2">${icon(bucketIcon(a))}<span>${esc(l2)}</span></span><span class="sr">, ${esc(tail)}</span>`;
       btn.querySelector('.nm > span').title = a.name;
@@ -132,8 +135,9 @@ export function createPanel(app) {
     return btn;
   }
   const chip = p => {
-    const href = safeHref(p.href);
-    return `<span class="chip"${href ? ` data-href="${esc(href)}" title="Open PR #${esc(p.id)} in a new tab"` : ''}>#${esc(p.id)}</span>`;
+    const href = safeHref(p.href), t = prTone(p);
+    const words = t.words ? ` (${t.words})` : '';
+    return `<span class="chip${t.cls}"${href ? ` data-href="${esc(href)}" title="Open PR #${esc(p.id)}${esc(words)} in a new tab"` : t.words ? ` title="PR #${esc(p.id)}${esc(words)}"` : ''}>#${esc(p.id)}</span>`;
   };
   // A row's <li> also carries the compact "open in terminal" button (shown on hover/focus).
   const li = (key, ...kids) => {
@@ -454,6 +458,24 @@ export function createPanel(app) {
     return out;
   }
 
+  // ---------- conversation search: names and titles of every conversation, resting ones included ----------
+  // The server keeps the index (titles only, never prompt text); rows already shown above are left out.
+  function convSection() {
+    const c = S.conv;
+    if (!S.query || !c || c.q !== S.query.trim().toLowerCase()) return null;
+    const rows = (c.results || []).filter(r => !(S.byId.has(r.id) && matches(S.byId.get(r.id))));
+    if (!rows.length) return null;
+    const sec = keyed('convsec', () => h('section', { class: 'sec conv', 'aria-labelledby': 'conv-h' }));
+    const now = S.data?.serverTime || Date.now();
+    const html = `<h2 id="conv-h">Conversations by name · <span class="c num">${rows.length}</span></h2><ul>${rows.map(r => {
+      const a = S.byId.get(r.id);
+      const now2 = a && a.name !== r.matched ? ` · now “${esc(a.name)}”` : '';
+      return `<li><button class="convrow" type="button" data-act="convopen" data-id="${esc(r.id)}"><span class="cn">${esc(r.matched)}</span><span class="cm">${esc(r.project || '—')} · ${esc(ago(now - r.at))} ago${now2}${a ? '' : ' · not in the list'}</span></button></li>`;
+    }).join('')}</ul>`;
+    if (sec._html !== html) { sec.innerHTML = html; sec._html = html; }
+    return sec;
+  }
+
   // ---------- states ----------
   function stateNode(key, html) {
     const el = keyed(key, () => h('div', { class: 'empty-state' }));
@@ -526,6 +548,8 @@ export function createPanel(app) {
           ? `<b>No agents match “${esc(S.query)}”.</b><span><button class="link" type="button" data-act="clearsearch">Clear search</button></span>`
           : '<b>No agents match these filters.</b><span><button class="link" type="button" data-act="clearfilters">Clear filters</button></span>')];
       } else nodes = S.view === 'status' ? statusView(agents) : teamView(S.agents);
+      const conv = S.view === 'status' || S.view === 'team' ? convSection() : null;
+      if (conv) nodes = [...nodes, conv];
     }
     // Detail replaces the list when docked; it's a drawer over the list in full-screen.
     const detailOpen = S.detail && S.selected && S.byId.has(S.selected);
@@ -568,7 +592,7 @@ export function createPanel(app) {
       detailFor = a.id; editing = false;
       // "← All agents" when the inspector replaces the list (docked); beside the list (expanded, or
       // the terminal view) it is a pane, and "Close" collapses it.
-      drawer.innerHTML = `<div class="detail"><div class="dhead"><button class="ghost back" type="button" data-act="back">← All agents</button><button class="iconbtn dclose" type="button" data-act="closedetail" aria-label="Close inspector (Esc)" title="Close inspector (Esc)">✕</button></div><div class="info"></div><div class="acts"></div></div>`;
+      drawer.innerHTML = `<div class="detail"><div class="dhead"><button class="ghost back" type="button" data-act="back">← All agents</button><button class="iconbtn dclose" type="button" data-act="closedetail" aria-label="Close inspector (Esc)" title="Close inspector (Esc)">✕</button></div><div class="info"></div><div class="reply"></div><div class="acts"></div><div class="extra"></div></div>`;
       drawer.scrollTop = 0;
     }
     const now = S.data?.serverTime || Date.now();
@@ -592,7 +616,6 @@ export function createPanel(app) {
         <dt>Working dir</dt><dd class="mono ltr" title="${esc(a.cwd || '')}"><bdi>${esc(a.cwd || '—')}</bdi></dd>
         <dt>Id</dt><dd class="mono" title="${esc(a.id)}">${esc(a.id)}</dd>
       </dl>
-      ${(a.prs || []).length ? `<div class="fchips" style="margin-top:12px">${a.prs.map(p => safeHref(p.href) ? `<a class="chip" href="${esc(p.href)}" target="_blank" rel="noopener noreferrer">#${esc(p.id)}</a>` : `<span class="chip">#${esc(p.id)}</span>`).join('')}</div>` : ''}
       ${S.view === 'models' ? models.detailHtml(a) : ''}`;
     if (info._html !== infoHtml) {
       const focusedAct = info.contains(document.activeElement) ? document.activeElement.dataset.id || document.activeElement.dataset.act : null;
@@ -605,7 +628,10 @@ export function createPanel(app) {
     const builtIn = !!S.data?.term?.available, tblock = builtIn && termBlock(a), inView = S.term === a.id;
     // Built-in terminal first; "Open in <terminal>" is then the secondary way to the same session.
     const why = tblock || block;
-    const actsSig = [a.id, !!a.resume, !!a.hidden, editing, term, block, builtIn, tblock, inView, embedded(a.id)].join('|');
+    // Stop job (background jobs) and Fork (Claude conversations): each shows its command and asks first.
+    const sub = ['subagent', 'teammate', 'thread'].includes(a.kind);
+    const canStop = !sub && (a.bucket !== 'resting' || a.live), canFork = a.harness === 'claude-code' && !sub && !a.neverStarted;
+    const actsSig = [a.id, !!a.resume, !!a.hidden, editing, term, block, builtIn, tblock, inView, embedded(a.id), canStop, canFork, a.kind].join('|');
     if (acts._sig !== actsSig) {
       acts._sig = actsSig;
       const hadFocus = acts.contains(document.activeElement) && document.activeElement.dataset.act;
@@ -615,6 +641,8 @@ export function createPanel(app) {
           ${term && !builtIn ? `<button class="${a.hidden ? 'ghost' : 'primary'}" type="button" data-act="open" ${block ? 'disabled aria-describedby="openwhy"' : ''}>Open in ${esc(termName())}</button>` : ''}
           <button class="ghost" type="button" data-act="showvillage">Show in village</button>
           ${a.resume ? `<button class="ghost" type="button" data-act="copyresume" title="${esc(a.resume)}">${/^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command'}</button>` : ''}
+          ${canFork ? '<button class="ghost" type="button" data-act="fork" data-ins="fork">Fork…</button>' : ''}
+          ${canStop ? `<button class="ghost" type="button" data-act="stop" data-ins="stop">${a.kind === 'job' ? 'Stop job…' : 'Stop…'}</button>` : ''}
           <button class="ghost" type="button" data-act="edit" aria-expanded="${editing}">Edit…</button>
           ${a.hidden ? '' : `<button class="ghost iconbtn trash" type="button" data-act="hide" aria-label="Hide from Agentville" title="Hide from Agentville"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 1.5h4a1 1 0 0 1 1 1V3h3v1.5H2V3h3v-.5a1 1 0 0 1 1-1zM3.2 5.5h9.6l-.7 8.1a1.5 1.5 0 0 1-1.5 1.4H5.4a1.5 1.5 0 0 1-1.5-1.4zm2.8 1.5v6h1.2V7zm2.8 0v6H10V7z"/></svg></button>`}
         </div>
@@ -625,6 +653,7 @@ export function createPanel(app) {
         ${editing ? editForm(a) : ''}`;
       if (hadFocus) acts.querySelector(`[data-act="${CSS.escape(hadFocus)}"]`)?.focus(); // a re-render keeps the keyboard in place
     }
+    inspect.render(a, { reply: drawer.querySelector('.reply'), extra: drawer.querySelector('.extra') });
   }
   function editForm(a) {
     const o = a.overrides || {};
@@ -701,6 +730,7 @@ export function createPanel(app) {
     if (ob) { e.stopPropagation(); return openAgent(ob.dataset.open, ob); }
     if (S.view === 'table' && e.currentTarget === list && table.onClick(e)) return;
     if (S.view === 'models' && e.currentTarget === list && models.onClick(e)) return;
+    if (e.currentTarget === drawer && inspect.onClick(e)) return;
     const t = e.target;
     const href = t.closest('.chip[data-href]')?.dataset.href;
     if (href) { e.stopPropagation(); window.open(href, '_blank', 'noopener'); return; }
@@ -717,6 +747,11 @@ export function createPanel(app) {
         case 'showhidden': return app.setShowHidden(true);
         case 'back': case 'closedetail': return app.closeDetail();
         case 'goto': return app.openDetail(id);
+        case 'convopen': {
+          if (S.byId.has(id)) { app.select(id, { reveal: true, pan: S.panel !== 'full' }); return app.openDetail(id); }
+          const hidden = (S.data?.agents || []).some(x => x.id === id && x.hidden);
+          return app.toast(hidden ? 'That agent is hidden. Turn on “Show hidden agents” in Filters to open it.' : "That conversation isn't one of the agents in the list (it was folded into a newer copy or can't be read).");
+        }
         case 'filterproj': S.filters.projects = new Set([act.dataset.project]); S.views.full = 'table'; S.table.resting = true; return app.render();
         case 'moretitle': { const info = drawer.querySelector('.info'); info._more = !info._more; info._html = ''; return app.render(); }
         case 'copyresume': return a?.resume && copy(a.resume, act);
@@ -739,6 +774,8 @@ export function createPanel(app) {
   }
   list.addEventListener('click', onClick);
   drawer.addEventListener('click', onClick);
+  drawer.addEventListener('input', e => inspect.onInput(e));
+  drawer.addEventListener('keydown', e => inspect.onKey(e));
   list.addEventListener('dblclick', e => {
     const row = e.target.closest('.row, .trow[data-id]');
     const inner = e.target.closest('button, .chip[data-href]'); // a row's own buttons (the row itself is one)
@@ -792,6 +829,7 @@ export function createPanel(app) {
     }
   });
 
+  const inspect = createInspect(app);
   const table = createTable({ S, keyed, sync, matches, byBucket, store, dupOf, chip, render: () => app.render(), app, openHTML: a => (terminal() && !openBlock(a) ? `<button class="openbtn" type="button" data-open="${esc(a.id)}" aria-label="Open ${esc(a.name)} in ${esc(termName())}" title="Open in ${esc(termName())} (O)">↗</button>` : '') });
   const models = createModels({ S, keyed, sync, matches, store, dupOf, render: () => app.render(), app });
   let lastWide = null;

@@ -671,3 +671,64 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
 .upd-manual p { margin: 0; }
 .upd-cmd { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; white-space: pre; font: 12px/1.5 var(--mono); color: var(--text); }
 #pop-settings .menuitem { margin: 0 calc(-1 * var(--space-2)); }
+
+/* ---------- inspector extras (inspect.js): reply, changes, PRs, stop / fork ---------- */
+.detail h4 { margin: 0 0 var(--space-2); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+.detail h4 .num { text-transform: none; letter-spacing: 0; color: var(--text); font-weight: 500; margin-left: 4px; }
+.reply:empty, .extra:empty { display: none; }
+.extra { display: grid; gap: var(--space-3); }
+.ask { border: 1px solid color-mix(in srgb, var(--stalled) 55%, var(--line)); border-left: 3px solid var(--stalled); background: var(--stalled-bg); border-radius: var(--radius); padding: var(--space-3); display: grid; gap: var(--space-2); }
+.ask h4 { color: var(--stalled); margin: 0; }
+.ask .needs { margin: 0; overflow-wrap: anywhere; }
+.compose { display: grid; gap: var(--space-2); justify-items: start; }
+/* Buttons that carry an agent's name wrap instead of widening the drawer. */
+.reply button, .extra button, .actbox button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }
+.reply, .extra { min-width: 0; }
+.composebox { display: grid; gap: var(--space-2); width: 100%; }
+.reply textarea, .actbox input, .naform textarea, .naform input, .naform select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; font: inherit; }
+.reply textarea { min-height: 76px; resize: vertical; font-size: 13px; }
+.reply textarea[aria-invalid="true"], .naform [aria-invalid="true"] { border-color: var(--error); }
+.reply .helper, .extra .helper, .actbox .helper { margin: 0; }
+.detail .err { color: var(--error); font-size: 12px; margin: 0; }
+pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--space-2); margin: 0; max-height: 240px; overflow: auto; }
+.msgstat { margin: 0; font-size: 13px; }
+.msgstat.ok b { color: var(--building); } .msgstat.warn b { color: var(--stalled); } .msgstat.bad b { color: var(--error); }
+.actbox { background: var(--surface-2); border-radius: var(--radius); padding: var(--space-3); display: grid; gap: var(--space-2); }
+.actbox h4 { margin: 0; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 13px; }
+.actbox .field { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.actbox code, .ask code, .msgstat code, .sheet code { font: 12px var(--mono); color: var(--text); }
+.chg .files { margin: 0; display: grid; gap: 1px; font-size: 12px; max-height: 280px; overflow: auto; }
+.chg .files li { display: flex; gap: var(--space-2); align-items: baseline; min-width: 0; padding: 1px 0; }
+.chg .fp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); direction: rtl; text-align: left; }
+.chg .fp bdi { direction: ltr; unicode-bidi: isolate; }
+.chg .add { color: var(--building); } .chg .del { color: var(--text-muted); }
+.chg .ft { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.chg .helper { margin-bottom: var(--space-1); }
+.prs ul { margin: 0; display: grid; gap: var(--space-1); font-size: 12px; }
+.prs li { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.prs .prst { font-weight: 600; } .prs .prck { color: var(--text-muted); } .prs .prck.failing { color: var(--stalled); } .prs .prrv { color: var(--text-muted); }
+/* PR state colours: amber = failing checks (needs attention); never red, which is for errors. */
+.prst.pr-open, .chip.pr-open { color: var(--building); }
+.prst.pr-draft, .chip.pr-draft { color: var(--text-dim); }
+.prst.pr-merged, .chip.pr-merged { color: var(--waiting); }
+.prst.pr-closed, .chip.pr-closed { color: var(--resting); text-decoration: line-through; }
+.chip.pr-failing { color: var(--stalled); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stalled) 60%, transparent); }
+.chip.chg { color: var(--text-muted); font-variant-numeric: tabular-nums; flex: 0 6 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Conversation search results under the list (names and titles only). */
+.sec.conv ul { margin: 0; }
+.convrow { display: grid; gap: 2px; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 6px var(--space-3); cursor: pointer; color: var(--text); }
+.convrow:hover { background: var(--surface-2); }
+.convrow:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.convrow .cn { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.convrow .cm { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* New agent sheet (launch.js). */
+.ghost.newbtn { margin-left: auto; }
+.naform { display: grid; gap: var(--space-3); }
+.naform label { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.naform label.check { display: flex; gap: var(--space-2); align-items: center; color: var(--text); }
+.naform label.check input { width: auto; accent-color: var(--focus); }
+.naform textarea { min-height: 120px; resize: vertical; font-size: 13px; }
+.naform .opt { color: var(--text-muted); }
+.naform .row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+@media (max-width: 600px) { .naform .row3 { grid-template-columns: 1fr; } }
+.sheet .mono { font: 12px var(--mono); margin: 0; overflow-wrap: anywhere; }

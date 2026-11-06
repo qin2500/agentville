@@ -8,6 +8,8 @@ import { observe } from './order.js';
 import { createTermView } from './term.js';
 import { loadModels } from './models.js';
 import { createUpdate } from './update.js';
+import { createLaunch } from './launch.js';
+import { transitions } from './notify.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) await import('./dev/mock.js');
@@ -35,6 +37,9 @@ const S = {
   compact: store.get('va.density', 'comfortable') === 'compact',
   sound: store.get('va.sound', false),
   notify: store.get('va.notify', false), // desktop notification when an agent starts waiting for a click
+  // More desktop notifications (notify.js), each off until turned on in Settings.
+  notifyOn: { input: false, finished: false, checks: false, ...store.get('va.notifyOn', {}) },
+  conv: null,            // conversation search results for the current query: { q, results }
   reduceSetting: store.get('va.motion', false),
   hideQuiet: store.get('va.hideQuiet', true), // the village leaves out projects quiet for a day (quiet.js)
   query: '',
@@ -107,6 +112,7 @@ const app = {
     await poll();
   },
   toast,
+  say: text => { $('live').textContent = text; },
   setPanel,
   closePops: () => closePops(),
   refresh: () => poll(),
@@ -130,6 +136,7 @@ const fleet = createFleet(app);
 const account = createAccount(app, panel);
 const spend = createSpend(app);
 const update = createUpdate(app);
+const launch = createLaunch(app);
 
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) and the inspector compress to the
@@ -210,6 +217,7 @@ function ingest(data) {
   }
   if (S.selected && !S.byId.has(S.selected)) { S.selected = null; S.detail = false; writeHash(); }
   notifyPrompts(prevStalled != null);
+  notifyChanges();
   const stalled = visibleCount(data, 'stalled');
   if (prevStalled != null && stalled !== prevStalled) {
     $('live').textContent = `Stalled: ${stalled}`;
@@ -268,6 +276,7 @@ function render() {
   renderTop(loading, off);
   panel.render({ loading });
   fleet.update();
+  launch.update();
   village.update({ loading, offline: off });
 }
 
@@ -314,6 +323,7 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
   $('view-team').setAttribute('aria-pressed', String(S.view === 'team'));
   $('view-table').setAttribute('aria-pressed', String(S.view === 'table'));
   $('view-models').setAttribute('aria-pressed', String(S.view === 'models'));
+  $('btn-new').hidden = S.view !== 'team';
   const full = S.panel === 'full';
   $('btn-full').textContent = full ? '⤡ Dock' : '⤢ Expand';
   $('btn-full').title = full ? 'Dock the panel beside the village (F or Esc)' : 'Expand to full screen (F)';
@@ -355,6 +365,27 @@ function notifyPrompts(announce) {
     try {
       const n = new Notification(`${a.name} needs a click`, { body: `${PROMPT_NAME[a.prompt] || 'Waiting on a dialog'} · ${a.project || ''}`, tag: `va-prompt:${a.id}` });
       n.onclick = () => { window.focus(); app.select(a.id); n.close(); };
+    } catch { /* notifications unavailable */ }
+  }
+}
+
+// Needs your input / finished / PR checks failing (Settings, each off by default). The differ in
+// notify.js decides; each transition fires once (`fired`), and its tag keeps one notification per agent.
+let lastAgents = null;
+const fired = new Set();
+function notifyChanges() {
+  const next = S.agents;
+  const prev = lastAgents;
+  lastAgents = next;
+  if (!prev || !Object.values(S.notifyOn).some(Boolean)) return;
+  const fresh = transitions(prev, next, S.notifyOn).filter(n => !fired.has(n.key));
+  fresh.forEach(n => fired.add(n.key));
+  if (fired.size > 2000) [...fired].slice(0, 1000).forEach(k => fired.delete(k));
+  if (!fresh.length || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  for (const x of fresh.slice(0, 3)) {
+    try {
+      const n = new Notification(x.title, { body: x.body, tag: x.tag });
+      n.onclick = () => { window.focus(); app.openDetail(x.id); n.close(); };
     } catch { /* notifications unavailable */ }
   }
 }
@@ -497,7 +528,10 @@ function fillPop(name) {
     el.innerHTML = `<div><h4>Settings</h4>
       <label><input type="checkbox" data-set="sound" ${S.sound ? 'checked' : ''}>Chime when an agent stalls</label>
       <label><input type="checkbox" data-set="notify" ${S.notify ? 'checked' : ''}>Desktop notification when an agent needs a click</label>
-      <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && S.notify ? '' : 'hidden'}>Notifications are blocked for this page in your browser's site settings.</p>
+      <label><input type="checkbox" data-set="notify-input" ${S.notifyOn.input ? 'checked' : ''}>…when an agent needs your input</label>
+      <label><input type="checkbox" data-set="notify-finished" ${S.notifyOn.finished ? 'checked' : ''}>…when an agent finishes (its turn or its job)</label>
+      <label><input type="checkbox" data-set="notify-checks" ${S.notifyOn.checks ? 'checked' : ''}>…when a PR's checks start failing</label>
+      <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked for this page in your browser's site settings.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
       <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label></div>${update.menuHTML()}`;
     return;
@@ -528,11 +562,13 @@ document.addEventListener('change', e => {
     S.compact = t.checked; store.set('va.density', S.compact ? 'compact' : 'comfortable'); render();
   } else if (t.dataset.set === 'sound') {
     S.sound = t.checked; store.set('va.sound', S.sound);
-  } else if (t.dataset.set === 'notify') {
-    S.notify = t.checked; store.set('va.notify', S.notify);
+  } else if (t.dataset.set === 'notify' || t.dataset.set?.startsWith('notify-')) {
+    if (t.dataset.set === 'notify') { S.notify = t.checked; store.set('va.notify', S.notify); }
+    else { S.notifyOn[t.dataset.set.slice(7)] = t.checked; store.set('va.notifyOn', S.notifyOn); }
+    const any = S.notify || Object.values(S.notifyOn).some(Boolean);
     const note = $('notify-note');
-    const show = () => { if (note) note.hidden = !(S.notify && Notification.permission === 'denied'); };
-    if (S.notify && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission().then(show, show);
+    const show = () => { if (note) note.hidden = !(any && Notification.permission === 'denied'); };
+    if (t.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission().then(show, show);
     else if (typeof Notification !== 'undefined') show();
   } else if (t.dataset.set === 'quiet') {
     app.setHideQuiet(t.checked);
@@ -617,6 +653,7 @@ document.addEventListener('click', e => {
   if (t.closest('#btn-account')) return togglePop('account');
   if (t.closest('#btn-spend')) return togglePop('spend');
   if (t.closest('#btn-hidden')) return togglePop('hidden');
+  if (t.closest('#btn-new')) return launch.open();
   if (t.closest('[data-update="open"]')) { closePops(); return update.open(popBtn.settings); }
   const un = t.closest('[data-unhide]');
   if (un) return unhide(un.dataset.unhide === '*' ? hiddenAgents().map(a => a.id) : [un.dataset.unhide], un);
@@ -631,7 +668,25 @@ document.addEventListener('click', e => {
   }
 });
 
-$('q').addEventListener('input', e => { S.query = e.target.value.trim(); render(); });
+// Conversation search (names and titles, resting sessions too): the server's index, asked at most
+// every 250 ms while typing, never a scan per keystroke.
+let convTimer = 0, convSeq = 0;
+function searchConversations() {
+  clearTimeout(convTimer);
+  const q = S.query.trim().toLowerCase();
+  if (q.length < 2) { S.conv = null; return; }
+  convTimer = setTimeout(async () => {
+    const seq = ++convSeq;
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { cache: 'no-store' });
+      const body = res.ok ? await res.json() : null;
+      if (seq !== convSeq || !body) return;
+      S.conv = { q, results: body.results || [] };
+      render();
+    } catch { /* offline: the list search still works */ }
+  }, 250);
+}
+$('q').addEventListener('input', e => { S.query = e.target.value.trim(); searchConversations(); render(); });
 $('q').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     e.preventDefault();
