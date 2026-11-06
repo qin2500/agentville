@@ -7,6 +7,7 @@ import { createSpend } from './spend.js';
 import { observe } from './order.js';
 import { createTermView } from './term.js';
 import { loadModels } from './models.js';
+import { createUpdate } from './update.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) await import('./dev/mock.js');
@@ -128,6 +129,7 @@ const village = createVillage(app);
 const fleet = createFleet(app);
 const account = createAccount(app, panel);
 const spend = createSpend(app);
+const update = createUpdate(app);
 
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) and the inspector compress to the
@@ -497,7 +499,7 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="notify" ${S.notify ? 'checked' : ''}>Desktop notification when an agent needs a click</label>
       <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && S.notify ? '' : 'hidden'}>Notifications are blocked for this page in your browser's site settings.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
-      <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label></div>`;
+      <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label></div>${update.menuHTML()}`;
     return;
   }
   const all = S.data?.agents || [];
@@ -615,6 +617,7 @@ document.addEventListener('click', e => {
   if (t.closest('#btn-account')) return togglePop('account');
   if (t.closest('#btn-spend')) return togglePop('spend');
   if (t.closest('#btn-hidden')) return togglePop('hidden');
+  if (t.closest('[data-update="open"]')) { closePops(); return update.open(popBtn.settings); }
   const un = t.closest('[data-unhide]');
   if (un) return unhide(un.dataset.unhide === '*' ? hiddenAgents().map(a => a.id) : [un.dataset.unhide], un);
   const chip = t.closest('[data-clear]');
@@ -690,4 +693,4 @@ function escape(e, inField) {
 S.selected = readHash();
 render();
 village.setActive();
-poll().then(() => { if (S.selected) app.select(S.selected, { reveal: true }); });
+poll().then(() => { if (S.selected) app.select(S.selected, { reveal: true }); update.start(); });

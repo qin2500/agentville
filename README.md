@@ -7,8 +7,8 @@ glance who's building, who's waiting on something, and who needs you.
 
 Agentville is a small local web app. It reads the session files Claude Code and Codex already write
 to your disk and shows each agent as a villager, with a dark-mode list beside the village. There's
-nothing to sign up for, and nothing leaves your machine except the usage checks described under
-[Privacy & safety](#privacy--safety).
+nothing to sign up for, and nothing leaves your machine except the usage and update checks described
+under [Privacy & safety](#privacy--safety).
 
 ## What it does
 
@@ -89,6 +89,28 @@ npm start       # then open http://127.0.0.1:5275/
 `./setup.sh` is safe to re-run. `--no-launcher` skips the launcher and `--launcher` makes it without
 asking; `npm run setup` does the same. Stop the server with Ctrl-C.
 
+## Updates
+
+Agentville checks GitHub for a newer version shortly after it starts and then every 6 hours. When
+there is one, it asks you **once**: "Agentville update available", with the list of what changed,
+**Update now** and **Later**. After Later it doesn't ask again for that version; a quiet **Update
+available** item stays in the Settings (⚙) menu. A later version asks once more.
+
+**Update now** runs `git pull --ff-only origin main`, `npm ci` if the dependencies changed, and
+`npm run build`, then restarts Agentville and reloads the page. Your agents keep running; a built-in
+terminal open in the page closes. If the pull fails, your copy is left as it was. It only offers the
+button when that's safe: on the `main` branch, with no local edits to tracked files and no commits of
+your own. Otherwise it says why and shows the commands to run yourself:
+
+```sh
+cd agentville
+git pull origin main
+./setup.sh      # then restart Agentville (Ctrl-C and npm start, or reopen the launcher)
+```
+
+The check needs a `git clone` of Agentville and `git` on your PATH; anywhere else it is quietly off.
+To turn it off, set `AGENTVILLE_UPDATE_CHECK=0`. A fork checks its own `origin`.
+
 ## Requirements
 
 - **Node.js 22.13 or newer** (`node --version`). Install it from [nodejs.org](https://nodejs.org),
@@ -116,7 +138,8 @@ registry, `settings.json`) and Codex's (`~/.codex`: its state database and rollo
 titles, first-prompt summaries, statuses and counts, never tool arguments, commands or outputs.
 Token counts come from local transcripts only.
 
-**What it sends, and to whom:** only these calls, all to Anthropic, about your own Claude logins:
+**What it sends, and to whom:** only these calls. Usage checks go to Anthropic, about your own
+Claude logins:
 
 - While Claude Code is signed in to a Claude account (not a shared gateway), the server asks
   `api.anthropic.com` once a minute for that login's 5-hour and weekly usage and, when its tokens
@@ -126,8 +149,15 @@ Token counts come from local transcripts only.
 
 For these calls it reads Claude Code's login from the macOS Keychain (or
 `~/.claude/.credentials.json`) and sends the token only to Anthropic. It also runs
-`claude auth status` to see which kind of login is active. Nothing else goes anywhere: no analytics,
-no telemetry, no GitHub polling.
+`claude auth status` to see which kind of login is active.
+
+The update check asks GitHub's public API (`api.github.com`) every 6 hours whether `main` has moved
+on: one anonymous request whose only information is the commit your copy is on, in the URL (with the
+generic user agent `agentville-update-check`). No login, no token, nothing about you or your agents.
+`AGENTVILLE_UPDATE_CHECK=0` turns it off. **Update now** downloads from your checkout's `origin`
+with `git` and installs packages with `npm`, only when you click it.
+
+Nothing else goes anywhere: no analytics, no telemetry.
 
 **The server is local-only.** It listens on `127.0.0.1` and refuses requests that don't come from
 this machine, or that come from another web page.
@@ -147,6 +177,7 @@ Code keeps it: the macOS Keychain (read and written with `security`, never on a 
   running background jobs, with backups and automatic rollback.
 - **Auto-switch** does that same switch by itself when an account runs out, and tells you, with
   Undo. Turn it off in the token-spend popover.
+- **Update now** updates Agentville's own folder and restarts its server (see [Updates](#updates)).
 
 Agentville used to be called Village AI. On first start it moves `~/.config/village-ai` to
 `~/.config/agentville` (or, if it can't move it, copies it and leaves the old folder alone). Old
@@ -165,6 +196,8 @@ All optional.
 | `AGENTVILLE_TERMINAL` | auto | Terminal for **Open** (a name or absolute path), with no fallback. |
 | `AGENTVILLE_CREDENTIALS` | Keychain on macOS | `file` keeps Claude's login in `~/.claude/.credentials.json` instead. |
 | `AGENTVILLE_FLEET_DRY_RUN` | off | `1`: fleet actions open no socket at all. |
+| `AGENTVILLE_UPDATE_CHECK` | on | `0`: never check GitHub for updates. |
+| `AGENTVILLE_UPDATE_REPO` | your `origin`, else `package.json` | The GitHub repository (`owner/repo`) to compare with. |
 
 The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); see `e2e/helpers.mjs`.
 
@@ -246,7 +279,8 @@ npm run dev:web                              # Vite dev server (proxies /api to 
 ```
 
 Tests never read your real `~/.claude` or `~/.codex`, never open a real terminal and never call
-Anthropic. The UX notes are in [docs/DESIGN.md](docs/DESIGN.md).
+Anthropic or GitHub (the update tests use temp git repos and a fake GitHub API). The UX notes are in
+[docs/DESIGN.md](docs/DESIGN.md).
 
 ## Credits & licence
 

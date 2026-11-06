@@ -26,6 +26,7 @@ import { createResearch } from './research.mjs'
 import { createNetwork } from './network.mjs'
 import { detectTerminal, findExecutable, openInTerminal } from './terminal.mjs'
 import { createTerminals } from './pty.mjs'
+import { canRestartSelf, createUpdater, restartSelf } from './update.mjs'
 import * as claude from './claude-code.mjs'
 import * as codex from './codex.mjs'
 
@@ -63,7 +64,7 @@ export async function openCommand(a) {
 
 export { defaultDataDir }
 
-export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs } = {}) {
+export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {} } = {}) {
   const store = createStore(dataDir)
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
@@ -84,6 +85,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // Token spend is read when the page asks (every few seconds while it is open) and with each usage sample.
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
   const sampler = createSampler({ dataDir, account, network, agents: async () => (await snapshot()).agents })
+  // Update check against GitHub's main (update.mjs); restarting needs `server`, so it's looked up late.
+  const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, ...update })
   const startedAt = Date.now()
   const opens = []
   const since = new Map() // id -> { bucket, since }: when it entered its current bucket
@@ -373,6 +376,18 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         cached = null
         return send(res, 200, { action: plan.action, results: out })
       }
+      // Update check (update.mjs): ?fresh asks GitHub again (at most once a minute).
+      if (url.pathname === '/api/update' && req.method === 'GET') {
+        return send(res, 200, url.searchParams.has('fresh') ? await updater.check() : await updater.status())
+      }
+      if (url.pathname === '/api/update/apply' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        await readBody(req) // the body carries nothing we use
+        const out = await updater.apply()
+        // Respond first; the restart closes this server.
+        if (out.restarting) res.once('finish', () => setTimeout(() => updater.restartNow(), 200))
+        return send(res, out.ok ? 200 : 409, out)
+      }
       if (url.pathname === '/api/fleet/mark' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         const record = await fleetStore.mark(await readBody(req))
@@ -398,11 +413,13 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     first.unref(); every.unref(); watch.unref()
     server.on('close', () => { clearTimeout(first); clearInterval(every); clearInterval(watch) })
   }
+  updater.start().catch(() => {})
+  server.on('close', () => updater.stop())
   server.on('upgrade', (req, socket, head) => terms.upgrade(req, socket, head))
   // Before close, not on 'close': open WebSockets would otherwise keep the server from closing.
   const close = server.close.bind(server)
   server.close = (cb) => { terms.closeAll(); return close(cb) }
-  Object.assign(server, { sampler, spend, terms })
+  Object.assign(server, { sampler, spend, terms, updater })
   return server
 }
 

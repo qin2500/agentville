@@ -39,6 +39,20 @@ The page polls `/api/agents` every 2 s while visible and every 15 s when the tab
 | `fleet.mjs`, `inbox.mjs` | Fleet messages: compose a previewed plan, then deliver to live sessions' local message sockets. |
 | `terminal.mjs`, `pty.mjs` | Open in a terminal window (Ghostty, Terminal.app, or a Linux terminal); the built-in terminal over a WebSocket. |
 | `datadir.mjs` | Where Agentville's own files live, and the one-time move from the pre-rename `village-ai` folder. |
+| `update.mjs` | The update check against GitHub's `main`, Update now (pull, install, build) and the self-restart. |
+
+## Updates
+
+`update.mjs` finds the install's own checkout (its `.git`, never a parent folder's) and, 15 s after
+start and then every 6 h, calls `GET api.github.com/repos/<owner>/<repo>/compare/<HEAD>...main`
+without auth. `ahead_by` and `commits` give the count and titles; a 404 means local commits, so it
+compares again from the merge base with `origin/main`. Offline or rate-limited, it keeps the last
+answer and retries in 30 min or after the reset. `GET /api/update` reports it; `POST
+/api/update/apply` (local, same-origin, like every POST) re-checks the tree, fast-forwards, runs
+`npm ci` if `package-lock.json` changed and `npm run build`, responds, then restarts: from a terminal
+the old process stays as a thin parent (so Ctrl-C still works), from the launcher a detached copy
+takes over the same log. `web/src/update.js` prompts once per latest sha (`va.update.seen`) and
+reloads when a server with a new `startedAt` answers.
 
 ## How agents are sorted into buckets
 
@@ -139,4 +153,7 @@ Tests never touch real homes, terminals, sockets or the network:
 - `test/fixtures/make-home.mjs` writes synthetic `~/.claude` and `~/.codex` trees.
 - Under `AGENTVILLE_TEST=1` (or `NODE_ENV=test`) the server refuses to detect a terminal, spawn a
   CLI outside `AGENTVILLE_FAKE_BIN`, call Anthropic unless pointed at `test/fixtures/fake-anthropic.mjs`,
-  read the real network, or send fleet messages outside `AGENTVILLE_FLEET_SOCKET_ROOT`.
+  read the real network, or send fleet messages outside `AGENTVILLE_FLEET_SOCKET_ROOT`. The update
+  check stays off unless `AGENTVILLE_UPDATE_API` points at `test/fixtures/fake-github.mjs`, never
+  updates Agentville's own checkout (only a temp clone named by `AGENTVILLE_UPDATE_DIR`) and never
+  restarts the server.
