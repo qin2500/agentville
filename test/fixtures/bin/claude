@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+// Fake claude / codex CLI for tests (codex is a symlink-free copy). Never a real CLI.
+// Opened by the fake terminal recorder it is never run. Run in the built-in terminal's PTY it
+// prints a banner and a prompt, echoes each line ("echo: <line>"), exits on "exit" or on a second
+// Ctrl-C (like claude), and exits 0 on SIGTERM/SIGHUP. With AGENTVILLE_FAKE_CLAUDE_LOG set it appends
+// { cli, event: 'start'|'exit', argv, at } lines there, so tests can order it against the fake
+// terminal (point both logs at one file).
+const fs = process.getBuiltinModule('node:fs')
+const cli = process.argv[1].split('/').pop()
+const argv = process.argv.slice(2)
+const log = (event, extra = {}) => { if (process.env.AGENTVILLE_FAKE_CLAUDE_LOG) fs.appendFileSync(process.env.AGENTVILLE_FAKE_CLAUDE_LOG, JSON.stringify({ cli, event, argv, at: Date.now(), ...extra }) + '\n') }
+if (!process.stdin.isTTY) { process.stderr.write(`fake ${cli}: not a real CLI\n`); process.exit(3) }
+let exiting = false
+const bye = (code, why) => {
+  if (exiting) return
+  exiting = true
+  log('exit', { why })
+  // After a hang-up the terminal is gone: writing to it could block, so just leave.
+  if (why === 'sighup') process.exit(code)
+  process.stdout.write(`\r\nfake ${cli}: bye (${why})\r\n`)
+  setTimeout(() => process.exit(code), 20)
+}
+process.stdout.write(`fake ${cli} ${argv.join(' ')}\r\ncwd ${process.cwd()}\r\nfake-${cli}> `)
+let interrupts = 0
+process.on('SIGINT', () => { if (++interrupts >= 2) bye(0, 'ctrl-c'); else process.stdout.write('\r\n(press Ctrl-C again to exit)\r\nfake-' + cli + '> ') })
+process.on('SIGTERM', () => bye(0, 'sigterm'))
+process.on('SIGHUP', () => bye(0, 'sighup'))
+log('start') // only once every handler is in place, so a test that waits for it can signal at once
+let pending = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (d) => {
+  pending += d
+  let i
+  while ((i = pending.search(/\r|\n/)) >= 0) {
+    const line = pending.slice(0, i)
+    pending = pending.slice(i + 1).replace(/^\n/, '')
+    interrupts = 0
+    if (line === 'exit') return bye(7, 'exit')
+    if (line === 'size') process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`)
+    else process.stdout.write(`echo: ${line}\r\n`)
+    process.stdout.write(`fake-${cli}> `)
+  }
+})
+process.stdin.on('end', () => bye(0, 'eof'))

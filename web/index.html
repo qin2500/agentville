@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Agentville</title>
+<link rel="icon" id="favicon" href="data:,">
+<link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+<a class="skip" href="#list">Skip to agent list</a>
+<div class="app" id="app">
+  <header class="top">
+    <h1 class="brand"><i aria-hidden="true"></i><span>Agentville</span></h1>
+    <div class="counters" id="counters" role="group" aria-label="Agent counts"></div>
+    <div class="spacer"></div>
+    <button class="ghost warn" id="btn-warnings" hidden aria-haspopup="dialog" aria-expanded="false"></button>
+    <button class="ghost spendbtn" id="btn-spend" hidden aria-haspopup="dialog" aria-expanded="false"></button>
+    <button class="ghost" id="btn-account" hidden aria-haspopup="dialog" aria-expanded="false">Account ▾</button>
+    <button class="ghost fleetbtn" id="btn-fleet" hidden aria-haspopup="dialog" aria-expanded="false">Fleet ▾</button>
+    <span class="conn" id="conn"><i aria-hidden="true"></i><span>Connecting…</span></span>
+    <button class="iconbtn" id="btn-settings" aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded="false">⚙</button>
+  </header>
+  <div class="nudge" id="nudge" role="status" hidden></div>
+  <main class="main" id="main">
+    <div class="village" id="village">
+      <canvas id="cv" role="img" tabindex="0" aria-label="Village"></canvas>
+      <div class="labels" id="labels" aria-hidden="true"></div>
+      <div class="quiet-note" id="quiet-note" role="status" hidden></div>
+      <div class="empty-note" id="empty-note" hidden><b>No agents found yet.</b><span>Agentville reads Claude Code sessions from <code>~/.claude</code> and Codex sessions from <code>~/.codex</code>. Start a session and its villager moves in within a few seconds.</span></div>
+      <div class="zoom" role="group" aria-label="Village zoom">
+        <button class="iconbtn" id="zoom-in" aria-label="Zoom in (+)" title="Zoom in (+)">+</button>
+        <button class="iconbtn" id="zoom-out" aria-label="Zoom out (−)" title="Zoom out (−)">−</button>
+        <button class="iconbtn" id="zoom-reset" aria-label="Recentre (0)" title="Recentre (0)">◎</button>
+        <button class="iconbtn viewbtn" id="view-toggle" aria-pressed="false" title="Switch between the isometric (2.5D) and top-down (2D) view (I)">2.5D</button>
+      </div>
+    </div>
+    <section class="stage" id="stage" aria-label="Terminal" hidden></section>
+    <aside class="panel" id="panel" aria-label="Agents">
+      <div class="splitter" id="splitter" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="panel" aria-label="Resize agent panel" title="Drag to resize · double-click to expand"></div>
+      <div class="rail" id="rail"></div>
+      <div class="pbody">
+        <div class="banner" id="banner" role="status" hidden></div>
+        <div class="phead">
+          <div class="searchrow">
+            <label class="search"><span aria-hidden="true">⌕</span><input id="q" type="search" placeholder="Search agents, projects, PRs" aria-label="Search agents" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">/</kbd></label>
+            <button class="ghost expand" id="btn-full" title="Expand to full screen (F)">⤢ Expand</button>
+            <button class="iconbtn" id="btn-collapse" aria-label="Collapse panel (\)" title="Collapse panel (\)">»</button>
+          </div>
+          <div class="tools">
+            <div class="seg" role="group" aria-label="Group by">
+              <button id="view-status" aria-pressed="true">Status</button><button id="view-team" aria-pressed="false">Team</button><button id="view-table" aria-pressed="false">Table</button><button id="view-models" aria-pressed="false">Models</button>
+            </div>
+            <button class="ghost" id="btn-filters" aria-haspopup="dialog" aria-expanded="false">Filters ▾</button>
+            <button class="ghost muted" id="btn-hidden" aria-haspopup="dialog" aria-expanded="false" hidden></button>
+          </div>
+          <div class="fchips" id="fchips"></div>
+        </div>
+        <div class="list" id="list" tabindex="-1"></div>
+        <div class="drawer" id="drawer" hidden></div>
+      </div>
+    </aside>
+  </main>
+</div>
+<div class="pop" id="pop-filters" role="dialog" aria-label="Filters" hidden></div>
+<div class="pop" id="pop-hidden" role="dialog" aria-label="Hidden agents" hidden></div>
+<div class="pop" id="pop-settings" role="dialog" aria-label="Settings" hidden></div>
+<div class="pop" id="pop-warnings" role="dialog" aria-label="Server warnings" hidden></div>
+<div class="pop" id="pop-fleet" role="dialog" aria-label="Fleet actions" hidden></div>
+<div class="pop acctpop" id="pop-account" role="dialog" aria-label="Accounts" hidden></div>
+<div class="pop spendpop-wrap" id="pop-spend" role="dialog" aria-label="Token spend" hidden></div>
+<dialog class="sheet" id="sheet" aria-labelledby="sheet-title"></dialog>
+<dialog class="sheet" id="acct" aria-labelledby="acct-title"></dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="sr" id="live" aria-live="polite"></div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

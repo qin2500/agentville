@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Fake terminal for tests: AGENTVILLE_TERMINAL points here. It records one JSON line { argv, cwd } to
+// $AGENTVILLE_FAKE_TERMINAL_LOG (if set) and exits 0. It never runs the command it was given.
+// getBuiltinModule works whether node loads this extensionless file as CommonJS or as ESM.
+const log = process.env.AGENTVILLE_FAKE_TERMINAL_LOG
+if (log) process.getBuiltinModule('node:fs').appendFileSync(log, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + '\n')

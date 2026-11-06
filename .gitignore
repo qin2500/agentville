@@ -1,0 +1,25 @@
+# dependencies and build output
+node_modules/
+web/dist/
+
+# local data and fixtures
+data/
+fixture-home/
+*.tmp
+*.log
+
+# test output
+e2e/screenshots/
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# macOS launcher build output
+tools/macos-launcher/icon-preview.png
+*.app/
+
+# OS and editor clutter
+.DS_Store
+.vscode/
+.idea/
