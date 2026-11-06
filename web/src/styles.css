@@ -65,6 +65,10 @@ svg.role { width: 14px; height: 14px; }
 .ghost:hover { color: var(--text); background: var(--surface-2); }
 .ghost[aria-expanded="true"] { color: var(--text); background: var(--surface-2); }
 .ghost.warn { color: var(--stalled); border-color: transparent; }
+/* Hide from Village: a small red trash can (it only hides; Unhide brings the agent back). */
+.ghost.iconbtn { display: inline-flex; align-items: center; justify-content: center; padding: 3px 7px; }
+.ghost.trash { color: var(--error); }
+.ghost.trash:hover { color: var(--error); background: color-mix(in srgb, var(--error) 14%, transparent); border-color: color-mix(in srgb, var(--error) 45%, var(--line)); }
 .textbtn { background: none; border: 0; padding: 0; color: var(--text); text-decoration: underline; cursor: pointer; font-size: inherit; }
 
 /* main area */

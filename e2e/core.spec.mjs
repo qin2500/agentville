@@ -147,7 +147,7 @@ test('keyboard triage: J/K jump stalled rows, arrows move, Enter opens detail, E
   await expect(page.locator('#list .row.b-stalled').nth(1)).toBeFocused()
 })
 
-test('detail view shows facts and copies resume command and id', async ({ page, context }, testInfo) => {
+test('detail view shows facts and copies the attach command', async ({ page, context }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await inspect(page, claudeId('leadBlocked'))
   const d = page.locator('#drawer')
@@ -155,11 +155,14 @@ test('detail view shows facts and copies resume command and id', async ({ page, 
   await expect(d).toContainText('Needs your input')
   await expect(d.locator('.facts')).toContainText('Big Boss')
   await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-detail.png` })
+  // A background job's button copies its `claude attach` command; there is no Copy id any more.
+  await expect(d.locator('[data-act="copyresume"]')).toHaveText('Copy attach command')
+  await expect(d.locator('[data-act="copyid"]')).toHaveCount(0)
   await d.locator('[data-act="copyresume"]').click()
   await expect(d.locator('[data-act="copyresume"]')).toHaveText('Copied')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`claude attach ${IDS.leadBlocked.slice(0, 8)}`)
-  await d.locator('[data-act="copyid"]').click()
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeId('leadBlocked'))
+  // Hide is a labelled trash-can icon button.
+  await expect(d.getByRole('button', { name: 'Hide from Agentville' })).toHaveClass(/\btrash\b/)
   // Parent link navigates to the boss.
   await d.locator('[data-act="goto"]').first().click()
   await expect(d.locator('h3')).toContainText('Big Boss')

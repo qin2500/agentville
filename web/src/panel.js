@@ -614,13 +614,13 @@ export function createPanel(app) {
           ${builtIn ? `<button class="${a.hidden ? 'ghost' : 'primary'}" type="button" data-act="term" aria-pressed="${inView}" ${tblock ? 'disabled aria-describedby="openwhy"' : ''}>${inView ? 'In the terminal' : embedded(a.id) ? 'Terminal · running' : 'Terminal'}</button>` : ''}
           ${term && !builtIn ? `<button class="${a.hidden ? 'ghost' : 'primary'}" type="button" data-act="open" ${block ? 'disabled aria-describedby="openwhy"' : ''}>Open in ${esc(termName())}</button>` : ''}
           <button class="ghost" type="button" data-act="showvillage">Show in village</button>
-          <button class="ghost" type="button" data-act="copyid">Copy id</button>
+          ${a.resume ? `<button class="ghost" type="button" data-act="copyresume" title="${esc(a.resume)}">${/^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command'}</button>` : ''}
           <button class="ghost" type="button" data-act="edit" aria-expanded="${editing}">Edit…</button>
-          ${a.hidden ? '' : '<button class="ghost" type="button" data-act="hide">Hide from Agentville</button>'}
+          ${a.hidden ? '' : `<button class="ghost iconbtn trash" type="button" data-act="hide" aria-label="Hide from Agentville" title="Hide from Agentville"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 1.5h4a1 1 0 0 1 1 1V3h3v1.5H2V3h3v-.5a1 1 0 0 1 1-1zM3.2 5.5h9.6l-.7 8.1a1.5 1.5 0 0 1-1.5 1.4H5.4a1.5 1.5 0 0 1-1.5-1.4zm2.8 1.5v6h1.2V7zm2.8 0v6H10V7z"/></svg></button>`}
         </div>
         ${why ? `<p class="helper" id="openwhy" style="margin:4px 0 0">${esc(why)}</p>` : ''}
         ${term && !builtIn && !block && ['ghostty', 'terminal'].includes(term) && !store.get('va.opened', false) ? `<p class="helper opennote" style="margin:4px 0 0">macOS may ask to let Agentville control ${esc(termName())}.</p>` : ''}
-        <p class="helper" style="margin:4px 0 0">${a.resume ? `<button class="linkbtn inline" type="button" data-act="copyresume">Copy resume command</button>${term ? ' (to resume it on another machine)' : ''}` : 'No resume command for this session'}</p>
+        ${a.resume ? '' : '<p class="helper" style="margin:4px 0 0">No resume command for this session</p>'}
         <p class="helper act-err" role="alert" style="margin:4px 0 0;color:var(--error)" hidden></p>
         ${editing ? editForm(a) : ''}`;
       if (hadFocus) acts.querySelector(`[data-act="${CSS.escape(hadFocus)}"]`)?.focus(); // a re-render keeps the keyboard in place
@@ -722,7 +722,6 @@ export function createPanel(app) {
         case 'copyresume': return a?.resume && copy(a.resume, act);
         case 'open': return a && openAgent(a.id, act);
         case 'term': if (a && !termBlock(a)) app.openTerminal(a.id); return;
-        case 'copyid': return a && copy(a.id, act);
         case 'showvillage': return a && app.showInVillage(a.id);
         case 'edit': editing = !editing; app.render(); drawer.querySelector('[data-form] input')?.focus(); return;
         case 'canceledit': editing = false; app.render(); drawer.querySelector('[data-act="edit"]')?.focus(); return;

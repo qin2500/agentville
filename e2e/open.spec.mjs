@@ -36,7 +36,7 @@ test('detail: with the built-in terminal there is no "Open in …" (Pop out live
   const btn = page.locator('#drawer [data-act="open"]')
   await expect(btn).toHaveText('Open in Kitty')
   await expect(page.locator('#drawer [data-act="term"]')).toHaveCount(0)
-  await expect(page.locator('#drawer [data-act="copyresume"]')).toHaveText('Copy resume command') // the fallback
+  await expect(page.locator('#drawer [data-act="copyresume"]')).toHaveText('Copy attach command') // a background job: its claude attach command
   const before = opened()
   await btn.click()
   await expect(page.locator('#toast')).toContainText('Opened API Lead in Kitty')
