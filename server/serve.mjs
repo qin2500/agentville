@@ -14,7 +14,10 @@ import { defaultDataDir } from './datadir.mjs'
 import { build } from './classify.mjs'
 import { createStore } from './overrides.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
-import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked } from './inbox.mjs'
+import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
+import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
+import { createChanges } from './changes.mjs'
+import { createPrStatus } from './prstatus.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
@@ -77,6 +80,15 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   let modelInfo = new Map()
   const plans = new Map() // confirm token -> the previewed plan, valid 2 min, usable once
   const sends = []
+  // One agent at a time: a message (inspector reply / compose) or a start, stop or fork. Each is a
+  // previewed plan behind a one-time confirm token, like Fleet's.
+  const oneOffs = new Map() // confirm token -> { kind, ..., expires }
+  const messages = [] // message sends in the last minute
+  const runs = [] // starts, stops and forks in the last minute
+  let forks = new Map() // server-private: id -> { sid, cwd } a fork would copy
+  let titles = [] // server-private: conversation names for search (never prompt text)
+  const changes = createChanges()
+  const prStatus = createPrStatus(claude.home)
   const projectStore = createProjectStore(dataDir)
   // Usage research log: tokens by model next to every usage reading (see research.mjs).
   const research = createResearch({ dataDir })
@@ -120,12 +132,60 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     inboxes = new Map(facts.map((f) => [f.id, f.inbox || null]))
     transcriptOf = new Map(facts.map((f) => [f.id, f.transcriptFile || null]))
     modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null }]))
+    forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
+    titles = results.flatMap((r) => (r.status === 'fulfilled' && r.value.titles) || [])
+    const byId = new Map(agents.map((a) => [a.id, a]))
+    const dirs = new Set()
+    for (const a of agents) {
+      // Why it can't be messaged from the inspector ('' = it can). Fixed strings only.
+      a.messageWhy = messageProblem(a)
+      // Changed files in its folder: never for resting agents, and a subagent working in its lead's
+      // folder leaves that to the lead.
+      const parent = ['subagent', 'teammate', 'thread'].includes(a.kind) && a.parentId && byId.get(a.parentId)
+      if (a.bucket !== 'resting' && !a.hidden && a.cwd && !(parent && parent.cwd === a.cwd)) {
+        dirs.add(a.cwd)
+        a.changes = changes.summary(a.cwd)
+      } else a.changes = null
+    }
+    changes.prune(dirs)
+    await prStatus.annotate(agents)
     // Fleet sends to live Claude sessions; `blocked` says why it can't here ('' = it can).
     const fleet = { mode: 'send', blocked: sendingBlocked(), last: fleetData.last, pending: pending && { ...pending, rebootDetected: startedAt > pending.at } }
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now)
     return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects }
+  }
+
+  function messageProblem(a) {
+    if (a.harness !== 'claude-code') return "Codex threads can't be messaged from here. Reply in Codex."
+    if (['subagent', 'teammate', 'thread'].includes(a.kind)) return "Subagents can't be messaged. Message its lead instead."
+    if (!a.live) return "Not running, so there's no session to message. Open it to resume it."
+    return inboxProblem(inboxes.get(a.id))
+  }
+  const logFleet = async (entry) => {
+    await fsp.mkdir(dataDir, { recursive: true }).catch(() => {})
+    await fsp.appendFile(path.join(dataDir, 'fleet-log.jsonl'), JSON.stringify(entry) + '\n', { mode: 0o600 }).catch(() => {})
+  }
+  /** ponytail: one global window per kind, single local user. Throws a 429 past `max` a minute. */
+  const limit = (list, max, what) => {
+    const now = Date.now()
+    while (list.length && now - list[0] > 60_000) list.shift()
+    if (list.length >= max) throw Object.assign(new Error(`Too many ${what}; wait a minute`), { status: 429 })
+    list.push(now)
+  }
+  const token = (plan) => {
+    for (const [k, v] of oneOffs) if (Date.now() > v.expires) oneOffs.delete(k)
+    const confirm = crypto.randomUUID()
+    oneOffs.set(confirm, { ...plan, expires: Date.now() + 120_000 })
+    return confirm
+  }
+  /** The plan behind a confirm token, once. 409 when it expired, was used, or is another kind. */
+  const redeem = (confirm, kinds) => {
+    const plan = typeof confirm === 'string' && oneOffs.get(confirm)
+    if (!plan || Date.now() > plan.expires || !kinds.includes(plan.kind)) throw Object.assign(new Error('This confirmation has expired. Check it again.'), { status: 409 })
+    oneOffs.delete(confirm)
+    return plan
   }
 
   // Polls every few seconds must be cheap: share one scan per SCAN_TTL_MS, never run two at once.
@@ -334,6 +394,96 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         return send(res, 200, await sampler.setEnabled((await readBody(req))?.enabled))
       }
+      // ---- one agent: message it, or start, stop or fork one (README "Acting on agents") ----
+      const json = () => { if (!/^application\/json\b/.test(req.headers['content-type'] || '')) throw Object.assign(new Error('Expected application/json'), { status: 415 }) }
+      if (url.pathname === '/api/message/preview' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const text = body?.text
+        if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: "The message can't be empty." })
+        if (text.length > 8000) return send(res, 400, { error: 'The message can be at most 8000 characters.' })
+        if (/cross-session-message/i.test(text)) return send(res, 400, { error: 'The message may not contain a cross-session-message tag.' })
+        const a = (await snapshot()).agents.find((x) => x.id === body?.id)
+        if (!a) return send(res, 404, { error: 'No such agent' })
+        const problem = a.messageWhy || sendingBlocked()
+        if (problem) return send(res, 409, { error: problem })
+        // Exactly what lands in the session: the text inside the peer-message wrapper.
+        return send(res, 200, { id: a.id, name: a.name, text, sent: wrap(text), confirm: token({ kind: 'message', id: a.id, text }) })
+      }
+      if (url.pathname === '/api/message/send' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const blocked = sendingBlocked()
+        if (blocked) return send(res, 501, { error: blocked })
+        const plan = redeem(body?.confirm, ['message'])
+        limit(messages, 10, 'messages')
+        cached = null
+        const a = (await snapshot()).agents.find((x) => x.id === plan.id)
+        const inbox = inboxes.get(plan.id)
+        let out
+        if (!a?.live || !inbox) out = { id: plan.id, status: 'failed', detail: 'Session ended' }
+        else if (inboxProblem(inbox)) out = { id: plan.id, status: 'failed', detail: inboxProblem(inbox) }
+        else if (dryRun()) out = { id: plan.id, status: 'skipped', detail: 'Dry run' }
+        else {
+          const r = await deliver(inbox, plan.text)
+          if (!r.ok) out = { id: plan.id, status: 'failed', detail: r.detail }
+          else {
+            const seen = await awaitReceipts([{ id: plan.id, msgId: r.msgId, file: transcriptOf.get(plan.id) }])
+            out = seen.has(plan.id) ? { id: plan.id, status: 'delivered', at: seen.get(plan.id) } : { id: plan.id, status: 'sent-unconfirmed', detail: 'Not confirmed within 10 s' }
+          }
+        }
+        await logFleet({ at: Date.now(), action: 'message', results: [out] })
+        cached = null
+        return send(res, 200, out)
+      }
+      const ch = /^\/api\/agents\/([^/]+)\/changes$/.exec(url.pathname)
+      if (ch && req.method === 'GET') {
+        const a = (await snapshot()).agents.find((x) => x.id === decodeURIComponent(ch[1]))
+        if (!a) return send(res, 404, { error: 'No such agent' })
+        if (!a.cwd) return send(res, 200, { id: a.id, changes: null })
+        return send(res, 200, { id: a.id, changes: await changes.detail(a.cwd) })
+      }
+      if (url.pathname === '/api/search' && req.method === 'GET') {
+        const q = String(url.searchParams.get('q') || '').trim().toLowerCase().slice(0, 100)
+        if (q.length < 2) return send(res, 200, { q, results: [] })
+        await snapshot()
+        const best = new Map()
+        for (const t of titles) {
+          const hit = t.names.find((n) => n.toLowerCase().includes(q))
+          if (hit && (!best.has(t.id) || best.get(t.id).at < t.at)) best.set(t.id, { id: t.id, name: t.names[0], matched: hit, project: t.project, at: Math.round(t.at) })
+        }
+        const results = [...best.values()].sort((x, y) => y.at - x.at)
+        return send(res, 200, { q, total: results.length, results: results.slice(0, 25) })
+      }
+      if (url.pathname === '/api/act/options' && req.method === 'GET') {
+        const snap = await snapshot()
+        return send(res, 200, { blocked: actionsBlocked(), projects: knownProjects(snap.agents).map(({ dir, name }) => ({ dir, name })), models: MODELS, efforts: EFFORTS, modes: MODES, promptMax: PROMPT_MAX, nameMax: NAME_MAX })
+      }
+      if (url.pathname === '/api/act/preview' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const snap = await snapshot()
+        const a = typeof body?.id === 'string' ? snap.agents.find((x) => x.id === body.id) : null
+        const plan = body?.kind === 'start' ? startPlan(body, knownProjects(snap.agents))
+          : body?.kind === 'stop' ? stopPlan(a)
+          : body?.kind === 'fork' ? forkPlan(a, a && forks.get(a.id), body.name)
+          : null
+        if (!plan) return send(res, 400, { error: 'Unknown action' })
+        return send(res, 200, { kind: plan.kind, id: plan.id || null, name: plan.name, command: display(plan), cwd: plan.cwd, blocked: actionsBlocked(), confirm: token(plan) })
+      }
+      if (url.pathname === '/api/act/run' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const blocked = actionsBlocked()
+        if (blocked) return send(res, 501, { error: blocked })
+        const plan = redeem(body?.confirm, ['start', 'stop', 'fork'])
+        limit(runs, 10, 'starts and stops')
+        const r = await runPlan(plan)
+        // Ids and outcomes only: never the prompt.
+        await logFleet({ at: Date.now(), action: plan.kind, ...(plan.id && { id: plan.id }), ...(plan.project && { project: plan.project }), ok: r.ok, ...(r.jobId && { jobId: r.jobId }), ...(r.error && { error: r.error }) })
+        cached = null
+        return send(res, r.ok ? 200 : 502, r.ok ? { ok: true, kind: plan.kind, jobId: r.jobId || null, name: plan.name } : { error: r.error })
+      }
       if (url.pathname === '/api/fleet/send' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         const body = await readBody(req)
@@ -371,8 +521,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         // A sent prep pauses its recipients exactly like a manual mark did.
         const reached = out.filter((r) => ['delivered', 'sent-unconfirmed'].includes(r.status)).map((r) => r.id)
         if (plan.action !== 'continue' && reached.length) await fleetStore.mark({ action: plan.action, ids: reached })
-        await fsp.mkdir(dataDir, { recursive: true }).catch(() => {})
-        await fsp.appendFile(path.join(dataDir, 'fleet-log.jsonl'), JSON.stringify({ at: now, action: plan.action, results: out }) + '\n', { mode: 0o600 }).catch(() => {})
+        await logFleet({ at: now, action: plan.action, results: out })
         cached = null
         return send(res, 200, { action: plan.action, results: out })
       }

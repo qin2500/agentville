@@ -83,7 +83,8 @@ export function currentWait(evidence, now = Date.now()) {
 }
 
 /** Claude's own scheduler can be idle while a known background task is in flight.
- * Do not expose its free-form detail/needs/providerEnv fields to the browser. A completed
+ * Its providerEnv and free-form detail are never sent to the browser (a job's `needs` and
+ * `suggestedReply` are, capped, for the inspector's reply box: claude-code.mjs `ask`). A completed
  * turn with leftover teammates, a permission block, or a queued new turn is not a wait. */
 /** A scheduler status the job reports as its current state (blocked/done) holds this long. */
 // The agent's own current status line: valid until it changes (the 24 h quiet rule rests it after that).

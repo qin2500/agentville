@@ -179,6 +179,8 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       sizeBytes: a.sizeBytes || 0,
       live: Boolean(a.live),
       prs: a.prs || [],
+      // A job that needs you: what it asks for and the scheduler's suggested reply (short strings).
+      ask: c.bucket === 'stalled' && a.ask?.needs ? a.ask : null,
       resume: a.resume || null,
       // A launch that failed before it ran: no session exists, so there is nothing to open.
       neverStarted: a.neverStarted === true,

@@ -33,6 +33,14 @@ export const MODELS = {
   codexRunning: { now: 'gpt-6.1-sol', window: 272_000 },
 }
 
+/** What the blocked DB Lead asks for (job `needs`) and the scheduler's suggested reply. */
+export const ASK = { needs: 'Pick the migration tool: knex or prisma?', suggestedReply: 'Use knex, matching the existing migrations.' }
+/** Claude Code's PR status cache (`gh-pr-status-cache.json`), keyed by PR URL. */
+export const PR_STATUS = {
+  'https://github.com/example/demo-app/pull/101': { number: 101, title: '', state: 'OPEN', checks: { passed: 7, failed: 1, pending: 2 }, review: 'REVIEW_REQUIRED', additions: 412, deletions: 37 },
+  'https://github.com/example/demo-app/pull/99': { number: 99, title: '', state: 'MERGED', checks: { passed: 9, failed: 0, pending: 0 }, review: 'APPROVED', additions: 20, deletions: 4 },
+}
+
 /** id -> expected { bucket, role } (Claude ids prefixed claude-code:, Codex codex:). */
 export const EXPECTED = {
   [`claude-code:${IDS.boss}`]: { bucket: 'waiting', role: 'boss', reason: 'Waiting on 2 agents' },
@@ -84,6 +92,7 @@ export function makeHome(root, now = Date.now()) {
   })
   // Interactive sessions default to the settings model.
   write(path.join(claude, 'settings.json'), { model: 'opus[1m]' })
+  write(path.join(claude, 'gh-pr-status-cache.json'), PR_STATUS)
   const live = (sid) => write(path.join(claude, 'sessions', `${short(sid)}.json`), { pid: 1, sessionId: sid, kind: 'bg' })
 
   // Boss: launched three leads with `claude --bg`, now idle with its turn finished.
@@ -114,7 +123,8 @@ export function makeHome(root, now = Date.now()) {
   write(path.join(subs, 'agent-mate.meta.json'), { agentType: 'reviewer', name: 'reviewer', teamName: 'session-x', description: 'Review the diff', model: MODELS.mate.requested })
 
   transcript(IDS.leadBlocked, [prompt(IDS.leadBlocked, 'Migrate the DB'), say(60_000, 'Done.', MODELS.leadBlocked.now)], 60_000)
-  job(IDS.leadBlocked, { name: 'DB Lead', state: 'blocked', tempo: 'blocked', respawnFlags: ['--model', MODELS.leadBlocked.flag] })
+  job(IDS.leadBlocked, { name: 'DB Lead', state: 'blocked', tempo: 'blocked', respawnFlags: ['--model', MODELS.leadBlocked.flag],
+    needs: ASK.needs, suggestedReply: ASK.suggestedReply })
   live(IDS.leadBlocked)
 
   transcript(IDS.leadCi, [prompt(IDS.leadCi, 'Ship the fix', 120_000), say(90_000, 'Done.', MODELS.leadCi.now)], 90_000)

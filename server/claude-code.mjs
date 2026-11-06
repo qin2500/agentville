@@ -132,22 +132,44 @@ async function tailFacts(file, stamp, main = true) {
   return facts
 }
 
+/** Scheduler PR children plus the PRs the CLI linked in the transcript, each URL once. */
+const withLinked = (prs, linked) => [...prs, ...(linked || []).filter((l) => !prs.some((p) => p.href === l.href))]
+
 const LAUNCH = /\bclaude\b[\s\S]*\s--bg\b/
 const HINT = /claude (?:attach|logs|stop) |backgrounded ·/
 const LAUNCHED = /(?:claude (?:attach|logs|stop)|backgrounded ·)\s+([0-9a-f]{8})\b/g
+const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d{1,9})$/
+/** A title or name record: a short single line, never prompt text. */
+const titleText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 200) : '')
 
 /**
- * Background jobs this transcript launched: a Bash call mentioning `claude … --bg` whose result
- * names a job (`claude attach <id>`). Returns `[short, launchedAt]`; the caller drops jobs created
- * before the call, which is what a relaunch (`--bg --resume`) of an existing job looks like.
- * Append-only, so each file is read once, then only its new bytes.
+ * One pass over each transcript, from where the last pass stopped (append-only files):
+ * - background jobs it launched: a Bash call mentioning `claude … --bg` whose result names a job
+ *   (`claude attach <id>`), as `[short, launchedAt]`; the caller drops jobs created before the
+ *   call, which is what a relaunch (`--bg --resume`) of an existing job looks like;
+ * - the PRs the CLI linked to it (`pr-link` records: URL and number only);
+ * - its names (`custom-title`, `ai-title`, `agent-name` records), latest of each, for search.
+ * Only records that start with those types are parsed, so a tool output quoting one never counts.
  * ponytail: the first scan reads every transcript once (~1 GB on a heavy machine, ~2 s).
  */
 async function spawnEdges(file, size) {
   let c = edgeCache.get(file)
-  if (!c || size < c.offset) c = { offset: 0, pending: new Map(), jobs: [] }
+  if (!c || size < c.offset) c = { offset: 0, pending: new Map(), jobs: [], prs: [], names: {} }
   if (size > c.offset) {
     c.offset = await readLinesFrom(file, c.offset, (line) => {
+      if (line.startsWith('{"type":"pr-link"') || line.startsWith('{"type":"custom-title"') || line.startsWith('{"type":"ai-title"') || line.startsWith('{"type":"agent-name"')) {
+        let r
+        try { r = JSON.parse(line) } catch { return }
+        if (r.type === 'pr-link') {
+          const m = typeof r.prUrl === 'string' && PR_URL.exec(r.prUrl)
+          if (m && !c.prs.some((p) => p.href === r.prUrl)) c.prs.push({ id: m[1], href: r.prUrl })
+          return
+        }
+        const k = { 'custom-title': 'customTitle', 'ai-title': 'aiTitle', 'agent-name': 'agentName' }[r.type]
+        const v = titleText(r[k])
+        if (v) c.names[k] = v
+        return
+      }
       if (!line.includes('--bg') && !HINT.test(line)) return
       let r
       try { r = JSON.parse(line) } catch { return }
@@ -164,7 +186,7 @@ async function spawnEdges(file, size) {
     }).catch(() => c.offset)
   }
   edgeCache.set(file, c)
-  return c.jobs
+  return c
 }
 
 /**
@@ -364,7 +386,7 @@ export async function scan(now = Date.now()) {
   // Spawn edges -> parent per launched job. A job created before the call was relaunched, not spawned.
   const parentOfJob = new Map()
   for (const t of transcripts.values()) {
-    for (const [short, at] of await spawnEdges(t.file, t.size)) {
+    for (const [short, at] of (await spawnEdges(t.file, t.size)).jobs) {
       const child = jobShort.get(short)
       const parent = agentIdOf(t.sid)
       const created = Date.parse(child?.createdAt) || 0
@@ -454,10 +476,17 @@ export async function scan(now = Date.now()) {
       errorReason: apiError ? (limit || retrying(reg, schedApiError ? apiErrorReason(j.detail) : f.apiErrorReason))
         : neverRan ? `Couldn't start: ${String(j.detail || 'the job failed to launch').replace(/\b([0-9a-f]{8})-[0-9a-f-]{27}\b/g, '$1…').slice(0, 120)}` : undefined,
       waitingOn: (isLive && currentWait(f?.evidence, now)) || currentWait(sched, now),
-      prs: (Array.isArray(j.children) ? j.children : [])
+      prs: withLinked((Array.isArray(j.children) ? j.children : [])
         .filter((c) => c?.kind === 'pr' && typeof c.href === 'string' && /^https:\/\/github\.com\//.test(c.href))
-        .map((c) => ({ id: String(c.id ?? ''), href: c.href })),
+        .map((c) => ({ id: String(c.id ?? ''), href: c.href })), current && edgeCache.get(current.file)?.prs),
+      // What it is asking for, and the scheduler's suggested reply: short machine-written strings.
+      ask: typeof j.needs === 'string' && j.needs.trim() ? {
+        needs: j.needs.replace(/\s+/g, ' ').trim().slice(0, 400),
+        suggestedReply: typeof j.suggestedReply === 'string' ? j.suggestedReply.trim().slice(0, 4000) : '',
+      } : null,
       resume: neverRan ? null : `claude attach ${j.short}`,
+      // Server-private (not in the API): the conversation a fork would copy, and its folder.
+      fork: current ? { sid: current.sid, cwd: meta.cwd || f?.cwd || j.cwd || null } : null,
       neverStarted: neverRan,
       // Server-private (not in the API): where a fleet message would go and where its receipt shows.
       inbox: liveEntry?.inbox || null,
@@ -514,8 +543,9 @@ export async function scan(now = Date.now()) {
       needsUserReason: cutOff || (toolNeedsUser ? undefined : reg.needsUserReason),
       prompt: cutOff && !toolNeedsUser ? null : (toolNeedsUser && f.evidence.prompt) || reg.prompt || null,
       waitingOn: isLive ? currentWait(f.evidence, now) : null,
-      prs: [],
+      prs: withLinked([], edgeCache.get(t.file)?.prs),
       resume: `claude --resume ${t.sid}`,
+      fork: { sid: t.sid, cwd: meta.cwd || f.cwd || liveEntry?.cwd || null },
       inbox: liveEntry?.inbox || null,
       transcriptFile: t.file,
       promptAt: f.promptAt,
@@ -526,5 +556,16 @@ export async function scan(now = Date.now()) {
   }
   // Counted, not listed: which files is nobody's business but the user's terminal.
   facts.unreadable = [...transcripts.values()].filter((t) => metas.get(t.sid)?.unreadable).length
+  // Conversation search (names and titles only, never prompt text): every transcript, resting or
+  // superseded ones included, pointing at the agent it is part of.
+  facts.titles = [...transcripts.values()].map((t) => {
+    const m = metas.get(t.sid) || {}
+    const n = edgeCache.get(t.file)?.names || {}
+    const j = ownerJob(t.sid)
+    return {
+      id: agentIdOf(t.sid), sid: t.sid, at: t.mtime, project: projectOf(m.cwd || j?.originCwd || j?.cwd),
+      names: [...new Set([j?.name, n.agentName, n.customTitle, m.customTitle, n.aiTitle, m.aiTitle].map(titleText).filter(Boolean))],
+    }
+  }).filter((x) => x.names.length)
   return facts
 }

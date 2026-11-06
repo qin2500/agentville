@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+// Fake `claude` for start / stop / fork tests (AGENTVILLE_CLAUDE_BIN points here). Never a real CLI.
+// It records { argv, cwd, at } to $AGENTVILLE_FAKE_CLAUDE_LOG and acts on the fake Claude home only:
+//   --bg …            writes <AGENTVILLE_CLAUDE_HOME>/jobs/<short>/state.json for a new working job and
+//                     prints "backgrounded · <short>" like the real CLI;
+//   stop <short>      marks that fake job stopped and removes its live-session entry.
+// It refuses to run unless AGENTVILLE_CLAUDE_HOME is set and AGENTVILLE_TEST=1. FAKE_CLAUDE_FAIL=1 exits 2.
+const fs = process.getBuiltinModule('node:fs')
+const path = process.getBuiltinModule('node:path')
+const crypto = process.getBuiltinModule('node:crypto')
+const argv = process.argv.slice(2)
+const home = process.env.AGENTVILLE_CLAUDE_HOME
+if (!home || process.env.AGENTVILLE_TEST !== '1') { process.stderr.write('fake claude: not under test\n'); process.exit(3) }
+if (process.env.AGENTVILLE_FAKE_CLAUDE_LOG) fs.appendFileSync(process.env.AGENTVILLE_FAKE_CLAUDE_LOG, JSON.stringify({ cli: 'claude-bg', argv, cwd: process.cwd(), at: Date.now() }) + '\n')
+if (process.env.FAKE_CLAUDE_FAIL === '1') { process.stderr.write('fake claude: failing on purpose\n'); process.exit(2) }
+const now = new Date().toISOString()
+if (argv[0] === 'stop') {
+  const file = path.join(home, 'jobs', argv[1] || 'x', 'state.json')
+  const s = JSON.parse(fs.readFileSync(file, 'utf8'))
+  fs.writeFileSync(file, JSON.stringify({ ...s, state: 'stopped', tempo: 'idle', updatedAt: now }))
+  // Its process ends, so it leaves the live-session registry.
+  const reg = path.join(home, 'sessions')
+  for (const n of fs.existsSync(reg) ? fs.readdirSync(reg) : []) {
+    try { if (JSON.parse(fs.readFileSync(path.join(reg, n), 'utf8')).sessionId === s.sessionId) fs.rmSync(path.join(reg, n)) } catch { /* not ours */ }
+  }
+  process.stdout.write(`Stopped ${argv[1]}\n`)
+  process.exit(0)
+}
+if (argv.includes('--bg')) {
+  const sessionId = crypto.randomUUID()
+  const short = sessionId.slice(0, 8)
+  const name = argv.find((a) => a.startsWith('--name='))?.slice(7) || 'New agent'
+  const dir = path.join(home, 'jobs', short)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ sessionId, resumeSessionId: sessionId, name, cwd: process.cwd(), state: 'working', tempo: 'active', createdAt: now, updatedAt: now, children: [] }))
+  process.stdout.write(`backgrounded · ${short}\n  claude attach ${short}    open it\n`)
+  process.exit(0)
+}
+process.stderr.write(`fake claude: unexpected arguments\n`)
+process.exit(4)
