@@ -463,8 +463,10 @@ export function createVillage(app) {
     // The terminal view saves the camera on the way in and puts it back on the way out.
     camera: () => (tween ? { x: tween.x1, y: tween.y1, z: zoom } : { x: cam.x, y: cam.y, z: zoom }), // a pan in flight counts as done
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
-    debug: () => ({ zoom, iso: isoOn(), cam: { ...cam }, clusters, badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
+    debug: () => ({ zoom, iso: isoOn(), cam: { ...cam }, clusters, badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
       town: W?.town, square: W?.square, quiet, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
-      ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), items: W?.items.map(it => ({ id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, village: it.village.name, kind: it.kind, building: it.building, look: it.look })) }),
+      ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), depthCheck: () => (renderer && artState === 'ready' ? renderer.depthCheck() : []),
+      // Footprint tiles of each item that aren't land (0 = it stands on the island).
+      items: W?.items.map(it => { let wet = 0; for (let j = it.y; j < it.y + it.h; j++) for (let i = it.x; i < it.x + it.w; i++) if (!W.land.has(`${i},${j}`)) wet++; return { id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, village: it.village.name, kind: it.kind, building: it.building, look: it.look, wet }; }) }),
   };
 }

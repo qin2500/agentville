@@ -5,7 +5,7 @@
 //   createRenderer  the sprite renderer (Ninja Adventure, CC0). village.js falls back to its own
 //                   procedural drawing of the same layout if the sheets don't load.
 import { store } from './ui.js';
-import { isoBuilding } from './iso.js';
+import { isoBuilding, isoExtent } from './iso.js';
 
 const BASE = `${import.meta.env.BASE_URL}assets/ninja-adventure/`;
 export const T = 16;
@@ -68,7 +68,49 @@ export const agentOffset = (v, iso) => pointOffset(v.x ?? v.door, v.y ?? v.base 
 export function isoItem(it, lit) {
   it.doorX ??= R[it.look][5];
   const b = isoBuilding(it, T, lit), [ox, oy] = isoP(it.x * T, it.y * T);
-  return { ...b, ox, oy, x: ox + b.dx, y: oy + b.dy, depth: isoP((it.x + it.w / 2) * T, (it.y + it.h / 2) * T)[1] };
+  return { ...b, ox, oy, x: ox + b.dx, y: oy + b.dy };
+}
+/**
+ * Painter's order for the iso view. Each drawable has a ground footprint (fx0, fy0)–(fx1, fy1) in world
+ * px (a point for anything standing upright: a villager's feet, a lamp's foot) and a screen rect
+ * (sx0, sy0)–(sx1, sy1) in view px. Wherever two screen rects overlap, the one further back on the
+ * ground is drawn first: wholly west of or north of the other (the viewer looks from the south-east).
+ * Buildings are boxes, so a villager in its yard sorts in front of the house and one behind a house
+ * sorts behind it, whatever their screen y. A depth-first topological sort keeps those pairs; anything
+ * else keeps the plain (x + y) order. Returns the list in draw order; each item's `occludes` lists the
+ * overlapping things it hides (they were drawn before it).
+ */
+export function isoSort(list) {
+  const n = list.length;
+  for (const d of list) { d.k = d.fx0 + d.fx1 + d.fy0 + d.fy1; d.occludes = null; }
+  list.sort((a, b) => a.k - b.k);
+  const behind = (a, b) => { // is a behind b?
+    const aBack = a.fx1 <= b.fx0 || a.fy1 <= b.fy0, bBack = b.fx1 <= a.fx0 || b.fy1 <= a.fy0;
+    return aBack !== bBack ? aBack : a.k < b.k;
+  };
+  const before = Array.from({ length: n }, () => []); // before[i]: what must be drawn before list[i]
+  const byX = list.map((_, i) => i).sort((i, j) => list[i].sx0 - list[j].sx0);
+  for (let p = 0; p < n; p++) {
+    const i = byX[p], a = list[i];
+    for (let q = p + 1; q < n; q++) {
+      const j = byX[q], b = list[j];
+      if (b.sx0 >= a.sx1) break;
+      if (b.sy0 >= a.sy1 || a.sy0 >= b.sy1) continue;
+      const [back, front] = behind(a, b) ? [i, j] : [j, i];
+      before[front].push(back);
+      if (list[front].it && list[back].vd) (list[front].occludes ||= []).push(list[back]);
+    }
+  }
+  const state = new Uint8Array(n), out = [];
+  const visit = i => {
+    if (state[i]) return; // done, or on the stack (a cycle: leave it where it is)
+    state[i] = 1;
+    for (const j of before[i]) visit(j);
+    state[i] = 2;
+    out.push(list[i]);
+  };
+  for (let i = 0; i < n; i++) visit(i);
+  return out;
 }
 /** The box a building covers on screen, in view px: [x, y, w, h]. */
 export function itemBox(it, iso) {
@@ -294,6 +336,10 @@ function placeVillage(W, v, S, queue, grow, now) {
     W.items.push(it);
     return it;
   };
+  // A saved lot belongs to the neighbourhood that saved it. An agent whose project changed (renamed,
+  // moved, regrouped) would otherwise be drawn at its old lot, which may be far outside today's town,
+  // out at sea: it gets a new lot here instead.
+  for (const q of queue) if (S.pos[q[0]] && S.pos[q[0]][5] !== name) delete S.pos[q[0]];
   // Saved items first; then hold the ground of saved items absent today (for HOLD_MS, then it is
   // freed); then new items take the first free fit. Nothing ever moves.
   const ids = new Set(queue.map(q => q[0]));
@@ -351,7 +397,9 @@ function route(W, from, isGoal, box, aim, avoid) {
 // Streets: a ring road round every block (neighbours' rings make one 2-wide street) and a 2-wide road
 // from each block to the square. Lanes: every door and each neighbourhood square join a street.
 function buildRoads(W) {
-  const rects = [SQUARE, ...W.villages.map(v => v.block)];
+  // The town spans every block, the square, and every lot (a lot annexed outside its block when the
+  // block was hemmed in included), so the land always reaches under every building.
+  const rects = [SQUARE, ...W.villages.map(v => v.block), ...W.items.map(it => ({ x: it.x, y: it.y, w: it.w + 1, h: it.h + it.yard }))];
   const x0 = Math.min(...rects.map(r => r.x)), y0 = Math.min(...rects.map(r => r.y));
   const x1 = Math.max(...rects.map(r => r.x + r.w)), y1 = Math.max(...rects.map(r => r.y + r.h));
   W.town = [x0 - 1, y0 - 1, x1, y1]; // inclusive tiles, ring roads included
@@ -371,7 +419,7 @@ function buildRoads(W) {
     for (const [x, y] of route(W, ring, (x, y) => inRect(SQUARE, x, y), W.box, sq, W.inBlock)) for (const [a, c] of [[0, 0], [1, 0], [0, 1], [1, 1]]) if (!W.inBlock.has(key(x + a, y + c))) street(key(x + a, y + c));
   }
   const lane = (v, from, aim) => {
-    const b = v.block, vb = [b.x - 2, b.y - 2, b.x + b.w + 1, b.y + b.h + 1];
+    const b = v.block, vb = [Math.min(b.x, from[0]) - 2, Math.min(b.y, from[1]) - 2, Math.max(b.x + b.w, from[0]) + 1, Math.max(b.y + b.h, from[1]) + 1];
     for (const [x, y] of route(W, [from], (x, y) => inRect(v.plaza, x, y) || (W.path.has(key(x, y)) && Math.hypot(x - from[0], y - from[1]) > 2), vb, aim)) W.path.add(key(x, y));
   };
   for (const v of W.villages) { // the square's own lane to its ring, out through the side nearest the town square
@@ -501,17 +549,22 @@ function scatter(W) {
 }
 
 // ---------------- who stands where (every poll; cheap) ----------------
-// The yard: two front rows of fixed spots, up to 6 per home; stalled agents are placed first so their
-// badges get one. A spot a neighbour's crew already stands on is skipped.
-const YARD = [28, 44].flatMap(y => [-32, -54, 54, -76, 76].map(x => [x, y]));
+// The yard: a row of fixed spots in the home's yard row (the tile row in front of it), up to 6 per home;
+// stalled agents are placed first so their badges get one. A spot a neighbour's crew or doorstep
+// already takes is skipped, and so is one off the land or on a building's footprint: that row used to
+// sit a tile further out, inside the next lot's house, so in the 2.5D view crews stood on its roof.
+const YARD = [-32, -54, 54, -76, 76].map(x => [x, 12]);
 const YARD_CAP = 6;
 export function placeAgents(W, agents, byId, seenIdx) {
   const homeById = new Map(W.items.filter(it => it.kind === 'home').map(it => [it.agentId, it]));
   const prItem = new Map(W.items.filter(it => it.kind === 'pr').map(it => [`${it.village.name}#${it.pr}`, it]));
   const homeOf = a => { for (let x = a, g = 0; x && g < 50; x = byId.get(x.parentId), g++) { const h = homeById.get(x.id); if (h) return h; } return null; };
   const vill = new Map(), crews = new Map(), yard = new Map(), crowd = new Map();
-  const taken = [];
+  // Every doorstep is kept for its own agent, so a neighbour's crew never stands on it.
+  const taken = W.items.filter(it => it.kind === 'home').map(it => [it.x * T + R[it.look][5], (it.y + it.h) * T + 12]);
   const free = (x, y) => !taken.some(([a, b]) => Math.abs(a - x) < 20 && Math.abs(b - y) < 14);
+  // Feet (x, y) on open ground: land, and not on any building's footprint (5 px either side of the feet).
+  const ground = (x, y) => [x - 5, x + 5].every(px => { const k = key(Math.floor(px / T), Math.floor((y - 2) / T)); return W.land.has(k) && !W.fp.has(k); });
   const rank = { stalled: 0, waiting: 1, building: 2, resting: 3 };
   for (const a of [...agents].sort((x, y) => rank[x.bucket] - rank[y.bucket] || (seenIdx.get(x.id) ?? 0) - (seenIdx.get(y.id) ?? 0))) {
     const home = homeOf(a);
@@ -525,16 +578,18 @@ export function placeAgents(W, agents, byId, seenIdx) {
     // Builders on a live PR work its scaffold (up to 4 per site).
     const site = a.bucket === 'building' && (a.prs || []).map(p => prItem.get(`${home.village.name}#${p.id}`) || prItem.get(`${a.project}#${p.id}`)).find(it => it?.building);
     const n = site ? crews.get(site.id) || 0 : 0;
-    if (site && n < 4) {
+    // Its spots: either side of the front, then either side of the walls (the lot's side gaps).
+    const sx = site && site.x * T, sb = site && (site.y + site.h) * T;
+    const siteSpot = site && n < 4 && [[-14, 10, 3], [site.w * T - 2, 10, 2], [-14, -6, 3], [site.w * T - 2, -6, 2]].find(([dx, dy]) => free(sx + dx + 8, sb + dy) && ground(sx + dx + 8, sb + dy));
+    if (siteSpot) {
       crews.set(site.id, n + 1);
-      const sx = site.x * T, sb = (site.y + site.h) * T, spot = [[-14, 10, 3], [site.w * T - 2, 10, 2], [12, 24, 3], [site.w * T - 28, 24, 2]][n];
-      Object.assign(v, { x: sx + spot[0] + 8, y: sb + spot[1], dir: spot[2], pose: 'hammer', site });
+      Object.assign(v, { x: sx + siteSpot[0] + 8, y: sb + siteSpot[1], dir: siteSpot[2], pose: 'hammer', site });
     } else if (own && !v.sub) {
       Object.assign(v, { x: door, y: base + 12, dir: 0, pose: a.bucket === 'waiting' ? 'sit' : a.bucket === 'building' ? 'hammer' : 'stand' });
       if (v.pose === 'hammer') Object.assign(v, { x: door - 4, dir: 3, block: [door + 5, base - 1] });
     } else {
       const k = yard.get(home.id) || 0;
-      const spot = k < YARD_CAP && YARD.find(([sx, sy]) => sy < 16 * (home.yard + 1) && free(v.door + sx, v.base + sy)); // a 1-row yard has the front row only
+      const spot = k < YARD_CAP && YARD.find(([sx, sy]) => free(v.door + sx, v.base + sy) && ground(v.door + sx, v.base + sy));
       if (!spot) { v.crowd = true; crowd.set(home.id, (crowd.get(home.id) || 0) + 1); vill.set(a.id, v); continue; }
       yard.set(home.id, k + 1);
       const [sx, sy] = spot;
@@ -687,7 +742,15 @@ function createRenderer(IMG) {
     // Each upright prop's iso offset (it stands on the middle of its bottom edge), and the wild ones in
     // iso draw order (by where their feet land on screen).
     for (const p of W.props) p.io = pointOffset(p.x + R[p.r][3] / 2, p.base, true);
-    W.wildIso = [...W.wild].sort((a, b) => a.base + a.io[1] - b.base - b.io[1]);
+    // Wild trees and bushes that could overlap a building on screen join the iso depth sort; the rest
+    // are drawn first, in order of where their feet land.
+    const rects = W.items.filter(it => it.kind === 'home' || it.kind === 'pr').map(it => { const [ox, oy] = isoP(it.x * T, it.y * T), e = isoExtent(it, T); return [ox + e[0], oy + e[1], ox + e[2], oy + e[3]]; });
+    for (const p of W.wild) {
+      const x = p.x + p.io[0], y = p.y + p.io[1], w = R[p.r][3], h = R[p.r][4];
+      p.nearBuilding = rects.some(r => x < r[2] && x + w > r[0] && y < r[3] && y + h > r[1]);
+    }
+    W.wildIso = W.wild.filter(p => !p.nearBuilding).sort((a, b) => a.base + a.io[1] - b.base - b.io[1]);
+    W.wildNear = W.wild.filter(p => p.nearBuilding);
   }
   // In iso the ground is baked without anything that stands up (wild trees and fences are drawn upright).
   function chunkAt(cx, cy, iso) {
@@ -763,7 +826,7 @@ function createRenderer(IMG) {
   }
 
   // ---------- frame ----------
-  let smoke = [], leaves = [], lastT = 0, veil = null, walkers = [], flagsDrawn = [], lastView = null;
+  let smoke = [], leaves = [], lastT = 0, veil = null, walkers = [], flagsDrawn = [], lastView = null, drawOrder = [];
   // f: { ctx, k (world→canvas scale), vx, vy, bw, bh (the view, in view px), zoom, t, night, still,
   //      agents (vill Map), selected, cursor, iso }. View px are world px in the top-down view and
   //      projected px (isoP) in the isometric one; everything returned (hits, badges) is in view px.
@@ -792,10 +855,18 @@ function createRenderer(IMG) {
     const inView = (x, y, w, h) => x + w > vx && x < vx + bw && y + h > vy && y < vy + bh;
     if (iso) for (const p of W.wildIso) { const x = p.x + p.io[0], y = p.y + p.io[1]; if (inView(x, y, R[p.r][3], R[p.r][4])) blit(ctx, p.r, x, y); }
     const list = [];
+    // In iso every drawable also gets its ground footprint (fx0, fy0, fx1, fy1: world px; a point for
+    // anything upright) and screen rect (sx0, sy0, sx1, sy1: view px) for isoSort.
+    const pt = (d, fx, fy, sx0, sy0, sx1, sy1) => Object.assign(d, { fx0: fx, fx1: fx, fy0: fy, fy1: fy, sx0, sy0, sx1, sy1 });
+    if (iso) for (const p of W.wildNear) {
+      const x = p.x + p.io[0], y = p.y + p.io[1], w = R[p.r][3], h = R[p.r][4];
+      if (inView(x, y, w, h)) list.push(pt({ r: p.r, x, y }, p.x + w / 2, p.base, x, y, x + w, y + h));
+    }
     for (const p of W.liveProps) {
-      const [ox, oy] = iso ? p.io : [0, 0];
+      const [ox, oy] = iso ? p.io : [0, 0], w = R[p.r][3], h = R[p.r][4];
       if (!inView(p.x + ox, p.y + oy, 64, 64)) continue;
-      if (iso && p.light) list.push({ lamp: 1, x: p.x + 8 + ox, y: p.base + oy, base: p.base + oy }); // a slim post: the lantern sprite reads as a birdhouse at this angle
+      if (iso && p.light) list.push(pt({ lamp: 1, x: p.x + 8 + ox, y: p.base + oy }, p.x + w / 2, p.base, p.x + 8 + ox - 3, p.base + oy - 24, p.x + 8 + ox + 3, p.base + oy)); // a slim post: the lantern sprite reads as a birdhouse at this angle
+      else if (iso) list.push(pt(p.banner ? { ...p, x: p.x + ox, y: p.y + oy, base: p.base + oy } : { r: p.r, x: p.x + ox, y: p.y + oy }, p.x + w / 2, p.base, p.x + ox, p.y + oy - 4, p.x + ox + w, p.base + oy));
       else list.push(p.banner ? { ...p, x: p.x + ox, y: p.y + oy, base: p.base + oy } : { r: p.r, x: p.x + ox, y: p.y + oy, base: p.base + oy });
     }
     const restingIn = new Map();
@@ -804,8 +875,11 @@ function createRenderer(IMG) {
       if (it.kind !== 'home' && it.kind !== 'pr') continue;
       it.px = null; it.iso = null; // set when drawn (night lights, smoke and the zZ use them)
       if (iso) {
-        const b = isoItem(it, !!restingIn.get(it.id));
-        if (inView(b.x, b.y, b.img.width, b.img.height)) list.push({ it, b, base: b.depth });
+        // Windows glow while its agent is in, and in every home after dark.
+        const b = isoItem(it, !!restingIn.get(it.id) || (f.night > 0.5 && it.kind === 'home'));
+        if (!inView(b.x, b.y, b.img.width, b.img.height)) continue;
+        const [bx, by, bw2, bh2] = b.box;
+        list.push({ it, b, fx0: it.x * T, fy0: it.y * T, fx1: (it.x + it.w) * T, fy1: (it.y + it.h) * T, sx0: b.ox + bx, sy0: b.oy + by, sx1: b.ox + bx + bw2, sy1: b.oy + by + bh2 });
       } else if (inView(it.x * T - 16, it.y * T - 16, it.w * T + 48, it.h * T + 32)) list.push({ it, base: (it.y + it.h) * T });
     }
     const vills = [];
@@ -814,14 +888,16 @@ function createRenderer(IMG) {
       const ghost = hidden && v.a.id === f.selected;
       if (hidden && !ghost) continue;
       const d = place(v, ghost, still || v.a.id === f.selected, t);
+      d.wx = d.left + 8; d.wy = d.feet; // its feet on the ground, world px
       const [ox, oy] = agentOffset(v, iso);
       d.left += ox; d.feet += oy; d.top += oy;
       if (!inView(d.left - 30, d.feet - 60, 80, 70)) continue;
-      // On a tie a villager stands in front of its building; in iso villagers are always drawn over the
-      // buildings, so a roof in the next row never hides who is standing in a yard.
-      vills.push(d); list.push({ vd: d, base: d.feet + 0.5 + (iso ? 1e6 : 0) });
+      // On a tie a villager stands in front of its building. In iso the depth sort decides: a house
+      // nearer the viewer hides whoever stands behind it (they show through it as a silhouette).
+      vills.push(d);
+      list.push(iso ? pt({ vd: d }, d.wx, d.wy, d.left - 2, d.feet - 32, d.left + 18, d.feet + 3) : { vd: d, base: d.feet + 0.5 });
       if (v.pose === 'carry') walkers.push({ id: v.a.id, kind: 'carry', x: d.left, y: d.feet, facing: d.dir === 3 ? 'R' : d.dir === 2 ? 'L' : 'D', moving: d.moving, t });
-      if (v.block && !ghost) list.push({ r: 'block', x: v.block[0] + ox, y: v.block[1] + oy, base: v.block[1] + 12 + oy + (iso ? 1e6 : 0) });
+      if (v.block && !ghost) list.push(iso ? pt({ r: 'block', x: v.block[0] + ox, y: v.block[1] + oy }, d.wx + 9, d.wy + 0.5, v.block[0] + ox, v.block[1] + oy, v.block[0] + ox + 16, v.block[1] + oy + 16) : { r: 'block', x: v.block[0] + ox, y: v.block[1] + oy, base: v.block[1] + 12 + oy });
     }
     // Strollers: a chicken in each neighbourhood square, a cat on the town square.
     const strollers = W.villages.map(v => ['chicken', `chicken:${v.name}`, { x: v.plaza.x * T, y: (v.plaza.y + 0.4) * T, w: (v.plaza.w - 1) * T, h: (v.plaza.h - 1) * T }]);
@@ -831,15 +907,16 @@ function createRenderer(IMG) {
       if (!inView(x, y, 16, 16)) continue;
       // Both sheets face right; a stroller heading left is mirrored. The walk cycle only steps while it moves.
       const fr = !still && s.moving ? Math.floor(t * 6) % 2 : 0;
-      list.push({ an, x, y, flip: !s.right, fr, base: y + 14 });
+      list.push(iso ? pt({ an, x, y, flip: !s.right, fr }, s.x + 8, s.y + 14, x, y, x + 16, y + 16) : { an, x, y, flip: !s.right, fr, base: y + 14 });
       walkers.push({ id, kind: an, x, y, facing: s.right ? 'R' : 'L', moving: s.moving && !still, t });
     }
-    list.sort((a, b) => a.base - b.base);
+    const order = iso ? isoSort(list) : list.sort((a, b) => a.base - b.base);
+    drawOrder = iso ? order : [];
     const pops = [], hits = [], badges = [], resting = new Map();
     for (const v of f.agents.values()) if (v.a.bucket === 'resting' && v.own) resting.set(v.home.id, (resting.get(v.home.id) || 0) + 1);
-    for (const d of list) {
+    for (const d of order) {
       if (d.vd) drawVill(ctx, d.vd, t, f8, f, pops, badges);
-      else if (d.b) drawIsoItem(ctx, d.it, d.b, t, f, still);
+      else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
       else if (d.it) drawItem(ctx, d.it, t, f, resting.get(d.it.id) || 0, still);
       else if (d.an) { if (d.flip) { ctx.save(); ctx.translate(d.x + 16, d.y); ctx.scale(-1, 1); ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, 0, 0, 16, 16); ctx.restore(); } else ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, d.x, d.y, 16, 16); }
       else if (d.banner) drawBanner(ctx, d);
@@ -853,7 +930,7 @@ function createRenderer(IMG) {
       for (const l of leaves) ctx.drawImage(IMG.leaf, (Math.floor(t * 6 + l.s) % 6) * 12, 0, 12, 7, Math.round(l.x), Math.round(l.y), 12, 7);
     } else { smoke = []; leaves = []; }
     if (f.night > 0) drawNight(ctx, f, vills, resting);
-    for (const [x, y] of pops) ctx.drawImage(crown, x, y)
+    for (const [x, y, , d] of pops) if (!d.covered) ctx.drawImage(crown, x, y); // a crown behind a roof stays hidden
     if (f.night > 0.5) for (const it of W.items) {
       if (!resting.get(it.id) || it.px == null) continue;
       if (it.iso) ctx.drawImage(zGlyph, it.iso.ox + it.iso.ridge[0] + 6, it.iso.oy + it.iso.ridge[1] - 4);
@@ -861,7 +938,7 @@ function createRenderer(IMG) {
     }
     for (const d of vills) {
       if (d.v.a.id === f.selected) ctx.drawImage(marker, d.left + 4, d.top - 9 - (still ? 0 : Math.floor(t * 3) % 2));
-      hits.push({ id: d.v.a.id, x: d.left - 1, y: d.top, w: 18, h: d.feet - d.top + 1, cx: d.left + 8, top: d.top, badge: d.badge });
+      hits.push({ id: d.v.a.id, x: d.left - 1, y: d.top, w: 18, h: d.feet - d.top + 1, cx: d.left + 8, top: d.top, badge: d.badge, wx: d.wx, wy: d.wy });
     }
     // Badges (tier 3) in screen space at their own integer scale (at Map, village plates are DOM labels).
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -896,12 +973,13 @@ function createRenderer(IMG) {
     if (v.pose === 'sit' && !d.ghost) { blit(ctx, 'log', d.left, d.feet - 13); crop = 13; y = d.feet - 22; }
     else { ctx.fillStyle = 'rgba(16, 10, 24, 0.5)'; ctx.beginPath(); ctx.ellipse(d.left + 8, d.feet - 1, 7, 3, 0, 0, 7); ctx.fill(); }
     ctx.drawImage(rimmed(v.look, d.dir, d.row, crop, sel), d.left - 2, y - 2);
+    d.sy = y; d.crop = crop; d.sel = sel;
     ctx.globalAlpha = 1;
     if (d.ghost) return;
     const still = f.still || a.id === f.selected;
     if (v.pose === 'hammer') { const down = d.row === 4; ctx.drawImage(IMG.hammer, d.left + (down ? 14 : 10), y + (down ? 7 : -3)); if (down) ctx.drawImage(IMG.spark, (f8 % 5) * 14, 0, 14, 8, d.left + 16, y + 6, 14, 8); }
     if (v.pose === 'carry') ctx.drawImage(IMG.crate, 0, 0, 16, 15, d.left + 2, y - 9 + (still ? 0 : f8 % 2), 12, 11);
-    if (a.role === 'boss') pops.push([d.left + 3, y - 4, 'crown']);
+    if (a.role === 'boss') pops.push([d.left + 3, y - 4, 'crown', d]);
     const up = a.role === 'boss' ? 6 : 0;
     const img = a.bucket === 'stalled' ? BADGE[a.severity === 'error' ? 'error' : a.prompt ? 'click' : 'need'] : a.bucket === 'waiting' ? BADGE.wait[still ? 0 : Math.floor((t + v.phase * 3) / 3) % 2]
       : a.bucket === 'building' ? BADGE.build[d.row === 4 ? 1 : 0] : null;
@@ -913,6 +991,41 @@ function createRenderer(IMG) {
       d.top = wy + bob - Math.round(img.height * s); // the badge's resting top, in world px (tags anchor here)
       d.badge = [d.left + 8 - img.width * s / 2, wy - img.height * s, d.left + 8 + img.width * s / 2, wy];
     }
+  }
+
+  // A villager hidden behind a building shows through it as a soft silhouette (a light rim round its
+  // faded colours), only where the building covers it: so you can still see, and click, who is back there.
+  const ghosts = new Map(), alphas = new WeakMap(), mask = canvas(24, 24), mg = mask.getContext('2d');
+  function ghost(look, dir, row, crop, sel) {
+    const k = `${look}|${dir}|${row}|${crop}|${sel}`;
+    if (ghosts.has(k)) return ghosts.get(k);
+    const shape = (color, pad) => {
+      const c = canvas(16 + pad * 2, crop + pad * 2), g = c.getContext('2d');
+      for (let dy = -pad; dy <= pad; dy++) for (let dx = -pad; dx <= pad; dx++) if (Math.abs(dx) + Math.abs(dy) <= pad) g.drawImage(IMG[look], dir * 16, row * 16, 16, crop, pad + dx, pad + dy, 16, crop);
+      g.globalCompositeOperation = 'source-in'; g.fillStyle = color; g.fillRect(0, 0, c.width, c.height); return c;
+    };
+    const out = canvas(20, crop + 4), g = out.getContext('2d');
+    g.drawImage(shape(sel ? '#ffffff' : '#fff1d6', 1), 1, 1);
+    g.drawImage(shape('#3a3150', 0), 2, 2);
+    g.globalAlpha = 0.6; g.drawImage(IMG[look], dir * 16, row * 16, 16, crop, 2, 2, 16, crop); // its colours, faded
+    ghosts.set(k, out);
+    return out;
+  }
+  function drawHidden(ctx, d, b, f) {
+    if (d.ghost || d.sy == null) return;
+    const img = ghost(d.v.look, d.dir, d.row, d.crop, d.sel), x = d.left - 2, y = d.sy - 2, w = img.width, h = img.height;
+    if (mask.width < w || mask.height < h) { mask.width = Math.max(mask.width, w); mask.height = Math.max(mask.height, h); }
+    mg.globalCompositeOperation = 'source-over'; mg.clearRect(0, 0, mask.width, mask.height);
+    mg.drawImage(img, 0, 0);
+    mg.globalCompositeOperation = 'destination-in'; mg.drawImage(b.img, b.x - x, b.y - y);
+    ctx.globalAlpha = d.sel || d.v.a.id === f.cursor ? 0.9 : 0.62;
+    ctx.drawImage(mask, 0, 0, w, h, x, y, w, h);
+    ctx.globalAlpha = 1;
+    d.covered = true;
+    // Hidden when the building covers its head (its crown, if any, stays hidden with it).
+    if (!alphas.has(b.img)) alphas.set(b.img, b.img.getContext('2d').getImageData(0, 0, b.img.width, b.img.height).data);
+    const al = alphas.get(b.img), hx = Math.floor(d.left + 8 - b.x), hy = Math.floor(d.sy + 3 - b.y);
+    if (hx >= 0 && hy >= 0 && hx < b.img.width && hy < b.img.height && al[(hy * b.img.width + hx) * 4 + 3]) d.hidden = true;
   }
 
   function drawItem(ctx, it, t, f, restingN, still) {
@@ -980,10 +1093,19 @@ function createRenderer(IMG) {
     for (let i = 0; i < 3; i++) { ctx.fillStyle = i % 2 ? '#c98a4a' : '#e0a868'; ctx.fillRect(mx, my - 6 + i * 2, 12, 2); }
     blit(ctx, 'crate', mx - 2, my - 22);
   }
-  function stepFx(t, W, f) {
+  function stepFx(t, W, f, resting) {
     const dt = Math.min(0.5, Math.max(0, t - lastT)); lastT = t;
-    for (const v of f.agents.values()) if (v.own && v.pose === 'hammer' && v.home.px != null && Math.random() < dt * 0.9) smoke.push({ x: v.home.px + R[v.home.look][3] * 0.62, y: v.home.py + 8, born: t, a: 0.8, f: 0 });
-    for (const it of W.items) if (it.kind === 'pr' && it.building && it.px != null && Math.random() < dt * 0.25) smoke.push({ x: it.px + Math.random() * R[it.look][3], y: it.py + R[it.look][4] - 4, born: t, a: 0.5, f: 0 });
+    // In iso smoke rises from the chimney (or the ridge of a house without one).
+    const flue = it => { const b = it.iso, p = b.chimney || b.ridge; return [b.ox + p[0], b.oy + p[1] - 4]; };
+    for (const v of f.agents.values()) if (v.own && v.pose === 'hammer' && v.home.px != null && Math.random() < dt * 0.9) {
+      if (v.home.iso) { const [x, y] = flue(v.home); smoke.push({ x, y, born: t, a: 0.8, f: 0 }); } else smoke.push({ x: v.home.px + R[v.home.look][3] * 0.62, y: v.home.py + 8, born: t, a: 0.8, f: 0 });
+    }
+    for (const it of W.items) {
+      if (it.px == null) continue;
+      if (it.kind === 'pr' && it.building && Math.random() < dt * 0.25) {
+        if (it.iso) { const [bx, by, bw, bh] = it.iso.box; smoke.push({ x: it.iso.ox + bx + Math.random() * bw, y: it.iso.oy + by + bh * 0.7, born: t, a: 0.5, f: 0 }); } else smoke.push({ x: it.px + Math.random() * R[it.look][3], y: it.py + R[it.look][4] - 4, born: t, a: 0.5, f: 0 });
+      } else if (it.iso?.chimney && resting.get(it.id) && Math.random() < dt * 0.12) { const [x, y] = flue(it); smoke.push({ x, y, born: t, a: 0.45, f: 0 }); } // someone's home: the fire is lit
+    }
     smoke = smoke.filter(p => { const age = t - p.born; p.y -= dt * 10; p.x += dt * 4; p.f = Math.min(2, Math.floor(age / 1.2)); p.a = Math.max(0, 0.75 - age * 0.2); return age < 3.6 && age >= 0; });
     const shown = smoke.filter(p => p.x > f.vx - 32 && p.x < f.vx + f.bw + 32 && p.y > f.vy - 32 && p.y < f.vy + f.bh + 32);
     if (shown.length > 6) { const drop = new Set(shown.slice(0, shown.length - 6)); smoke = smoke.filter(p => !drop.has(p)); } // at most 6 puffs on screen
@@ -1031,8 +1153,8 @@ function createRenderer(IMG) {
     // Every home's windows glow at night, not just the ones whose agent is in.
     for (const it of W.items) {
       if (it.kind !== 'home' || it.px == null || resting.get(it.id)) continue;
-      if (it.iso) for (const [x, y] of it.iso.windows) ctx.fillRect(it.iso.ox + x - 2, it.iso.oy + y - 2, 3, 4);
-      else for (const [wa, wb, wc, we] of R[it.look][6]) ctx.fillRect(it.px + wa + 1, it.py + wb + 1, wc - 2, we - 2);
+      if (it.iso) continue; // iso homes are drawn with their windows lit after dark
+      for (const [wa, wb, wc, we] of R[it.look][6]) ctx.fillRect(it.px + wa + 1, it.py + wb + 1, wc - 2, we - 2);
     }
     ctx.globalCompositeOperation = 'source-over';
   }
@@ -1048,5 +1170,21 @@ function createRenderer(IMG) {
       return { ...fl, opaque, matched };
     });
   }
-  return { prepare, draw, BADGE, debug: () => ({ walkers, flags: flagsDrawn }), flagCheck };
+  // e2e only (?debug), iso: every villager whose feet land on a building's drawn pixels must have been
+  // drawn before that building (it is behind it), never after (standing on its roof). Returns offenders.
+  function depthCheck() {
+    const out = [];
+    drawOrder.forEach((d, i) => {
+      if (!d.b) return;
+      const data = d.b.img.getContext('2d').getImageData(0, 0, d.b.img.width, d.b.img.height).data;
+      drawOrder.forEach((o, j) => {
+        if (!o.vd || o.vd.ghost) return;
+        const x = Math.floor(o.vd.left + 8 - d.b.x), y = Math.floor(o.vd.feet - 1 - d.b.y);
+        if (x < 0 || y < 0 || x >= d.b.img.width || y >= d.b.img.height || !data[(y * d.b.img.width + x) * 4 + 3]) return;
+        if (j > i) out.push({ villager: o.vd.v.a.id, building: d.it.id });
+      });
+    });
+    return out;
+  }
+  return { prepare, draw, BADGE, debug: () => ({ walkers, flags: flagsDrawn, hidden: drawOrder.filter(d => d.vd?.hidden).map(d => d.vd.v.a.id) }), flagCheck, depthCheck };
 }

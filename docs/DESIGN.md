@@ -268,6 +268,30 @@ from a house with a Building resident (4 frames, 2 fps). A day/night tint follow
   above the bubble (static under reduced motion), and the villager freezes (§7).
 - Hover: cursor pointer; tooltip-style name tag.
 
+### The 2.5D (isometric) view
+
+The default view. Same layout as the top-down one (world.js), projected 2:1 (`isoP`).
+
+- **Depth:** everything upright (villagers, lamps, banners, strollers, trees near houses) is a point
+  on the ground; every building is a box on its footprint. `isoSort` draws whatever is further back
+  first wherever two things overlap on screen (wholly west or north of the other, since the viewer
+  looks from the south-east), so a villager in its yard is in front of its house and one behind a
+  house is behind it. A villager a house hides shows through it as a soft silhouette, only where the
+  house covers it, and stays clickable. Badges and tags are UI and always sit on top.
+- **Placement:** a villager only ever stands on land and off every footprint, in its home's yard row
+  (the tile row in front of it). A saved lot is only reused by the neighbourhood that saved it, and the
+  town (so the island) spans every lot, so no building ever stands in the sea.
+- **Buildings (iso.js):** modelled as faces (walls, gable ends, gable/hip/spire/dome roofs, chimney,
+  steps, cupola) and rasterised per pixel with a depth buffer, with materials in screen space so
+  every course and frame lands on whole pixels; 1px ink round the silhouette and under every overlap.
+  Each building's look comes from a hash of its id (wall finish, roof material, ridge direction, hip,
+  chimney, shutters, window boxes, door lamp), so it never changes between visits. Roofs carry the
+  neighbourhood accent, toned toward earth so badges stay the loudest thing. Homes are wood/plaster
+  with a flag; finished PRs are stone/brick workshops with slate roofs and a hanging sign in the
+  accent; live PRs are framed sites; the boss's hall is two storeys with a front gable, round window,
+  double door, lamps, and a cupola with a gold finial. Windows glow when the agent is in and after
+  dark. Each building is drawn once per look and cached.
+
 ### Rendering budget
 
 - Render loop at **8 fps** only while something animates and the canvas is visible; render on

@@ -72,6 +72,79 @@ test('the isometric (2.5D) view: same village, villagers still clickable, and th
   await page.evaluate(() => localStorage.removeItem('va.iso'))
 })
 
+// The 2.5D view's depth and placement: nobody stands on a roof, nobody stands inside a building, no
+// building stands in the sea. depthCheck() lists every villager whose feet land on a building's drawn
+// pixels yet was drawn after it (i.e. on top of its roof); it must be empty at every zoom.
+async function checkIsoPlacement(page) {
+  const d = await page.evaluate(() => { const d = window.villageDebug(); return { items: d.items, hits: d.hits, depth: d.depthCheck(), iso: d.iso } })
+  expect(d.iso).toBe(true)
+  expect(d.depth, 'villagers drawn on top of a roof').toEqual([])
+  for (const it of d.items) expect(it.wet, `${it.id} stands in the water`).toBe(0)
+  const fps = d.items.filter((it) => it.kind !== 'decor')
+  for (const h of d.hits) {
+    const inside = fps.find((it) => h.wx > it.x * 16 && h.wx < (it.x + it.w) * 16 && h.wy > it.y * 16 && h.wy < (it.y + it.h) * 16)
+    expect(inside?.id, `${h.id} stands inside a building`).toBeUndefined()
+  }
+  return d
+}
+
+test('the isometric view: nobody on a roof or inside a building, every building on land', async ({ page }) => {
+  await page.goto('/?view=iso&night=0&debug')
+  await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
+  await page.waitForTimeout(400)
+  const d = await checkIsoPlacement(page)
+  expect(d.hits.length).toBeGreaterThan(5)
+  for (let i = 0; i < 2; i++) {
+    await page.locator('#cv').focus()
+    await page.keyboard.press('+')
+    await page.waitForTimeout(300)
+    await checkIsoPlacement(page)
+  }
+  // A villager behind a house is drawn behind it (showing through as a silhouette), and is still clickable.
+  const hidden = await page.evaluate(() => window.villageDebug().hidden)
+  if (hidden.length) {
+    const p = await villagerPoint(page, hidden[0])
+    if (p) {
+      await page.mouse.click(p.x, p.y)
+      await expect(row(page, hidden[0])).toHaveAttribute('aria-current', 'true')
+    }
+  }
+  await page.screenshot({ path: `${SHOTS}/desktop-village-iso-close.png` })
+})
+
+test('a saved lot from another neighbourhood is not reused: the home moves into its own block, on land', async ({ page }) => {
+  // An agent whose project changed keeps its id; its old lot (here far out to sea) must not be reused.
+  const id = claudeId('leadCi')
+  await page.addInitScript((id) => {
+    if (sessionStorage.getItem('seeded')) return
+    sessionStorage.setItem('seeded', '1')
+    localStorage.setItem('va.world5', JSON.stringify({ blocks: { 'renamed-away': { x: 70, y: 70, w: 10, h: 8, acc: 0, seen: Date.now() } }, pos: { [`home:${id}`]: [72, 72, 4, 3, 1, 'renamed-away'] } }))
+  }, id)
+  await page.goto('/?view=iso&night=0&debug')
+  await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
+  const d = await page.evaluate(() => window.villageDebug())
+  const it = d.items.find((i) => i.id === `home:${id}`)
+  const b = d.villages.find((v) => v.name === it.village).block
+  expect(it.x >= b.x && it.y >= b.y && it.x + it.w <= b.x + b.w && it.y + it.h <= b.y + b.h, 'inside its own block').toBe(true)
+  await checkIsoPlacement(page)
+})
+
+test('big home in the isometric view: depth and land hold at every zoom', async ({ browser }) => {
+  const s = await startServer(prepareBigHome(tmpDir('village-big-iso'), 160), nextPort())
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
+  await startDocked(page)
+  try {
+    await page.goto(`${s.url}/?view=iso&night=0&debug`)
+    await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
+    await page.waitForTimeout(400)
+    for (let i = 0; i < 3; i++) {
+      if (i) { await page.locator('#cv').focus(); await page.keyboard.press('+'); await page.waitForTimeout(300) }
+      await checkIsoPlacement(page)
+    }
+    await page.screenshot({ path: `${SHOTS}/wide-village-iso.png` })
+  } finally { await page.close(); await s.stop() }
+})
+
 test('missing sprite sheets fall back to the procedural village', async ({ page }) => {
   await page.route('**/assets/ninja-adventure/**', (r) => r.abort())
   await page.goto('/')
