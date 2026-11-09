@@ -282,16 +282,34 @@ The default view. Same layout as the top-down one (world.js), projected 2:1 (`is
 - **Placement:** a villager only ever stands on land and off every footprint, in its home's yard row
   (the tile row in front of it). A saved lot is only reused by the neighbourhood that saved it, and the
   town (so the island) spans every lot, so no building ever stands in the sea.
-- **Buildings (iso.js):** modelled as faces (walls, gable ends, gable/hip/spire/dome roofs, chimney,
-  steps, cupola) and rasterised per pixel with a depth buffer, with materials in screen space so
-  every course and frame lands on whole pixels; 1px ink round the silhouette and under every overlap.
-  Each building's look comes from a hash of its id (wall finish, roof material, ridge direction, hip,
-  chimney, shutters, window boxes, door lamp), so it never changes between visits. Roofs carry the
-  neighbourhood accent, toned toward earth so badges stay the loudest thing. Homes are wood/plaster
-  with a flag; finished PRs are stone/brick workshops with slate roofs and a hanging sign in the
-  accent; live PRs are framed sites; the boss's hall is two storeys with a front gable, round window,
-  double door, lamps, and a cupola with a gold finial. Windows glow when the agent is in and after
-  dark. Each building is drawn once per look and cached.
+- **Buildings (iso.js):** original cozy farm-sim pixel art, drawn in code (no game's sprites, palette
+  or layouts are copied). Each building is modelled as faces (walls, gable ends, gable/hip/spire/dome
+  roofs, fascia and barge boards, chimney with a cap, porch roof on posts, steps), round solids
+  (barrels, pots, bushes, the dome) and a soft ground shadow, rasterised per pixel with a depth buffer.
+  Materials work in screen space so every course, board and frame lands on whole pixels.
+  - *Colour:* every material is a 5-tone ramp with hue shifting (shadows toward indigo, highlights
+    toward warm yellow). Light comes from the front left: south faces lit, east faces in half shade,
+    shadows fall east. The silhouette outline is a dark tint of what it outlines, never flat black; a
+    nearer face over a farther one gets a softer line. A soft contact shadow and ambient occlusion sit
+    round the footprint (kept to the front strip and 4px east, so no villager's feet land on it).
+  - *Roofs:* chunky rounded shingles, barrel clay tiles, staggered slate, layered thatch; each course
+    has a lit lip and a shadow under the next; a ridge cap; real fascia and barge boards give the roof
+    thickness; eaves overhang and shade the wall under them.
+  - *Walls:* clapboard with grain specks, cedar shakes, logs with crossed ends, fieldstone, brick,
+    plaster with dark oak framing; timber corner posts; a stone foundation course with a dark base.
+  - *Charm:* framed windows with mullions, a sky glint, louvred shutters, sills and flower boxes (they glow
+    when the agent is in and after dark); arched plank doors with a frame, step and doormat; wall lanterns; a porch on some;
+    and a few yard props from the id (garden patch with a picket fence, bench, barrels, crates, pots,
+    mailbox, bush), kept small so the villagers stay the focus.
+  - *Archetypes:* the boss's hall is a lodge (stone ground floor, timber-framed upper floor, slate roof,
+    front gable with a round window, porch, double door, lanterns, banners, cupola with a gold finial);
+    leads get a two-storey house or a cottage; subagents a cottage or a thatched hut; finished PRs are
+    stone/brick workshops with barn doors, a hanging sign in the accent, crates and barrels; the tower
+    looks stay towers; live PRs are framed sites.
+  - *Variety:* roofs carry the neighbourhood accent (so a project's houses match), warmed toward earth
+    so badges stay the loudest thing; the archetype, wall finish, paint scheme (wall, trim, shutters,
+    door), roof material, ridge direction, hip, porch and props come from a hash of the building's id,
+    so the same building always looks the same. Each building is drawn once per look and cached.
 
 ### Rendering budget
 
