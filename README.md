@@ -167,7 +167,8 @@ Nothing else goes anywhere: no analytics, no telemetry.
 this machine, or that come from another web page.
 
 **What it writes:** only its own folder, `~/.config/agentville/` (or `$XDG_CONFIG_HOME/agentville`):
-your overrides, token-spend counts, settings, logs of what it did (ids and results, never message
+your overrides, token-spend counts, settings, which agents are running (`restore.json`: ids, names,
+folders, roles and times, for Restore after crash), logs of what it did (ids and results, never message
 text or tokens) and, if you use the Account menu, your saved logins. Saved logins and their backups
 are readable only by you (files `0600`, folders `0700`). Claude Code's own login stays where Claude
 Code keeps it: the macOS Keychain (read and written with `security`, never on a command line) or
@@ -181,6 +182,9 @@ Code keeps it: the macOS Keychain (read and written with `security`, never on a 
 - **New agent**, **Stop job** and **Fork** run `claude --bg`, `claude stop` or
   `claude --resume --fork-session --bg`, after you confirm the exact command (see
   [Acting on one agent](#acting-on-one-agent)).
+- **Restore after crash** runs `claude respawn` (or, if that fails, `claude --bg --resume`) for the
+  crown and Important background jobs a reboot stopped, after you confirm the exact commands, then
+  sends each restored crown agent one fixed message (see [Restore after crash](#restore-after-crash)).
 - **Switch account** changes Claude Code's login (and, from the pool, its settings) and restarts
   running background jobs, with backups and automatic rollback.
 - **Auto-switch** does that same switch by itself when an account runs out, and tells you, with
@@ -333,8 +337,41 @@ so after you confirm a preview of every recipient and message.
 How it works: each running Claude Code session has a local message socket (the channel Claude's own
 agents use to message each other), and Agentville writes one message to each. This is an internal
 Claude Code mechanism, so an update can break it; Agentville then reports agents as unreachable
-rather than guessing. It only uses sockets owned by you, and Fleet never starts, stops or resumes an
-agent.
+rather than guessing. It only uses sockets owned by you, and apart from Restore after crash, Fleet
+never starts, stops or resumes an agent.
+
+### Restore after crash
+
+Claude Code's background jobs don't come back after a reboot or crash: its daemon logs
+`bg adopt: adopted=0 respawned=0 dead=N` and leaves them. **Restore after crash** (in the Fleet menu,
+plus a dismissible notice: "Your Mac restarted — N agents were running. Restore…") brings back the
+ones that matter.
+
+- **Which agents.** Crown agents (role boss, drawn with a crown) and agents you marked **Important**
+  (the star button in the inspector; a star then shows on the row and in the village). The role is
+  the one recorded while the agent was running: after a crash its children are dead too, so it would
+  no longer be detected as a boss. The Important mark is an override (`overrides.json`, keyed by
+  agent id, which a restart keeps).
+- **How it knows.** Each scan records the running top-level Claude agents in `restore.json` (ids,
+  names, folders, role, Important, last seen; written only when it changes, never conversation text
+  or provider settings) with the machine's boot time. When the boot time changes, the earlier boot's
+  last list is kept, which also covers Agentville being down during the crash. A job is **lost** when
+  it has no live process (neither in Claude's session registry nor in the daemon's roster), wasn't
+  stopped (`claude stop`) or removed (`claude rm`), and still has its conversation.
+- **The sheet** lists lost jobs with checkboxes (all ticked), name, project and last seen. Review
+  shows the exact commands; one confirm (one-time token, 2 minutes) restarts them one at a time, each
+  reported as Restored, Already running or Failed with a short reason. Terminal sessions that were
+  open can't be reopened from a web page; they're listed with **Copy resume command**.
+- **Crown agents decide on their workers.** Once a restored crown agent is running, it gets one fixed
+  message through the reply path (with its delivery receipt): "You were restarted after the computer
+  crashed. Check which of your sub-agents and background jobs were lost, and restart the ones you
+  still need." Nothing goes to agents that weren't restored, or to Important agents that aren't crowns.
+- **The command.** `claude respawn <job>` first: it restarts the *same* job (same id and folder, so
+  its Important mark stays attached) with the flags and provider settings Claude Code saved for it,
+  and the daemon's log shows jobs it had just counted dead after a reboot coming back under their old
+  ids. If respawn fails, the documented `claude --bg --resume <session>` runs with the job's saved
+  flags (fixed allowlist) under its saved provider settings, in its folder. Provider settings are
+  shown by key name only. No shell, at most 3 restores a minute, and the log gets ids and outcomes only.
 
 ## Development
 

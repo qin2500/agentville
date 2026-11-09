@@ -10,6 +10,9 @@ const FIELDS = {
   parentId: (v) => typeof v === 'string' && v.length <= 300, // '' = force top-level
   name: (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 80,
   hidden: (v) => typeof v === 'boolean',
+  // Important: Restore after crash brings it back (with the crown agents). Keyed, like every
+  // override, by agent id: a job's id is its first session id, which a respawn keeps.
+  important: (v) => v === true,
 }
 
 export function createStore(dir) {

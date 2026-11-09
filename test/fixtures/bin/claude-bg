@@ -4,6 +4,11 @@
 //   --bg …            writes <AGENTVILLE_CLAUDE_HOME>/jobs/<short>/state.json for a new working job and
 //                     prints "backgrounded · <short>" like the real CLI;
 //   stop <short>      marks that fake job stopped and removes its live-session entry.
+//   respawn <short>   revives that fake job under the same short: a live registry entry (pid = the
+//                     server that ran it) with a message socket in $AGENTVILLE_FLEET_SOCKET_ROOT, if set.
+//                     FAKE_RESPAWN_FAIL=1 exits 1 ("no such running session"); FAKE_RESPAWN_FAIL=<short> only for that one.
+//   --bg --resume <sid> (no --fork-session) revives the job whose session that is, the same way.
+//                     FAKE_RESUME_FAIL=1 exits 5.
 // It refuses to run unless AGENTVILLE_CLAUDE_HOME is set and AGENTVILLE_TEST=1. FAKE_CLAUDE_FAIL=1 exits 2.
 const fs = process.getBuiltinModule('node:fs')
 const path = process.getBuiltinModule('node:path')
@@ -25,6 +30,40 @@ if (argv[0] === 'stop') {
   }
   process.stdout.write(`Stopped ${argv[1]}\n`)
   process.exit(0)
+}
+function revive(short, s) {
+  const file = path.join(home, 'jobs', short, 'state.json')
+  fs.writeFileSync(file, JSON.stringify({ ...s, state: 'working', tempo: 'idle', updatedAt: now }))
+  const root = process.env.AGENTVILLE_FLEET_SOCKET_ROOT
+  const entry = { pid: process.ppid, sessionId: s.resumeSessionId || s.sessionId, kind: 'bg', jobId: short, status: 'idle', cwd: process.cwd(),
+    ...(root && { messagingSocketPath: path.join(path.resolve(root), `${short}.sock`), peerProtocol: 1 }) }
+  fs.mkdirSync(path.join(home, 'sessions'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'sessions', `${short}.json`), JSON.stringify(entry))
+}
+if (argv[0] === 'respawn') {
+  const short = argv[1] || 'x'
+  const fail = process.env.FAKE_RESPAWN_FAIL
+  if (fail === '1' || fail === short) { process.stderr.write(`No running background session ${short}\n`); process.exit(1) }
+  const file = path.join(home, 'jobs', short, 'state.json')
+  if (!fs.existsSync(file)) { process.stderr.write('no such job\n'); process.exit(1) }
+  revive(short, JSON.parse(fs.readFileSync(file, 'utf8')))
+  process.stdout.write(`Respawned ${short}\n`)
+  process.exit(0)
+}
+if (argv[0] === '--bg' && argv[1] === '--resume' && !argv.includes('--fork-session')) {
+  if (process.env.FAKE_RESUME_FAIL === '1') { process.stderr.write('fake claude: resume failing on purpose\n'); process.exit(5) }
+  const sid = argv[2]
+  for (const short of fs.readdirSync(path.join(home, 'jobs'))) {
+    let s
+    try { s = JSON.parse(fs.readFileSync(path.join(home, 'jobs', short, 'state.json'), 'utf8')) } catch { continue }
+    if (s.sessionId === sid || s.resumeSessionId === sid) {
+      revive(short, s)
+      process.stdout.write(`backgrounded · ${short}\n`)
+      process.exit(0)
+    }
+  }
+  process.stderr.write('source session not found\n')
+  process.exit(1)
 }
 if (argv.includes('--bg')) {
   const sessionId = crypto.randomUUID()

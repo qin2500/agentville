@@ -80,7 +80,7 @@ export function classify(a, now = Date.now()) {
 
 /**
  * Facts + overrides -> the `GET /api/agents` agents (hidden ones flagged, not dropped).
- * `overrides` is `{ [id]: { role?, parentId?, name?, hidden? } }`; `parentId: ''` forces top-level.
+ * `overrides` is `{ [id]: { role?, parentId?, name?, hidden?, important? } }`; `parentId: ''` forces top-level.
  * `prep` is the pending fleet prep `{ kind, at, ids }` the user marked as sent, or null.
  */
 export function build(facts, overrides = {}, now = Date.now(), prep = null) {
@@ -185,6 +185,7 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       // A launch that failed before it ran: no session exists, so there is nothing to open.
       neverStarted: a.neverStarted === true,
       hidden: o.hidden === true,
+      important: o.important === true,
       overrides: Object.keys(o).length ? o : null,
     }
   })

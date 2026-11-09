@@ -23,7 +23,7 @@ const agent = async (id) => (await get('/api/agents')).agents.find((a) => a.id =
 
 test('agents payload advertises send mode; sending is disabled in tests without a socket root', async () => {
   const { fleet } = await get('/api/agents')
-  assert.deepEqual(fleet, { mode: 'send', blocked: 'Sending is disabled in tests', last: null, pending: null })
+  assert.deepEqual(fleet, { mode: 'send', blocked: 'Sending is disabled in tests', last: null, pending: null, restore: null })
   const p = await get('/api/fleet/preview?action=offline')
   const r = await post('/api/fleet/send', { action: 'offline', confirm: p.confirm })
   assert.equal(r.status, 501)

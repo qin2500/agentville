@@ -732,3 +732,6 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .naform .row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
 @media (max-width: 600px) { .naform .row3 { grid-template-columns: 1fr; } }
 .sheet .mono { font: 12px var(--mono); margin: 0; overflow-wrap: anywhere; }
+
+/* Important (Restore after crash): a small star after the name. */
+.star { color: var(--waiting); margin-left: 4px; font-size: 12px; flex: none; }

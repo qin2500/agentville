@@ -21,6 +21,7 @@ import { createPrStatus } from './prstatus.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
+import { createRestore, restoreBlocked, MESSAGE as RESTORE_MESSAGE } from './restore.mjs'
 import { accountsBlocked } from './accounts.mjs'
 import { createSpend } from './spend.mjs'
 import { buildModels, readDefaults } from './models.mjs'
@@ -93,6 +94,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // Usage research log: tokens by model next to every usage reading (see research.mjs).
   const research = createResearch({ dataDir })
   const network = createNetwork({ dataDir })
+  // Restore after crash (restore.mjs): the running-set snapshot and the lost crown/Important jobs.
+  const restore = createRestore({ dataDir, claudeHome: claude.home })
   const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network })
   // Token spend is read when the page asks (every few seconds while it is open) and with each usage sample.
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
@@ -120,7 +123,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     if (!sources.claude && !sources.codex) warnings.push(`No agent data found. Looked for Claude Code in ${claude.home()} and Codex in ${codex.home()}.`)
     const fleetData = await fleetStore.load()
     const pending = currentPending(fleetData, now)
-    const agents = build(facts, await store.load(), now, pending)
+    const overrides = await store.load()
+    const agents = build(facts, overrides, now, pending)
     const counts = { building: 0, stalled: 0, waiting: 0, resting: 0, errors: 0, prompts: 0, continuable: 0 }
     for (const a of agents) {
       const prev = since.get(a.id)
@@ -151,6 +155,11 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     await prStatus.annotate(agents)
     // Fleet sends to live Claude sessions; `blocked` says why it can't here ('' = it can).
     const fleet = { mode: 'send', blocked: sendingBlocked(), last: fleetData.last, pending: pending && { ...pending, rebootDetected: startedAt > pending.at } }
+    // Restore after crash: remember what is running now; report what an earlier boot lost.
+    if (sources.claude) {
+      await restore.record(agents, now).catch(logSafely)
+      fleet.restore = await restore.summary({ important: (id) => overrides[id]?.important === true, now }).catch(() => null)
+    } else fleet.restore = null
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now)
@@ -483,6 +492,58 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         await logFleet({ at: Date.now(), action: plan.kind, ...(plan.id && { id: plan.id }), ...(plan.project && { project: plan.project }), ok: r.ok, ...(r.jobId && { jobId: r.jobId }), ...(r.error && { error: r.error }) })
         cached = null
         return send(res, r.ok ? 200 : 502, r.ok ? { ok: true, kind: plan.kind, jobId: r.jobId || null, name: plan.name } : { error: r.error })
+      }
+      // ---- Restore after crash (restore.mjs, README "Restore after crash") ----
+      if (url.pathname === '/api/restore' && req.method === 'GET') {
+        const snap = await snapshot()
+        const overrides = await store.load()
+        const x = await restore.examine({ important: (id) => overrides[id]?.important === true })
+        // The name the rest of the app shows for it, when the scan still knows it.
+        const named = (e) => ({ ...e, name: snap.agents.find((a) => a.id === e.id)?.name || e.name })
+        const lostJobs = x.jobs.filter((j) => j.verdict === 'lost').map(named)
+        const lostSessions = x.sessions.filter((j) => j.verdict === 'lost').map(named)
+        const excluded = {}
+        for (const e of [...x.jobs, ...x.sessions]) if (e.verdict !== 'lost') excluded[e.verdict] = (excluded[e.verdict] || 0) + 1
+        return send(res, 200, { blocked: restoreBlocked(), crashBoot: x.crashBoot, boot: x.boot, at: x.at, dismissed: x.dismissed, jobs: lostJobs, sessions: lostSessions, excluded, message: RESTORE_MESSAGE })
+      }
+      if (url.pathname === '/api/restore/preview' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const overrides = await store.load()
+        const { plans, view } = await restore.preview(body?.ids, { important: (id) => overrides[id]?.important === true })
+        return send(res, 200, { ...view, blocked: restoreBlocked(), sendBlocked: sendingBlocked(), confirm: token({ kind: 'restore', plans }) })
+      }
+      if (url.pathname === '/api/restore/run' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const blocked = restoreBlocked()
+        if (blocked) return send(res, 501, { error: blocked })
+        const plan = redeem(body?.confirm, ['restore'])
+        // The crown agents' one message: the inspector's path (peer-message frame + receipt).
+        const sendTo = async (p, { inbox, file }) => {
+          const why = sendingBlocked()
+          if (why) return { status: 'skipped', detail: why }
+          if (!inbox) return { status: 'failed', detail: "Can't be messaged yet" }
+          const problem = inboxProblem(inbox)
+          if (problem) return { status: 'failed', detail: problem }
+          if (dryRun()) return { status: 'skipped', detail: 'Dry run' }
+          const r = await deliver(inbox, RESTORE_MESSAGE)
+          if (!r.ok) return { status: 'failed', detail: r.detail }
+          const seen = await awaitReceipts([{ id: p.id, msgId: r.msgId, file }])
+          return seen.has(p.id) ? { status: 'delivered', at: seen.get(p.id) } : { status: 'sent-unconfirmed', detail: 'Not confirmed within 10 s' }
+        }
+        const out = await restore.run(plan.plans, { send: sendTo })
+        // Ids and outcomes only.
+        await logFleet({ at: Date.now(), action: 'restore', results: out.results, messages: out.messages.map(({ id, status, detail }) => ({ id, status, ...(detail && { detail }) })) })
+        cached = null
+        return send(res, 200, out)
+      }
+      if (url.pathname === '/api/restore/dismiss' && req.method === 'POST') {
+        json()
+        await readBody(req)
+        await restore.dismiss()
+        cached = null
+        return send(res, 200, { ok: true })
       }
       if (url.pathname === '/api/fleet/send' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })

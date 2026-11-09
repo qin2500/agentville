@@ -2,6 +2,7 @@
 // per target; on the user's confirm it sends them straight into live Claude sessions' inboxes. Agentville
 // never runs a command. A sent prep marks its recipients paused, which drives the after-reboot strip.
 import { ROLE_NAME, icon, esc, clock } from './ui.js';
+import { createRestore } from './restore.js';
 
 const README = 'https://github.com/qin2500/agentville#fleet-actions-experimental';
 const ACTIONS = {
@@ -31,6 +32,7 @@ export function createFleet(app) {
   const F = { action: null, view: null, preview: null, checked: new Set(), copied: new Set(), text: '', err: {}, error: '', marked: null, busy: false };
   const fleet = () => S.data?.fleet || {};
   const pending = () => fleet().pending || null;
+  const restore = createRestore(app, sheet);
 
   // ---------- top bar + after-prep strip ----------
   let onlineAt = 0;
@@ -45,8 +47,15 @@ export function createFleet(app) {
     const dismissed = p && store.get('va.fleet.nudge') === String(p.at);
     const due = p && (p.kind === 'reboot' ? p.rebootDetected : (onlineAt > p.at || Date.now() - p.at > 120e3));
     const show = !!(p && due && !dismissed);
-    $('app').classList.toggle('nudged', show);
-    nudge.hidden = !show;
+    // After a crash, the restore notice takes the strip when no prep is waiting to be resumed.
+    const rn = show ? '' : restore.noticeHTML();
+    $('app').classList.toggle('nudged', show || !!rn);
+    nudge.hidden = !(show || rn);
+    if (rn) {
+      const html = `${icon('waiting')}${rn}`;
+      if (nudge.dataset.text !== html) { nudge.dataset.text = html; nudge.innerHTML = html; }
+      return;
+    }
     if (show) {
       const n = p.ids?.length || 0;
       const text = `${ACTIONS[p.kind]?.since || 'You prepped'} ${since(Date.now() - p.at)}. ${agents(n)} ${n === 1 ? 'is' : 'are'} paused.`;
@@ -74,7 +83,9 @@ export function createFleet(app) {
     if (p?.kind === 'reboot') foot += '<button class="linkbtn" type="button" data-fleet="commands">Commands to run after the reboot</button>';
     // With a prep pending, Resume comes first.
     const order = p ? ['resume', ...MENU.filter(k => k !== 'resume')] : MENU;
-    return order.map(item).join('') + (foot ? `<hr>${foot}` : '');
+    // Restore after crash: first while it has agents to bring back, last otherwise.
+    const rs = restore.menuItemHTML(), lost = (fleet().restore?.lost || 0) + (fleet().restore?.sessions || 0);
+    return (lost ? rs : '') + order.map(item).join('') + (lost ? '' : rs) + (foot ? `<hr>${foot}` : '');
   }
 
   // ---------- sheet ----------

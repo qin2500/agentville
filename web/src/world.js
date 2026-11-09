@@ -675,6 +675,7 @@ function createRenderer(IMG) {
   };
   const crown = glyph(['.o.o.o.o.', 'oyoyoyoyo', 'oyyyyyyyo', 'oyRyyyRyo', 'ooooooooo'], { o: '#140f1c', y: '#ffd23f', R: '#e8504a' });
   const zGlyph = glyph(['oooooo', 'owwwwo', 'oooowo', 'oowooo', 'owwwwo', 'oooooo'], { o: '#140f1c', w: '#f4efe4' });
+  const star = glyph(['...o...', '..oyo..', 'ooyyyoo', '.oyyyo.', 'oyo.oyo', 'oo...oo'], { o: '#140f1c', y: '#ffd23f' });
   const marker = glyph(['ooooooo', 'oyyyyyo', '.oyyyo.', '..oyo..', '...o...'], { o: '#140f1c', y: '#eaf2ff' });
   const flags = new Map();
   const flagSheet = team => {
@@ -930,7 +931,7 @@ function createRenderer(IMG) {
       for (const l of leaves) ctx.drawImage(IMG.leaf, (Math.floor(t * 6 + l.s) % 6) * 12, 0, 12, 7, Math.round(l.x), Math.round(l.y), 12, 7);
     } else { smoke = []; leaves = []; }
     if (f.night > 0) drawNight(ctx, f, vills, resting);
-    for (const [x, y, , d] of pops) if (!d.covered) ctx.drawImage(crown, x, y); // a crown behind a roof stays hidden
+    for (const [x, y, k, d] of pops) if (!d.covered) ctx.drawImage(k === 'star' ? star : crown, x, y); // a crown behind a roof stays hidden
     if (f.night > 0.5) for (const it of W.items) {
       if (!resting.get(it.id) || it.px == null) continue;
       if (it.iso) ctx.drawImage(zGlyph, it.iso.ox + it.iso.ridge[0] + 6, it.iso.oy + it.iso.ridge[1] - 4);
@@ -980,6 +981,7 @@ function createRenderer(IMG) {
     if (v.pose === 'hammer') { const down = d.row === 4; ctx.drawImage(IMG.hammer, d.left + (down ? 14 : 10), y + (down ? 7 : -3)); if (down) ctx.drawImage(IMG.spark, (f8 % 5) * 14, 0, 14, 8, d.left + 16, y + 6, 14, 8); }
     if (v.pose === 'carry') ctx.drawImage(IMG.crate, 0, 0, 16, 15, d.left + 2, y - 9 + (still ? 0 : f8 % 2), 12, 11);
     if (a.role === 'boss') pops.push([d.left + 3, y - 4, 'crown', d]);
+    else if (a.important) pops.push([d.left + 5, y - 6, 'star', d]); // Important (Restore after crash)
     const up = a.role === 'boss' ? 6 : 0;
     const img = a.bucket === 'stalled' ? BADGE[a.severity === 'error' ? 'error' : a.prompt ? 'click' : 'need'] : a.bucket === 'waiting' ? BADGE.wait[still ? 0 : Math.floor((t + v.phase * 3) / 3) % 2]
       : a.bucket === 'building' ? BADGE.build[d.row === 4 ? 1 : 0] : null;
