@@ -75,7 +75,11 @@ test('the isometric (2.5D) view: same village, villagers still clickable, and th
 // The 2.5D view's depth and placement: nobody stands on a roof, nobody stands inside a building, no
 // building stands in the sea. depthCheck() lists every villager whose feet land on a building's drawn
 // pixels yet was drawn after it (i.e. on top of its roof); it must be empty at every zoom.
+// `data-art=ready` only says the sprite sheets loaded. The world (and villageDebug().items) is laid out
+// once the first /api/agents reply arrives, which on a big home can come later: wait for that too.
+const layoutReady = (page) => page.waitForFunction(() => (window.villageDebug?.().items?.length || 0) > 0 && window.villageDebug().hits.length > 0)
 async function checkIsoPlacement(page) {
+  await layoutReady(page)
   const d = await page.evaluate(() => { const d = window.villageDebug(); return { items: d.items, hits: d.hits, depth: d.depthCheck(), iso: d.iso } })
   expect(d.iso).toBe(true)
   expect(d.depth, 'villagers drawn on top of a roof').toEqual([])
@@ -122,6 +126,7 @@ test('a saved lot from another neighbourhood is not reused: the home moves into 
   }, id)
   await page.goto('/?view=iso&night=0&debug')
   await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
+  await layoutReady(page)
   const d = await page.evaluate(() => window.villageDebug())
   const it = d.items.find((i) => i.id === `home:${id}`)
   const b = d.villages.find((v) => v.name === it.village).block

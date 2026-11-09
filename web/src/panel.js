@@ -643,7 +643,7 @@ export function createPanel(app) {
           ${a.resume ? `<button class="ghost" type="button" data-act="copyresume" title="${esc(a.resume)}">${/^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command'}</button>` : ''}
           ${canFork ? '<button class="ghost" type="button" data-act="fork" data-ins="fork">Fork…</button>' : ''}
           ${canStop ? `<button class="ghost" type="button" data-act="stop" data-ins="stop">${a.kind === 'job' ? 'Stop job…' : 'Stop…'}</button>` : ''}
-          ${a.harness === 'claude-code' && !sub ? `<button class="ghost" type="button" data-act="important" aria-pressed="${!!a.important}" title="Important agents come back with Restore after crash">${a.important ? '★ Important' : '☆ Mark important'}</button>` : ''}
+          ${!sub ? `<button class="ghost" type="button" data-act="important" aria-pressed="${!!a.important}" title="Important agents come back with Restore after crash">${a.important ? '★ Important' : '☆ Mark important'}</button>` : ''}
           <button class="ghost" type="button" data-act="edit" aria-expanded="${editing}">Edit…</button>
           ${a.hidden ? '' : `<button class="ghost iconbtn trash" type="button" data-act="hide" aria-label="Hide from Agentville" title="Hide from Agentville"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 1.5h4a1 1 0 0 1 1 1V3h3v1.5H2V3h3v-.5a1 1 0 0 1 1-1zM3.2 5.5h9.6l-.7 8.1a1.5 1.5 0 0 1-1.5 1.4H5.4a1.5 1.5 0 0 1-1.5-1.4zm2.8 1.5v6h1.2V7zm2.8 0v6H10V7z"/></svg></button>`}
         </div>

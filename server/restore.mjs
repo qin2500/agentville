@@ -105,16 +105,20 @@ export function checkEnv(env) {
   return { env: out }
 }
 
-/** A display name that is never conversation text: a job's name or an override/AI title, else a fixed label. */
-function safeName(a, short) {
-  const n = typeof a.name === 'string' ? a.name.trim() : ''
-  if (n && n !== a.title) return n.slice(0, 80)
-  return a.kind === 'job' ? `Job ${short}` : 'Untitled session'
+/**
+ * The name the app shows for it (classify.mjs `safeName`: an override, a custom title, the job's
+ * name, an AI title), never conversation text. Without one, a fixed label.
+ */
+export function safeName(a, short) {
+  const n = typeof a.safeName === 'string' ? a.safeName.trim() : ''
+  if (n) return n.slice(0, 80)
+  return a.harness === 'codex' ? 'Codex thread' : a.kind === 'job' ? `Job ${short}` : 'Untitled session'
 }
+const KIND = (a) => (a.harness === 'codex' ? 'codex' : a.kind === 'job' ? 'job' : 'session')
 const entryOf = (a, seen) => {
-  const sid = a.id.slice('claude-code:'.length)
+  const sid = a.id.slice(a.id.indexOf(':') + 1)
   return {
-    kind: a.kind === 'job' ? 'job' : 'session',
+    kind: KIND(a),
     id: a.id,
     ...(a.kind === 'job' && { short: a.jobId }),
     sid,
@@ -126,11 +130,16 @@ const entryOf = (a, seen) => {
     seen,
   }
 }
-/** The agents worth remembering: live, top-level Claude Code jobs and interactive sessions. */
+/**
+ * The agents worth remembering: live, top-level Claude Code jobs and interactive sessions, and
+ * top-level Codex threads (listed after a crash when Important, never restored from here).
+ */
 export function runningSet(agents, now = Date.now()) {
   const seen = Math.floor(now / MINUTE) * MINUTE // minute steps, so a write happens at most once a minute
+  const claude = (a) => a.harness === 'claude-code' && (a.kind === 'session' || (a.kind === 'job' && SHORT.test(a.jobId || ''))) && UUID.test(a.id.slice('claude-code:'.length))
+  const codex = (a) => a.harness === 'codex' && a.kind === 'session' && /^codex:[\w-]{1,100}$/.test(a.id)
   return agents
-    .filter((a) => a.harness === 'claude-code' && a.live && (a.kind === 'session' || (a.kind === 'job' && SHORT.test(a.jobId || ''))) && UUID.test(a.id.slice('claude-code:'.length)))
+    .filter((a) => a.live && (claude(a) || codex(a)))
     .map((a) => entryOf(a, seen))
     .sort((x, y) => (x.id < y.id ? -1 : 1))
 }
@@ -184,6 +193,15 @@ export function createRestore({ dataDir, claudeHome }) {
         d.dismissed = 0
       }
       d.boot = sameBoot(d.boot, boot) ? d.boot : boot
+      // The kept list's names follow what the app shows now (a rename, a new title, an older snapshot).
+      if (d.previous?.running?.length) {
+        const byId = new Map(agents.map((a) => [a.id, a]))
+        for (const e of d.previous.running) {
+          const a = byId.get(e.id)
+          const n = a && typeof a.safeName === 'string' ? a.safeName.trim().slice(0, 80) : ''
+          if (n && n !== e.name) e.name = n
+        }
+      }
       const ids = (xs) => xs.map((x) => `${x.id}:${x.role}:${x.important}:${x.name}:${x.cwd}`).join('|')
       if (ids(running) !== ids(d.running) || (running.length && running[0].seen !== d.at)) {
         d.running = running
@@ -243,17 +261,21 @@ export function createRestore({ dataDir, claudeHome }) {
    * 'removed' | 'no-transcript' | 'not-chosen' (neither a crown agent nor Important).
    * `important(id)` is the current mark, so marking a lost agent after the crash still counts.
    */
-  async function examine({ important = () => false, now = Date.now(), boot = bootTime() } = {}) {
+  async function examine({ important = () => false, live = () => false, now = Date.now(), boot = bootTime() } = {}) {
     const d = await load()
     const prev = d.previous && !sameBoot(d.previous.boot, boot) && now - (d.previous.at || 0) < KEEP_MS ? d.previous : null
-    if (!prev) return { boot, crashBoot: null, at: null, dismissed: false, jobs: [], sessions: [] }
+    if (!prev) return { boot, crashBoot: null, at: null, dismissed: false, jobs: [], sessions: [], codex: [] }
     const [reg, ros] = await Promise.all([registry(), roster()])
     const jobs = []
     const sessions = []
+    const codex = []
     for (const e of prev.running) {
       const chosen = CROWN_ROLES.includes(e.role) || e.important || important(e.id)
       const base = { id: e.id, name: e.name, project: e.project, cwd: e.cwd, role: e.role, crown: CROWN_ROLES.includes(e.role), important: e.important || important(e.id), seen: e.seen }
-      if (e.kind === 'job') {
+      if (e.kind === 'codex') {
+        // Listed only: a Codex thread is reopened in the Codex app. Never a command here.
+        codex.push({ ...base, verdict: live(e.id) ? 'running' : chosen ? 'lost' : 'not-chosen', note: 'Codex thread — reopen it in the Codex app' })
+      } else if (e.kind === 'job') {
         if (!SHORT.test(e.short || '')) continue
         const st = await readState(e.short)
         let verdict
@@ -273,14 +295,14 @@ export function createRestore({ dataDir, claudeHome }) {
         sessions.push({ ...base, sid: e.sid, verdict, command: e.cwd ? `cd ${shQuote(e.cwd)} && ${cmd}` : cmd })
       }
     }
-    return { boot, crashBoot: prev.boot, at: prev.at, dismissed: sameBoot(d.dismissed, boot), jobs, sessions }
+    return { boot, crashBoot: prev.boot, at: prev.at, dismissed: sameBoot(d.dismissed, boot), jobs, sessions, codex }
   }
 
   /** The `fleet.restore` summary in /api/agents: enough for the notice, nothing more. */
   async function summary(opts) {
     const x = await examine(opts)
     const lost = x.jobs.filter((j) => j.verdict === 'lost').length
-    const terms = x.sessions.filter((s) => s.verdict === 'lost').length
+    const terms = x.sessions.filter((s) => s.verdict === 'lost').length + x.codex.filter((s) => s.verdict === 'lost').length
     return x.crashBoot ? { lost, sessions: terms, at: x.at, boot: x.boot, dismissed: x.dismissed } : null
   }
 

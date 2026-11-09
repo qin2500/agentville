@@ -30,6 +30,8 @@ test.beforeEach(async () => {
   fs.writeFileSync(path.join(env.AGENTVILLE_DATA_DIR, 'restore.json'), JSON.stringify({ boot: BOOT1, at: seen, previous: null, dismissed: 0, running: [
     e('boss', 'job', 'Big Boss', 'boss', false), e('leadBlocked', 'job', 'DB Lead', 'lead', true), e('leadCi', 'job', 'CI Lead', 'lead', true),
     e('leadBuilding', 'job', 'API Lead', 'lead', false), e('soloTurn', 'session', 'Explain the build', 'solo', true),
+    // A Codex thread marked Important: listed with a note, never restored from here.
+    { kind: 'codex', id: 'codex:gone-thread', sid: 'gone-thread', name: 'Release notes', project: 'codex-app', cwd, role: 'solo', important: true, seen },
   ] }))
   fs.writeFileSync(path.join(env.AGENTVILLE_DATA_DIR, 'overrides.json'), JSON.stringify({ [claudeId('leadBlocked')]: { important: true }, [claudeId('soloTurn')]: { important: true } }))
   // The crash took their processes (CI Lead came back by itself).
@@ -62,7 +64,7 @@ const runs = () => { const f = path.join(dir, 'claude-bg.log'); return fs.exists
 test('the notice names the restart; Dismiss hides it for this boot', async ({ page }) => {
   await page.goto(s.url)
   const nudge = page.locator('#nudge')
-  await expect(nudge).toContainText('Your Mac restarted — 3 agents were running.', { timeout: 15_000 })
+  await expect(nudge).toContainText('Your Mac restarted — 4 agents were running.', { timeout: 15_000 })
   await expect(nudge.locator('[data-restore="open"]')).toHaveText('Restore…')
   await nudge.locator('[data-restore="dismiss"]').click()
   await expect(nudge).toBeHidden()
@@ -93,6 +95,10 @@ test('sheet: lost crown and Important jobs checked, terminals to copy; confirm s
   const ses = sheet.locator(`[data-restore-session="${claudeId('soloTurn')}"]`)
   await expect(ses.locator('code')).toContainText(`claude --resume ${IDS.soloTurn}`)
   await expect(ses.locator('button')).toHaveText('Copy resume command')
+  const cx = sheet.locator('[data-restore-codex="codex:gone-thread"]')
+  await expect(cx).toContainText('Release notes')
+  await expect(cx).toContainText('Codex thread — reopen it in the Codex app')
+  await expect(cx.locator('code, button')).toHaveCount(0)
   await expect(sheet.locator('.menunote')).toContainText('1 still running, 1 not a crown agent or Important')
   await shot(page, ti, 'restore-sheet')
   if (!isMobile(ti)) {
@@ -123,7 +129,7 @@ test('sheet: lost crown and Important jobs checked, terminals to copy; confirm s
   await shot(page, ti, 'restore-done')
   await sheet.locator('[data-restore-act="close"]').click()
   // Both are back: the notice goes away.
-  await expect(page.locator('#nudge')).not.toContainText('Your Mac restarted — 3', { timeout: 15_000 })
+  await expect(page.locator('#nudge')).not.toContainText('Your Mac restarted — 4', { timeout: 15_000 })
 })
 
 test('Important: a toggle in the inspector, a star on its row, kept on disk', async ({ page }) => {

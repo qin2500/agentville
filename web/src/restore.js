@@ -77,6 +77,13 @@ export function createRestore(app, sheet) {
       <ul>${ss.map(s => `<li data-restore-session="${esc(s.id)}"><b>${esc(s.name)}</b><code title="${esc(s.command)}">${esc(s.command)}</code><button class="ghost" type="button" data-rcopy="${esc(s.command)}">Copy resume command</button>
         <small style="grid-column:1;color:var(--text-muted)">${esc([tag(s), s.project, seenText(s.seen)].filter(Boolean).join(' · '))}</small></li>`).join('')}</ul></section>`;
   }
+  // Codex threads are listed only: Codex reopens them, so there is no command and nothing to confirm.
+  function codexHTML() {
+    const cs = R.data?.codex || [];
+    if (!cs.length) return '';
+    return `<section class="manual" style="margin-top:12px"><h3>Codex threads · ${cs.length}</h3>
+      <ul>${cs.map(c => `<li data-restore-codex="${esc(c.id)}"><b>${esc(c.name)}</b><small style="grid-column:1;color:var(--text-muted)">${esc([c.note, tag(c), c.project, seenText(c.seen)].filter(Boolean).join(' · '))}</small></li>`).join('')}</ul></section>`;
+  }
   function excludedHTML() {
     const ex = R.data?.excluded || {};
     const parts = Object.entries(ex).filter(([, n]) => n).map(([k, n]) => `${n} ${EXCLUDED[k] || k}`);
@@ -101,14 +108,14 @@ export function createRestore(app, sheet) {
     }
     const d = R.data || {};
     if (R.view === 'list') {
-      const none = !jobs().length && !(d.sessions || []).length;
+      const none = !jobs().length && !(d.sessions || []).length && !(d.codex || []).length;
       const lede = !d.crashBoot ? 'No restart since the agents were last seen running.'
         : none ? `Your Mac restarted ${esc(ago(Date.now() - d.boot))}. No crown or Important agent needs restoring.`
         : `Your Mac restarted ${esc(ago(Date.now() - d.boot))}. These were running before it: crown agents and the ones you marked Important.${d.blocked ? ` Restoring isn't available here: ${esc(d.blocked)}.` : ''}`;
       const n = chosen().length;
       sheet.innerHTML = `${head(title, lede)}
         <div class="body">${jobs().length ? `<section><h3>Background jobs · ${jobs().length}</h3><div id="restore-jobs">${jobs().map(jobCard).join('')}</div></section>` : ''}
-          ${sessionsHTML()}${excludedHTML()}</div>
+          ${sessionsHTML()}${codexHTML()}${excludedHTML()}</div>
         <footer><p class="err" id="restore-err" role="alert" hidden></p><span class="spacer"></span><button class="ghost" type="button" data-restore-act="close">${jobs().length ? 'Cancel' : 'Done'}</button>
           ${jobs().length ? `<button class="primary" type="button" data-restore-act="review" ${n && !d.blocked ? '' : 'disabled'}>Review ${esc(agents(n))}…</button>` : ''}</footer>${live}`;
       return;

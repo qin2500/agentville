@@ -394,7 +394,10 @@ ones that matter.
 - **The sheet** lists lost jobs with checkboxes (all ticked), name, project and last seen. Review
   shows the exact commands; one confirm (one-time token, 2 minutes) restarts them one at a time, each
   reported as Restored, Already running or Failed with a short reason. Terminal sessions that were
-  open can't be reopened from a web page; they're listed with **Copy resume command**.
+  open can't be reopened from a web page; they're listed with **Copy resume command**. Codex threads
+  marked Important are listed with "Codex thread — reopen it in the Codex app": no command, nothing to
+  confirm. Names are the ones the app shows (an override, a custom title, the job's name, an AI
+  title), never the first prompt.
 - **Crown agents decide on their workers.** Once a restored crown agent is running, it gets one fixed
   message through the reply path (with its delivery receipt): "You were restarted after the computer
   crashed. Check which of your sub-agents and background jobs were lost, and restart the ones you

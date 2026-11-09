@@ -461,6 +461,8 @@ export async function scan(now = Date.now()) {
       jobId: j.short,
       name: j.name || '',
       title: meta.customTitle || meta.aiTitle || meta.firstPrompt || '',
+      // The title part that is a name, never the first prompt (Restore after crash stores this).
+      titleName: meta.customTitle || meta.aiTitle || '',
       project: projectOf(j.originCwd || j.cwd || meta.cwd),
       cwd: j.worktreePath || j.cwd || meta.cwd || null,
       parentId: parentOfJob.get(j.sessionId) || null,

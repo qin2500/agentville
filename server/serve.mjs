@@ -158,7 +158,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Restore after crash: remember what is running now; report what an earlier boot lost.
     if (sources.claude) {
       await restore.record(agents, now).catch(logSafely)
-      fleet.restore = await restore.summary({ important: (id) => overrides[id]?.important === true, now }).catch(() => null)
+      const liveIds = new Set(agents.filter((a) => a.live).map((a) => a.id))
+      fleet.restore = await restore.summary({ important: (id) => overrides[id]?.important === true, live: (id) => liveIds.has(id), now }).catch(() => null)
     } else fleet.restore = null
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
@@ -497,14 +498,15 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       if (url.pathname === '/api/restore' && req.method === 'GET') {
         const snap = await snapshot()
         const overrides = await store.load()
-        const x = await restore.examine({ important: (id) => overrides[id]?.important === true })
-        // The name the rest of the app shows for it, when the scan still knows it.
-        const named = (e) => ({ ...e, name: snap.agents.find((a) => a.id === e.id)?.name || e.name })
+        const byId = new Map(snap.agents.map((a) => [a.id, a]))
+        const x = await restore.examine({ important: (id) => overrides[id]?.important === true, live: (id) => byId.get(id)?.live === true })
+        // The name the rest of the app shows for it (never prompt text), when the scan still knows it.
+        const named = (e) => ({ ...e, name: byId.get(e.id)?.safeName || e.name })
         const lostJobs = x.jobs.filter((j) => j.verdict === 'lost').map(named)
         const lostSessions = x.sessions.filter((j) => j.verdict === 'lost').map(named)
         const excluded = {}
-        for (const e of [...x.jobs, ...x.sessions]) if (e.verdict !== 'lost') excluded[e.verdict] = (excluded[e.verdict] || 0) + 1
-        return send(res, 200, { blocked: restoreBlocked(), crashBoot: x.crashBoot, boot: x.boot, at: x.at, dismissed: x.dismissed, jobs: lostJobs, sessions: lostSessions, excluded, message: RESTORE_MESSAGE })
+        for (const e of [...x.jobs, ...x.sessions, ...x.codex]) if (e.verdict !== 'lost') excluded[e.verdict] = (excluded[e.verdict] || 0) + 1
+        return send(res, 200, { blocked: restoreBlocked(), crashBoot: x.crashBoot, boot: x.boot, at: x.at, dismissed: x.dismissed, jobs: lostJobs, sessions: lostSessions, codex: x.codex.filter((c) => c.verdict === 'lost').map(named), excluded, message: RESTORE_MESSAGE })
       }
       if (url.pathname === '/api/restore/preview' && req.method === 'POST') {
         json()

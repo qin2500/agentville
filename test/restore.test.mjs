@@ -50,10 +50,10 @@ test('saved flags: fixed allowlist, values kept whole; anything else means no fa
   assert.match(R.checkEnv({ A: 1 }).error, /plain text/)
 })
 
-test('running set: live top-level Claude jobs and sessions only; names never fall back to prompt text', () => {
+test('running set: live top-level Claude jobs and sessions, and Codex threads; names never fall back to prompt text', () => {
   const agents = [
-    { id: C('boss'), harness: 'claude-code', kind: 'job', jobId: short('boss'), name: 'Big Boss', title: 'Coordinate the release', live: true, role: 'boss', project: 'demo-app', cwd: '/w' },
-    { id: C('soloTurn'), harness: 'claude-code', kind: 'session', name: 'Explain the build', title: 'Explain the build', live: true, role: 'solo' },
+    { id: C('boss'), harness: 'claude-code', kind: 'job', jobId: short('boss'), name: 'Big Boss', safeName: 'Big Boss', title: 'Coordinate the release', live: true, role: 'boss', project: 'demo-app', cwd: '/w' },
+    { id: C('soloTurn'), harness: 'claude-code', kind: 'session', name: 'Explain the build', safeName: '', title: 'Explain the build', live: true, role: 'solo' },
     { id: C('leadDone'), harness: 'claude-code', kind: 'job', jobId: short('leadDone'), name: 'Docs', live: false, role: 'lead' },
     { id: `${C('leadBuilding')}:sub:worker`, harness: 'claude-code', kind: 'subagent', name: 'w', live: true },
     { id: 'codex:x', harness: 'codex', kind: 'session', name: 'c', live: true },
@@ -62,6 +62,7 @@ test('running set: live top-level Claude jobs and sessions only; names never fal
   assert.deepEqual(set.map((e) => [e.id, e.kind, e.name, e.role]), [
     [C('boss'), 'job', 'Big Boss', 'boss'],
     [C('soloTurn'), 'session', 'Untitled session', 'solo'], // its "name" was its first prompt
+    ['codex:x', 'codex', 'Codex thread', 'solo'], // top-level Codex threads too (listed, never restored)
   ])
   assert.equal(set[0].seen, Date.parse('2026-11-01T10:00:00Z'), 'minute steps')
   assert.equal(set[0].short, short('boss'))
@@ -211,7 +212,8 @@ test('API: Important persists; restore previews, confirms once, restores one at 
   assert.deepEqual(st.jobs.map((j) => [j.id, j.crown, j.important]).sort(), [[C('boss'), true, false], [C('leadBlocked'), false, true]].sort())
   assert.deepEqual(st.sessions.map((s) => s.id), [C('soloTurn')])
   assert.match(st.sessions[0].command, new RegExp(`claude --resume ${IDS.soloTurn}$`))
-  assert.deepEqual(st.excluded, { running: 1, 'not-chosen': 2 }) // CI Lead; API Lead and Research
+  assert.deepEqual(st.excluded, { running: 2, 'not-chosen': 2 }) // CI Lead and the running Codex thread; API Lead and Research
+  assert.deepEqual(st.codex, [])
   assert.equal(st.message, R.MESSAGE)
 
   // Preview: exact commands, env key names only, the crown message under the same confirm.
@@ -295,4 +297,54 @@ test('API: Important persists; restore previews, confirms once, restores one at 
   assert.equal((await req('/api/restore/dismiss', 'POST', {})).status, 200)
   assert.equal((await (await req('/api/restore')).json()).dismissed, true)
   process.env.AGENTVILLE_BOOT_TIME = String(BOOT1)
+})
+
+// ---------- names: what the app shows, never prompt text ----------
+
+test('names: a job named only by its custom or AI title keeps that name; a prompt never becomes one', async () => {
+  const { build } = await import('../server/classify.mjs')
+  const now = Date.now()
+  const fact = (id, extra) => ({ id, harness: 'claude-code', kind: 'job', jobId: id.slice(-8), live: true, lifecycle: 'idle', lastActivityAt: now, ...extra })
+  const agents = build([
+    fact('claude-code:a', { name: '', title: 'Watchtower', titleName: 'Watchtower' }), // custom title only
+    fact('claude-code:b', { name: 'Ops Lead', title: 'Ship it', titleName: 'Ship it' }), // job name wins, as in the UI
+    fact('claude-code:c', { name: '', title: 'please refactor the parser', titleName: '' }), // first prompt only
+  ], { 'claude-code:d': {} }, now)
+  const by = Object.fromEntries(agents.map((a) => [a.id, a]))
+  assert.deepEqual([by['claude-code:a'].name, by['claude-code:a'].safeName], ['Watchtower', 'Watchtower'])
+  assert.deepEqual([by['claude-code:b'].name, by['claude-code:b'].safeName], ['Ops Lead', 'Ops Lead'])
+  assert.deepEqual([by['claude-code:c'].name, by['claude-code:c'].safeName], ['please refactor the parser', ''])
+  const withOverride = build([fact('claude-code:c', { name: '', title: 'please refactor', titleName: '' })], { 'claude-code:c': { name: 'Navigator' } }, now)
+  assert.equal(withOverride[0].safeName, 'Navigator')
+
+  const sid = (n) => `${String(n).padStart(8, 'f')}-0000-4000-8000-000000000000`
+  const job = (n, extra) => ({ id: `claude-code:${sid(n)}`, harness: 'claude-code', kind: 'job', jobId: sid(n).slice(0, 8), live: true, role: 'boss', ...extra })
+  const set = R.runningSet([job(1, { name: 'Watchtower', title: 'Watchtower', safeName: 'Watchtower' }), job(2, { name: 'fix it', title: 'fix it', safeName: '' })])
+  assert.deepEqual(set.map((e) => e.name), ['Watchtower', `Job ${sid(2).slice(0, 8)}`])
+
+  // A snapshot from before this fix ("Job ffffffff") is renamed from the scan, kept list included.
+  const dataDir = path.join(root, 'names-data')
+  const r = R.createRestore({ dataDir, claudeHome: () => claudeHome })
+  await r.record([job(1, { safeName: '' }), job(2, { safeName: '' })], now, BOOT1)
+  await r.record([], now, BOOT2)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'restore.json'), 'utf8')).previous.running.map((e) => e.name), [`Job ${sid(1).slice(0, 8)}`, `Job ${sid(2).slice(0, 8)}`])
+  await r.record([job(1, { live: false, safeName: 'Watchtower' }), job(2, { live: false, safeName: 'Navigator' })], now, BOOT2)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'restore.json'), 'utf8')).previous.running.map((e) => e.name), ['Watchtower', 'Navigator'])
+})
+
+test('Codex threads: Important ones are listed with a note, never with a command', async () => {
+  const dataDir = path.join(root, 'codex-data')
+  const r = R.createRestore({ dataDir, claudeHome: () => claudeHome })
+  const thread = (id, extra) => ({ id: `codex:${id}`, harness: 'codex', kind: 'session', name: id, safeName: `Thread ${id}`, live: true, role: 'solo', ...extra })
+  await r.record([thread('t1', { important: true }), thread('t2'), thread('t3', { important: true }), thread('t4', { kind: 'thread', important: true })], Date.now(), BOOT1)
+  await r.record([], Date.now(), BOOT2)
+  const x = await r.examine({ boot: BOOT2, live: (id) => id === 'codex:t3', important: (id) => id === 'codex:t2' && false })
+  assert.deepEqual(x.codex.map((c) => [c.id, c.verdict]), [['codex:t1', 'lost'], ['codex:t2', 'not-chosen'], ['codex:t3', 'running']], 'a spawned sub-thread is not recorded')
+  const t1 = x.codex[0]
+  assert.equal(t1.name, 'Thread t1')
+  assert.equal(t1.note, 'Codex thread — reopen it in the Codex app')
+  assert.equal(t1.command, undefined)
+  assert.equal(x.jobs.length, 0)
+  assert.equal((await r.summary({ boot: BOOT2, live: (id) => id === 'codex:t3' })).sessions, 1)
+  await assert.rejects(r.preview(undefined, { boot: BOOT2 }), /Pick at least one/, 'nothing to confirm')
 })

@@ -160,6 +160,8 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       kind: a.kind,
       jobId: a.jobId || null,
       name: cap((typeof o.name === 'string' && o.name) || a.name || a.title || 'Untitled', NAME_MAX),
+      // The same name, unless it would come from the first prompt ('' then). Safe to store.
+      safeName: cap((typeof o.name === 'string' && o.name) || a.name || a.titleName || '', NAME_MAX),
       title: cap(a.title, TITLE_MAX),
       project: a.project || 'unknown',
       cwd: a.cwd || null,
