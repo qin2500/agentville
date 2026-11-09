@@ -308,3 +308,21 @@ test('HTTP: GET /api/update, POST /api/update/apply behind the local-only guard'
     await gh.close()
   }
 })
+
+test('under the desktop app, a restart exits with DESKTOP_RESTART_EXIT so the app starts it again', async (t) => {
+  const { spawn } = await import('node:child_process')
+  const { DESKTOP_RESTART_EXIT } = await import('../server/update.mjs')
+  // canRestartSelf wants to be `…/cli.mjs` outside a test runner: a stand-in entry point, clean env.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-restart-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const entry = path.join(dir, 'cli.mjs')
+  fs.writeFileSync(entry, `import http from 'node:http'
+import { restartSelf } from ${JSON.stringify(new URL('../server/update.mjs', import.meta.url).href)}
+const s = http.createServer().listen(0, '127.0.0.1', () => { if (!restartSelf(s)) process.exit(3) })
+`)
+  const env = { PATH: process.env.PATH, HOME: dir, AGENTVILLE_DESKTOP: '1' }
+  const child = spawn(process.execPath, [entry], { env, stdio: 'ignore' })
+  const code = await new Promise((r) => child.once('exit', r))
+  assert.equal(code, DESKTOP_RESTART_EXIT)
+  assert.equal(DESKTOP_RESTART_EXIT, 75) // desktop/shell.cjs RESTART_EXIT
+})

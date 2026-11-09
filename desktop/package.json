@@ -1,0 +1,9 @@
+{
+  "name": "agentville-desktop",
+  "productName": "Agentville",
+  "version": "0.1.0",
+  "description": "Agentville as a desktop app: a window on the local server from your checkout.",
+  "license": "MIT",
+  "private": true,
+  "main": "main.cjs"
+}

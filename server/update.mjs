@@ -67,13 +67,24 @@ function defaultNpm() {
  *
  * From a terminal (`npm start`), a detached copy would outlive Ctrl-C and the shell, so the old
  * process stays as a thin parent instead: same terminal, Ctrl-C still stops both. From the Desktop
- * launcher (nohup, output to a log) the new copy is detached and writes to the same log.
+ * launcher (nohup, output to a log) the new copy is detached and writes to the same log. Under the
+ * desktop app it just exits with DESKTOP_RESTART_EXIT and the app starts it again.
  */
 export function canRestartSelf() {
   return !testing(process.env) && /(^|[/\\])cli\.mjs$/.test(process.argv[1] || '')
 }
+/** Exit code that asks the desktop app (desktop/main.cjs) to start its server again. */
+export const DESKTOP_RESTART_EXIT = 75
 export function restartSelf(server) {
   if (!canRestartSelf()) return false
+  // Started by the desktop app: it owns the process, so let it do the restart (and reload its window).
+  if (process.env.AGENTVILLE_DESKTOP === '1') {
+    const bye = () => process.exit(DESKTOP_RESTART_EXIT)
+    setTimeout(bye, 5000) // open WebSockets (built-in terminals) can keep close() waiting
+    server.close(bye)
+    server.closeAllConnections?.()
+    return true
+  }
   const tty = !!(process.stdout.isTTY || process.stdin.isTTY)
   const again = () => {
     const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {

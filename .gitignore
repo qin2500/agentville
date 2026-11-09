@@ -23,3 +23,5 @@ tools/macos-launcher/icon-preview.png
 .DS_Store
 .vscode/
 .idea/
+dist-app/
+desktop/.build/

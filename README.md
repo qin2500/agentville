@@ -89,6 +89,39 @@ npm start       # then open http://127.0.0.1:5275/
 `./setup.sh` is safe to re-run. `--no-launcher` skips the launcher and `--launcher` makes it without
 asking; `npm run setup` does the same. Stop the server with Ctrl-C.
 
+## Desktop app
+
+Prefer a window of its own to a browser tab? Agentville can run as a desktop app (Electron). It's a
+thin shell around the same thing: it reuses a server already answering on the port, or runs
+`node server/cli.mjs` from your checkout itself, then shows `http://127.0.0.1:5275/`. The page, its
+keys, settings and data are exactly the browser's.
+
+```sh
+npm run app                      # try it straight from the checkout
+npm run app:build                # build dist-app/…/Agentville.app (macOS; signed ad hoc, icon needs the Xcode tools)
+npm run app:build -- --install   # …and copy it to ~/Applications (or --install <folder>)
+npm run app:build -- --repo DIR  # run the checkout at DIR instead of this one
+```
+
+- **Updates reach it without a rebuild.** The app runs the server and page from your checkout, so
+  **Update now** (or `git pull` + `./setup.sh`) updates it; after an in-app update the app restarts
+  the server and reloads the window itself. Rebuild the app only when `desktop/` changes.
+- **Which checkout:** the build bakes this folder's path into the app (`Resources/repo-path`). Moved
+  it? Run `npm run app:build -- --install` again, or put `{"repo": "/path/to/agentville"}` in
+  `~/Library/Application Support/Agentville/config.json`. `AGENTVILLE_DESKTOP_REPO` overrides both.
+- **Port:** `AGENTVILLE_PORT`, else `"port"` in that `config.json`, else 5275.
+- **Node:** your own Node 22.13+ (found like the launcher does: `~/.local/bin`, volta, fnm, nvm,
+  Homebrew, `/usr/local/bin`, then `PATH`; `AGENTVILLE_DESKTOP_NODE` picks one), so the built-in
+  terminal and updates behave as in browser mode. Without one it falls back to Electron's own Node.
+- **Quit** stops a server the app started, never one it found running. Closing the window on macOS
+  hides it (notifications keep coming); click the Dock icon to bring it back. Your agents are never touched.
+- **Links** to anything but the local server (pull requests, docs) open in your default browser. The
+  page gets no Node access (context isolation, sandbox, no preload); DevTools are under *View*.
+- **Browser storage is the app's own,** so view choices you made in a browser tab (docked or full,
+  village style) start from their defaults once. Settings the server keeps are shared.
+- Logs: `~/Library/Application Support/Agentville/server.log` (a server the app started) and
+  `app.log`. Window size and position are remembered there too.
+
 ## Updates
 
 Agentville checks GitHub for a newer version shortly after it starts and then every 6 hours. When
@@ -379,6 +412,7 @@ ones that matter.
 npm test                                     # unit tests (node --test), synthetic fixtures only
 npx playwright install chromium              # once
 npx playwright test                          # end-to-end tests against a fixture home
+npm run test:app                             # the desktop app via Playwright's Electron driver (launched hidden)
 node test/fixtures/make-home.mjs /tmp/demo   # write a fake boss/leads/subs + Codex home; prints the env to use
 npm run dev:web                              # Vite dev server (proxies /api to :5275); add ?mock for fake data
 ```
