@@ -240,8 +240,14 @@ test('a done job reopened in a terminal leaves Resting, and its inspector says w
     await inspect(page, id)
     const d = page.locator('#drawer')
     await expect(d.locator('.reopened')).toContainText('Reopened in a terminal')
+    // Open (and the built-in terminal) would attach a second process to it: not offered.
+    await expect(d.locator('[data-act="term"]')).toBeDisabled()
+    await expect(page.locator('#openwhy')).toHaveText('Already running in another terminal')
+    await expect(page.locator(`[data-open="${id}"]`)).toHaveCount(0)
   } finally { fs.rmSync(reg, { force: true }) }
   await page.reload()
   await inspect(page, id)
   await expect(page.locator('#drawer .reopened')).toHaveCount(0)
+  await expect(page.locator('#drawer [data-act="term"]')).toBeEnabled()
+  await expect(page.locator('#openwhy')).toHaveCount(0)
 })
