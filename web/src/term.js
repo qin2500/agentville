@@ -38,8 +38,9 @@ const HIDDEN_MS = 10 * 60_000; // a terminal hidden this long detaches, so its P
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 10000];
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
-// WebGL draws crisper and faster; ?debug keeps the DOM renderer (tests read its rows) unless &webgl.
-const WEBGL = !DEBUG || params.has('webgl');
+// The DOM renderer by default: WebGL mis-measured cells in the desktop app (tiny, widely spaced glyphs).
+// WebGL only on request with ?webgl.
+const WEBGL = params.has('webgl');
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? '⌘' : 'Ctrl+';
 const token = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
