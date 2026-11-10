@@ -217,8 +217,13 @@ export function createTree({ S, app, matches, filtering }) {
   }
 
   // ---------- camera ----------
+  function settle() {
+    if (!root.isConnected || !model) return;
+    if (mode === 'chart') { clampCam(); applyCam(); }
+    cull();
+  }
   function clampCam() {
-    if (!lay) return;
+    if (!lay || !root.isConnected) return; // a detached port measures 0×0; settle() clamps later
     const c = st.cam, vw = port.clientWidth || 800, vh = port.clientHeight || 600;
     const W = lay.width * c.k, H = lay.height * c.k, M = 60;
     c.x = W + 2 * M <= vw ? Math.min(Math.max(c.x, 0), vw - W) : Math.min(M, Math.max(c.x, vw - W - M));
@@ -429,7 +434,15 @@ export function createTree({ S, app, matches, filtering }) {
 
   return {
     el: root,
-    render() { if (!S.data) return []; update(); return [root]; },
+    render() {
+      if (!S.data) return [];
+      update();
+      // The panel inserts the root after this returns. Until then the port has no size (it may
+      // just have been re-attached), so clamp and cull again once it's in the page: culling
+      // against a 0-wide viewport would leave cards out while their connectors were drawn.
+      queueMicrotask(settle);
+      return [root];
+    },
     // Selecting from elsewhere (hash, village, search): unfold the way to it and centre it.
     reveal(id) {
       const a = S.byId.get(id);

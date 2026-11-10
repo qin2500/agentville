@@ -5,6 +5,27 @@ import { buildTree, layout, outline, family, groupKey, SOLO_KEY, DIM } from '../
 
 const ag = (id, o = {}) => ({ id, name: o.name || id, role: 'solo', bucket: 'building', project: 'alpha', parentId: null, live: true, ...o })
 const ids = (nodes) => nodes.map((n) => n.id)
+/**
+ * Connector ends that lead nowhere: an end of a segment that neither touches another segment nor
+ * sits on the edge of a laid-out card. Every connector must end on a card that is drawn.
+ */
+function looseEnds(L) {
+  const segs = (L.path.match(/M[^M]+/g) || []).map((s) => s.match(/-?[\d.]+/g).map(Number))
+  const cards = [...L.items.values()].filter((it) => it.kind === 'node')
+  const on = (x, y, [x1, y1, x2, y2]) => Math.abs((x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)) < 0.5 &&
+    x >= Math.min(x1, x2) - 0.5 && x <= Math.max(x1, x2) + 0.5 && y >= Math.min(y1, y2) - 0.5 && y <= Math.max(y1, y2) + 0.5
+  const onCard = (x, y) => cards.some((c) => x >= c.x - 0.5 && x <= c.x + c.w + 0.5 && y >= c.y - 0.5 && y <= c.y + c.h + 0.5 &&
+    (Math.abs(x - c.x) < 0.5 || Math.abs(x - c.x - c.w) < 0.5 || Math.abs(y - c.y) < 0.5 || Math.abs(y - c.y - c.h) < 0.5))
+  const bad = []
+  segs.forEach((g, i) => {
+    for (const [x, y] of [[g[0], g[1]], [g[2], g[3]]]) {
+      if (onCard(x, y)) continue
+      if (segs.some((h, j) => j !== i && on(x, y, h))) continue
+      bad.push(`${x},${y}`)
+    }
+  })
+  return bad
+}
 
 test('parents become trees; roots are grouped by project; reports nest under their parent', () => {
   const m = buildTree([
@@ -171,4 +192,49 @@ test('1,000 agents build and lay out quickly', () => {
   assert.ok(per < 50, `build + layout took ${per.toFixed(1)} ms`)
   const folded = buildTree(agents)
   assert.ok(folded.shown < 200, `folded by default (${folded.shown} shown)`)
+})
+
+test('every connector ends on a laid-out card, whatever is folded, filtered or resting; siblings close up', () => {
+  // the e2e fixture's shape: a boss, three awake leads (one with two reports), a resting lead, solos
+  const agents = [
+    ag('boss', { role: 'boss', bucket: 'waiting' }),
+    ag('db', { role: 'lead', parentId: 'boss', bucket: 'stalled' }), ag('ci', { role: 'lead', parentId: 'boss', bucket: 'waiting' }),
+    ag('api', { role: 'lead', parentId: 'boss' }), ag('rev', { role: 'sub', parentId: 'api', bucket: 'waiting' }), ag('te', { role: 'sub', parentId: 'api' }),
+    ag('docs', { role: 'lead', parentId: 'boss', bucket: 'resting' }),
+    ag('s1', { bucket: 'stalled' }), ag('s2', { bucket: 'resting' }),
+  ]
+  const cases = {
+    default: {}, expanded: { allOpen: true }, pillOpen: { open: new Set(['boss']) },
+    apiFolded: { collapsed: new Set(['api']) }, bossFolded: { collapsed: new Set(['boss']) },
+    filtered: { matches: (a) => a.id === 'te' }, filteredLead: { matches: (a) => a.id === 'ci' },
+  }
+  for (const [name, o] of Object.entries(cases)) {
+    const m = buildTree(agents, o)
+    const L = layout(m, { wrap: 1400 })
+    assert.deepEqual(looseEnds(L), [], `${name}: connectors to nothing`)
+    // one item per shown node, nothing laid out for what isn't shown
+    assert.deepEqual([...L.items.keys()].filter((k) => L.items.get(k).kind === 'node').sort(), [...m.nodes.keys()].sort(), name)
+    // side-by-side siblings: exactly HGAP apart, centred under their parent
+    for (const n of m.nodes.values()) {
+      if (n.kids.length < 2 || n.kids.length > 3 || n.kids.some((k) => k.kids.length)) continue
+      const p = L.items.get(n.id), ks = n.kids.map((k) => L.items.get(k.id))
+      const mid = (ks[0].x + ks[ks.length - 1].x + DIM.W) / 2
+      assert.ok(Math.abs(mid - (p.x + DIM.W / 2)) <= 1, `${name}: ${n.id}'s reports off-centre`)
+    }
+  }
+  // folding the API lead leaves the boss with exactly three cards in a row, no gap where the team was
+  const L = layout(buildTree(agents, { collapsed: new Set(['api']) }), { wrap: 1400 })
+  const row = ['db', 'ci', 'api'].map((id) => L.items.get(id)).sort((a, b) => a.x - b.x)
+  assert.equal(row[1].x - row[0].x, DIM.W + DIM.HGAP)
+  assert.equal(row[2].x - row[1].x, DIM.W + DIM.HGAP)
+  // and the big fleet, folded and fully open
+  const big = []
+  for (let b = 0; b < 4; b++) {
+    big.push(ag(`b${b}`, { role: 'boss', project: `p${b % 2}` }))
+    for (let l = 0; l < 5; l++) {
+      big.push(ag(`b${b}l${l}`, { role: 'lead', parentId: `b${b}`, project: `p${b % 2}`, bucket: l ? 'resting' : 'building' }))
+      for (let w = 0; w < 22; w++) big.push(ag(`b${b}l${l}w${w}`, { role: 'sub', parentId: `b${b}l${l}`, project: `p${b % 2}`, bucket: !l && w < 2 ? 'waiting' : 'resting' }))
+    }
+  }
+  for (const o of [{}, { allOpen: true }, { collapsed: new Set(['b0l0']) }]) assert.deepEqual(looseEnds(layout(buildTree(big, o), { wrap: 1400 })), [])
 })

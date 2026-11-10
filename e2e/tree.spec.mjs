@@ -13,6 +13,40 @@ const shot = (page, name) => page.screenshot({ path: `${SHOT_DIR}/tree-${name}.p
 const isMobile = (ti) => ti.project.name === 'mobile'
 const card = (page, id) => page.locator(`.tv [role="treeitem"][data-id="${id}"]`)
 const named = (page, name) => page.locator('.tv .tnode', { has: page.locator('.tnm', { hasText: new RegExp(`^${name}$`) }) })
+/**
+ * Connector ends on screen that lead to no card in the page: an end of a segment that touches no
+ * other segment and isn't on the edge of a rendered card. Ghost connectors show up here.
+ */
+function looseEndsInPage() {
+  const d = document.querySelector('.tv.chart .tvedges path')?.getAttribute('d') || ''
+  const segs = (d.match(/M[^M]+/g) || []).map((x) => x.match(/-?[\d.]+/g).map(Number))
+  const cards = [...document.querySelectorAll('.tv.chart .tnode')].map((el) => {
+    const m = el.style.transform.match(/translate\((-?[\d.]+)px, (-?[\d.]+)px\)/)
+    return { x: +m[1], y: +m[2], w: el.offsetWidth, h: el.offsetHeight }
+  })
+  const port = document.querySelector('.tv.chart .tvport'), world = document.querySelector('.tv.chart .tvworld')
+  const t = world.style.transform.match(/translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)/)
+  const [tx, ty, k] = [+t[1], +t[2], +t[3]]
+  const vis = (x, y) => x * k + tx >= 2 && x * k + tx <= port.clientWidth - 2 && y * k + ty >= 2 && y * k + ty <= port.clientHeight - 2
+  const on = (x, y, [x1, y1, x2, y2]) => Math.abs((x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)) < 0.5 &&
+    x >= Math.min(x1, x2) - 0.5 && x <= Math.max(x1, x2) + 0.5 && y >= Math.min(y1, y2) - 0.5 && y <= Math.max(y1, y2) + 0.5
+  const onCard = (x, y) => cards.some((c) => x >= c.x - 1 && x <= c.x + c.w + 1 && y >= c.y - 1 && y <= c.y + c.h + 1)
+  const bad = []
+  segs.forEach((g, i) => {
+    for (const [x, y] of [[g[0], g[1]], [g[2], g[3]]]) {
+      if (!vis(x, y) || onCard(x, y) || segs.some((h, j) => j !== i && on(x, y, h))) continue
+      bad.push(`${x},${y}`)
+    }
+  })
+  return bad
+}
+const looseEnds = (page) => page.evaluate(looseEndsInPage)
+/** Click, then check in the same task (after its microtasks): what a screenshot could catch. */
+const clickThenLooseEnds = (page, selector) => page.evaluate(async ([sel, fn]) => {
+  document.querySelector(sel).click()
+  await Promise.resolve()
+  return new Function(`return (${fn})()`)()
+}, [selector, looseEndsInPage.toString()])
 const focusedId = (page) => page.evaluate(() => document.activeElement?.dataset?.id || null)
 
 async function open(page, { panel = 'full', view = 'tree' } = {}) {
@@ -89,7 +123,11 @@ test.describe('desktop', () => {
     await expect(page.locator('#view-tree')).toHaveAttribute('aria-pressed', 'true')
     await page.locator('body').press('v')
     await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
-    await page.locator('#view-tree').click()
+    // every card the chart has is drawn from the first frame, and every connector on screen ends on one
+    expect(await clickThenLooseEnds(page, '#view-tree')).toEqual([])
+    await expect(card(page, claudeId('leadBuilding'))).toBeVisible()
+    await expect(named(page, 'test-engineer')).toBeVisible()
+    expect(await looseEnds(page)).toEqual([])
     await shot(page, 'desktop')
     const axe = await new AxeBuilder({ page }).include('#list').analyze()
     expect(axe.violations.filter((v) => ['serious', 'critical'].includes(v.impact)).map((v) => `${v.id}: ${v.nodes[0]?.target}`)).toEqual([])
@@ -109,6 +147,7 @@ test.describe('desktop', () => {
     await expect(kid).toBeVisible()
     await api.locator('.ttog').click()
     await expect(kid).toHaveCount(0)
+    expect(await looseEnds(page)).toEqual([])
     await expect(api.locator('.ttog')).toHaveText('+2')
     await expect(api).toHaveAttribute('aria-expanded', 'false')
     await api.locator('.ttog').click()
@@ -201,6 +240,7 @@ test.describe('desktop', () => {
     await expect(card(page, claudeId('boss'))).toHaveClass(/ctx/)
     await expect(card(page, claudeId('leadBlocked'))).toHaveCount(0)
     await expect(page.locator('.tvcount')).toHaveText('3 shown · 1 match')
+    expect(await looseEnds(page)).toEqual([])
     await shot(page, 'desktop-search')
     await page.locator('#q').fill('')
     await expect(card(page, claudeId('leadBlocked'))).toBeVisible()
@@ -221,11 +261,14 @@ test.describe('desktop', () => {
       new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__long.push(e.duration))).observe({ type: 'longtask', buffered: false })
     })
     const openMs = await page.evaluate(() => { const t = performance.now(); document.getElementById('view-tree').click(); return performance.now() - t })
+    await page.locator('#view-team').click()
+    expect(await clickThenLooseEnds(page, '#view-tree')).toEqual([])
     expect(openMs).toBeLessThan(400)
     await expect(page.locator('.tvcount')).toHaveText(/ of 1008 shown$/)
     const folded = Number((await page.locator('.tvcount').innerText()).split(' ')[0])
     expect(folded).toBeLessThan(120)
     await expect(named(page, 'Boss 0')).toBeVisible()
+    expect(await looseEnds(page)).toEqual([])
     await shot(page, 'large')
     const expandMs = await page.evaluate(() => { const t = performance.now(); document.querySelector('[data-tv="expand"]').click(); return performance.now() - t })
     expect(expandMs).toBeLessThan(600)
@@ -242,6 +285,7 @@ test.describe('desktop', () => {
     const long = await page.evaluate(() => Math.max(0, ...window.__long))
     expect(long).toBeLessThan(250)
     await page.locator('[data-tv="fit"]').click()
+    await expect.poll(() => looseEnds(page)).toEqual([])
     await shot(page, 'large-expanded-fit')
     await page.locator('[data-tv="live"]').click()
     await expect(page.locator('.tvcount')).toHaveText(`${folded} of 1008 shown`)
