@@ -34,6 +34,8 @@ function line(values, w, h, label) {
     <polygon class="area" points="0,${h} ${pts.join(' ')} ${w},${h}"/><polyline points="${pts.join(' ')}"/></svg>`;
 }
 
+const pct = x => `${Math.round(x)}%/h`;
+/** The 5-hour window's main line in the details. */
 export function projectionText(p) {
   if (!p) return '';
   if (p.none || p.state === 'none') return 'No 5-hour limit';
@@ -41,6 +43,40 @@ export function projectionText(p) {
   if (p.state === 'runsOut') return `Runs out ≈ ${when(p.at)}${p.resetsAt ? ` (resets ${when(p.resetsAt)})` : ''}`;
   if (p.state === 'lasts') return p.resetsAt ? `Lasts until the reset at ${when(p.resetsAt)}` : 'Not running out';
   return 'Gathering data…';
+}
+/** How the 5-hour time was worked out: the blended pace and its two parts. */
+export function paceText(p) {
+  if (!p || p.perHour == null || p.state === 'out') return '';
+  if (p.perHourRecent == null || p.perHourAvg == null) return `At ${pct(p.perHour)}, the pace over the last 30 min.`;
+  return `At ${pct(p.perHour)}: ${pct(p.perHourRecent)} over the last 30 min, ${pct(p.perHourAvg)} on average this window.`;
+}
+/** The weekly window's main line: the earliest it can run out, given the 5-hour cap. */
+export function weeklyText(w) {
+  if (!w) return '';
+  if (w.state === 'out') return `Out of usage${w.resetsAt ? ` · resets ${when(w.resetsAt)}` : ''}`;
+  if (w.basis !== 'flatOut') return projectionText(w);
+  if (w.state === 'runsOut') return `At this pace, earliest ≈ ${when(w.at)}`;
+  if (w.state === 'lasts') return w.resetsAt ? `Lasts until the reset at ${when(w.resetsAt)}` : 'Not running out';
+  return 'Gathering data…';
+}
+/** Under the weekly line: what "earliest" assumes, and the week's own average for contrast. */
+export function weeklyDetail(w) {
+  if (!w || w.state === 'out' || w.state === 'gathering') return '';
+  const parts = [];
+  if (w.basis === 'flatOut' && w.ratio != null) {
+    const each = `each ${w.ratioFrom === 'samples' ? '≈' : 'assumed ≈'} ${Math.round(w.ratio * 100)}% of the week`;
+    parts.push(`${w.state === 'runsOut' ? 'If' : 'Even if'} every 5-hour window is used in full (${each}).`);
+  }
+  const a = w.average;
+  if (a) parts.push(`At this week's average (${a.perHour}%/h): ${a.state === 'runsOut' ? `≈ ${when(a.at)}` : 'lasts until the reset'}.`);
+  return parts.join(' ');
+}
+/** The top bar's short text for the window that runs out first (server: projection.mjs binding()). */
+export function headerText(p) {
+  const b = p?.binding;
+  if (!b) return '';
+  const k = b.window === 'weekly' ? 'week' : '5h';
+  return b.state === 'out' ? `${k} out of usage` : `${k} out ≈ ${when(b.at)}`;
 }
 
 export function createSpend(app) {
@@ -74,13 +110,13 @@ export function createSpend(app) {
     const d = P.data;
     btn.hidden = !d?.spend;
     if (!d?.spend) return;
-    const s = d.spend, n = s.last60.tokens, five = d.projection?.fiveHour;
+    const s = d.spend, n = s.last60.tokens, five = d.projection?.fiveHour, b = d.projection?.binding;
     const last60 = s.recent || s.series.slice(-60).map(x => x.tokens);
-    const proj = five?.state === 'runsOut' ? `out ≈ ${when(five.at)}` : five?.state === 'out' ? 'out of usage' : '';
-    const html = `${line(last60, 60, 16, '')}<b class="num">${fmt(n)}</b><span class="sp-k">/60m</span>${proj ? `<span class="sp-proj${five.state === 'out' ? ' out' : ''}"> · ${esc(proj)}</span>` : ''}<span class="caret"> ▾</span>`;
+    const proj = headerText(d.projection);
+    const html = `${line(last60, 60, 16, '')}<b class="num">${fmt(n)}</b><span class="sp-k">/60m</span>${proj ? `<span class="sp-proj${b.state === 'out' ? ' out' : ''}"> · ${esc(proj)}</span>` : ''}<span class="caret"> ▾</span>`;
     if (btn.dataset.html !== html) { btn.dataset.html = html; btn.innerHTML = html; }
     // The visible text first (WCAG 2.5.3), then what it means.
-    btn.setAttribute('aria-label', `${fmt(n)}/60m${proj ? ` · ${proj}` : ''}: token spend, ${words(n)} tokens in the last 60 minutes${five ? `. Session: ${projectionText(five)}` : ''}. Show details`);
+    btn.setAttribute('aria-label', `${fmt(n)}/60m${proj ? ` · ${proj}` : ''}: token spend, ${words(n)} tokens in the last 60 minutes${five ? `. Session: ${projectionText(five)}` : ''}${d.projection?.weekly ? `. Weekly: ${weeklyText(d.projection.weekly)}` : ''}. Show details`);
   }
 
   // ---------- details (in #pop-spend, opened by main.js) ----------
@@ -111,9 +147,12 @@ export function createSpend(app) {
         ${!p ? '<p class="helper">On the pool, or no reading yet: there is no account limit to project.</p>'
           : p.pending ? '<p class="helper">Checking the new account…</p>'
           : p.error && !p.fiveHour ? `<p class="helper bad">Couldn't read usage: ${esc(p.error)}</p>`
-          : `<p class="sp-line"><span>Session (5-hour)</span><b>${esc(projectionText(p.fiveHour))}</b><span class="dim num">${p.fiveHour && !p.fiveHour.none ? `${Math.round(p.fiveHour.used)}% used` : ''}</span></p>
-             <p class="sp-line"><span>Weekly</span><b>${esc(projectionText(p.weekly))}</b><span class="dim num">${p.weekly ? `${Math.round(p.weekly.used)}% used` : ''}</span></p>
-             <p class="helper">Checked ${when(p.at)}, every minute.</p>`}
+          : `<p class="sp-line" data-sp-five><span>Session (5-hour)</span><b>${esc(projectionText(p.fiveHour))}</b><span class="dim num">${p.fiveHour && !p.fiveHour.none ? `${Math.round(p.fiveHour.used)}% used` : ''}</span></p>
+             ${paceText(p.fiveHour) ? `<p class="helper sp-why" data-sp-five-why>${esc(paceText(p.fiveHour))}</p>` : ''}
+             <p class="sp-line" data-sp-week><span>Weekly</span><b>${esc(weeklyText(p.weekly))}</b><span class="dim num">${p.weekly ? `${Math.round(p.weekly.used)}% used` : ''}</span></p>
+             ${weeklyDetail(p.weekly) ? `<p class="helper sp-why" data-sp-week-why>${esc(weeklyDetail(p.weekly))}</p>` : ''}
+             ${p.binding && p.next ? `<p class="helper" data-sp-next>Then auto-switches to ${esc(p.next.label)}.</p>` : ''}
+             <p class="helper">Checked ${when(p.at)}, every minute. Times assume the agents keep going.</p>`}
       </section>
       <section aria-label="Auto-switch">
         <label><input type="checkbox" data-sp-auto ${a?.enabled ? 'checked' : ''}>Auto-switch when an account runs out</label>

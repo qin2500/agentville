@@ -375,6 +375,9 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
     return { accounts: accounts.map((a) => ({ ...usageCache.get(a.id).value, checkedAt: usageCache.get(a.id).at })) }
   }
 
+  /** The latest cached reading per saved account (Map id -> { fiveHour, weekly, error? }); never fetches. */
+  const cachedUsage = () => new Map([...usageCache].map(([id, c]) => [id, c.value]))
+
   /**
    * Usage of the login in Claude's store only (the sampler, once a minute): read fresh, never
    * refreshed. `{ id, saved, fiveHour, weekly, error? }`, or null when no login is stored. A saved
@@ -519,7 +522,7 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
   }
 
   return {
-    load, list, usage, activeUsage, capture, addStart, addFinish, addCancel, rename, remove,
+    load, list, usage, cachedUsage, activeUsage, capture, addStart, addFinish, addCancel, rename, remove,
     readLive: () => live().read(), identify, syncSlot, activate, restoreLive, readOauthAccount, writeOauthAccount,
   }
 }

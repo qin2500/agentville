@@ -98,6 +98,31 @@ async function setup() {
   }
 }
 
+test('projection: the binding window, and where auto-switch would go (cached readings only)', async () => {
+  const t = await setup()
+  try {
+    t.people.A.fiveResetsIn = 4.6 * 3600e3 // A's window started 24 min ago
+    await t.server.sampler.sample() // A at 20 %
+    // 20 min of A rising +1 %/min to its 20 % now (the samples are in memory; inject a history).
+    const list = t.server.sampler.samples.get(UUID.A), last = list.at(-1)
+    list.unshift(...Array.from({ length: 20 }, (_, i) => ({ at: last.at - (20 - i) * 60e3, five: { ...last.five, used: i }, week: { ...last.week, used: last.week.used } })))
+    const calls = () => t.api.requests.filter((r) => r.path === '/api/oauth/usage').length
+    const n0 = calls()
+    let p = (await t.req('GET', '/api/spend')).json.projection
+    assert.equal(p.fiveHour.state, 'runsOut')
+    assert.deepEqual([p.binding.window, p.binding.at], ['fiveHour', p.fiveHour.at])
+    assert.equal(p.weekly.basis, 'flatOut')
+    assert.equal(calls(), n0, 'the projection makes no usage calls')
+    // B and C not read yet: nothing known to switch to but the pool.
+    assert.deepEqual(p.next, { to: 'pool', label: 'the pool' })
+    await t.req('GET', '/api/accounts/usage') // the menu reads every account: now the cache knows C resets soonest
+    p = (await t.req('GET', '/api/spend')).json.projection
+    assert.deepEqual(p.next, { to: UUID.C, label: 'c@example.com' })
+    await t.req('POST', '/api/autoswitch', { enabled: false })
+    assert.equal((await t.req('GET', '/api/spend')).json.projection.next, null, 'auto-switch off: no hint')
+  } finally { await t.done() }
+})
+
 test('sampler: samples the active account only; when it runs out, switches to the soonest-reset account', async () => {
   const t = await setup()
   try {

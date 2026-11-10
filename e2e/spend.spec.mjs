@@ -114,3 +114,49 @@ test('an account that runs out is switched automatically, with a banner and Undo
     expect(await page.content()).not.toContain(TOKEN_MARK)
   } finally { await s.stop(); await api.close() }
 })
+
+test('the projection details: the blended 5-hour pace, the capped weekly estimate, and the binding window in the header', async ({ page }, testInfo) => {
+  const api = await fakeAnthropic({})
+  const s = await serve(api)
+  try {
+    const now = Date.now(), min = 60e3, h = 3600e3
+    let projection = {
+      account: 'acct', saved: true, at: now,
+      fiveHour: { used: 62, state: 'runsOut', at: now + 25 * min, resetsAt: now + 4 * h, perHour: 90, perHourRecent: 114.2, perHourAvg: 65.3 },
+      weekly: { used: 17, state: 'runsOut', at: now + 15 * h, resetsAt: now + 6 * 24 * h, perHour: 23.4, ratio: 0.26, ratioFrom: 'samples', basis: 'flatOut', average: { state: 'lasts', perHour: 0.6 } },
+      binding: { window: 'fiveHour', state: 'runsOut', at: now + 25 * min },
+      next: { to: 'x', label: 'c@example.com' },
+    }
+    // The real spend numbers, with this projection (no account or usage endpoint involved).
+    await page.route('**/api/spend*', async (route) => {
+      const res = await route.fetch()
+      await route.fulfill({ response: res, json: { ...(await res.json()), projection } })
+    })
+    await page.goto(s.url)
+    const btn = page.locator('#btn-spend')
+    await expect(btn.locator('.sp-proj')).toContainText(/5h out ≈ \d{1,2}:\d\d [ap]m/)
+    await expect(btn).toHaveAttribute('aria-label', /Weekly: At this pace, earliest ≈/)
+    await btn.click()
+    const pop = page.locator('#pop-spend')
+    await expect(pop.locator('[data-sp-five]')).toContainText(/Runs out ≈ .+ \(resets .+\)/)
+    await expect(pop.locator('[data-sp-five]')).toContainText('62% used')
+    await expect(pop.locator('[data-sp-five-why]')).toHaveText('At 90%/h: 114%/h over the last 30 min, 65%/h on average this window.')
+    await expect(pop.locator('[data-sp-week]')).toContainText(/At this pace, earliest ≈ .+/)
+    await expect(pop.locator('[data-sp-week]')).toContainText('17% used')
+    await expect(pop.locator('[data-sp-week-why]')).toHaveText("If every 5-hour window is used in full (each ≈ 26% of the week). At this week's average (0.6%/h): lasts until the reset.")
+    await expect(pop.locator('[data-sp-next]')).toHaveText('Then auto-switches to c@example.com.')
+    await expect(pop).toContainText('Times assume the agents keep going.')
+    await pop.locator('#sp-proj-h').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-projection.png` })
+
+    // The 5-hour window lasts, but the week runs out before its reset: the header says so.
+    projection = { ...projection,
+      fiveHour: { ...projection.fiveHour, state: 'lasts', at: undefined, perHour: 10, perHourRecent: 12, perHourAvg: 8 },
+      weekly: { ...projection.weekly, used: 97, at: now + 70 * min, ratioFrom: 'default', ratio: 0.25, average: null },
+      binding: { window: 'weekly', state: 'runsOut', at: now + 70 * min }, next: null }
+    await expect(btn.locator('.sp-proj')).toContainText(/week out ≈ \d{1,2}:\d\d [ap]m/, { timeout: 12000 })
+    await expect(pop.locator('[data-sp-five]')).toContainText('Lasts until the reset at')
+    await expect(pop.locator('[data-sp-week-why]')).toHaveText('If every 5-hour window is used in full (each assumed ≈ 25% of the week).')
+    await expect(pop.locator('[data-sp-next]')).toHaveCount(0)
+  } finally { await s.stop(); await api.close() }
+})

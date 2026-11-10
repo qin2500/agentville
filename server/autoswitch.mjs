@@ -24,7 +24,7 @@
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { writeAtomic } from './accounts.mjs'
-import { project } from './projection.mjs'
+import { project, projectWeekly, weeklyPerFive, binding } from './projection.mjs'
 
 export const OUT_AT = 99 // % used: the account is out
 export const AVAILABLE_BELOW = 95 // % used, both windows: an account is worth switching to
@@ -166,19 +166,31 @@ export function createSampler({ dataDir, account, agents, network, now = Date.no
 
   /**
    * The projection for the active account: null on the pool or before any reading; `{ pending: true }`
-   * right after the account changed (a fresh reading is started at once).
+   * right after the account changed (a fresh reading is started at once). `binding` is the window that
+   * runs out first (projection.mjs); `next` is where auto-switch would move the agents, from cached
+   * readings only (no usage calls), or null.
    */
   async function projection() {
     if ((await account.profile()) === 'pool') return null
     if (latest && (await account.lastChangeAt()) > latest.at) { sample(); return { pending: true } }
     if (!latest) return null
-    const list = samples.get(latest.id || 'personal') || []
+    const t = now(), list = samples.get(latest.id || 'personal') || []
     const series = (k) => list.filter((s) => s[k]).map((s) => ({ at: s.at, used: s[k].used, resetsAt: s[k].resetsAt }))
-    return {
-      account: latest.id, saved: latest.saved, at: latest.at, error: latest.error,
-      fiveHour: latest.fiveHour?.none ? { used: 0, resetsAt: null, none: true, state: 'none' } : latest.fiveHour && { used: latest.fiveHour.used, resetsAt: latest.fiveHour.resetsAt, ...project(series('five'), now()) },
-      weekly: latest.weekly && { used: latest.weekly.used, resetsAt: latest.weekly.resetsAt, ...project(series('week'), now()) },
-    }
+    const fiveHour = latest.fiveHour?.none ? { used: 0, resetsAt: null, none: true, state: 'none' } : latest.fiveHour && { used: latest.fiveHour.used, resetsAt: latest.fiveHour.resetsAt, ...project(series('five'), t) }
+    const weekly = latest.weekly && { used: latest.weekly.used, ...projectWeekly({ week: latest.weekly, five: fiveHour, ratio: weeklyPerFive(list), samples: series('week'), now: t }) }
+    const bind = binding(fiveHour, weekly)
+    return { account: latest.id, saved: latest.saved, at: latest.at, error: latest.error, fiveHour, weekly, binding: bind, next: bind ? await nextAccount() : null }
+  }
+  /** `{ to, label }`: where an automatic switch would go if the active account ran out now. */
+  async function nextAccount() {
+    await load()
+    if (!state.enabled || !latest?.saved || !account.accounts.cachedUsage) return null
+    const list = await account.accounts.load()
+    const net = network ? (await network.status()).current : { work: false }
+    const d = decide({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, usage: account.accounts.cachedUsage(),
+      limitHit: false, busy: false, lastAutoAt: null, poolAvailable: account.poolAvailable(), now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)) })
+    if (d.action !== 'switch') return null
+    return { to: d.to, label: d.to === 'pool' ? 'the pool' : list.find((a) => a.id === d.to)?.label || 'another saved account' }
   }
   async function info() {
     await load()
