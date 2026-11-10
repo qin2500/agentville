@@ -3,13 +3,19 @@
 // Opened by the fake terminal recorder it is never run. Run in the built-in terminal's PTY it
 // prints a banner and a prompt, echoes each line ("echo: <line>"), exits on "exit" or on a second
 // Ctrl-C (like claude), and exits 0 on SIGTERM/SIGHUP. With AGENTVILLE_FAKE_CLAUDE_LOG set it appends
-// { cli, event: 'start'|'exit', argv, at } lines there, so tests can order it against the fake
-// terminal (point both logs at one file).
+// { cli, event: 'start'|'exit'|'winch', argv, at } lines there, so tests can order it against the fake
+// terminal (point both logs at one file); 'winch' carries the size every SIGWINCH reported.
+// Other lines: "size" prints the PTY size; "flood N" prints N numbered lines; "noise N" writes about
+// N KB; "paste" turns on bracketed paste and reports what arrives inside it; "tick N" prints a line
+// every 150 ms, N times. "fullscreen" does what Claude Code's
+// fullscreen renderer does: alternate screen, mouse tracking (SGR), a frame drawn with absolute
+// positions that is fully redrawn on every SIGWINCH and counts wheel events, in raw mode; "quit" leaves it.
 const fs = process.getBuiltinModule('node:fs')
 const cli = process.argv[1].split('/').pop()
 const argv = process.argv.slice(2)
 const log = (event, extra = {}) => { if (process.env.AGENTVILLE_FAKE_CLAUDE_LOG) fs.appendFileSync(process.env.AGENTVILLE_FAKE_CLAUDE_LOG, JSON.stringify({ cli, event, argv, at: Date.now(), ...extra }) + '\n') }
 if (!process.stdin.isTTY) { process.stderr.write(`fake ${cli}: not a real CLI\n`); process.exit(3) }
+const out = (s) => process.stdout.write(s)
 let exiting = false
 const bye = (code, why) => {
   if (exiting) return
@@ -17,28 +23,64 @@ const bye = (code, why) => {
   log('exit', { why })
   // After a hang-up the terminal is gone: writing to it could block, so just leave.
   if (why === 'sighup') process.exit(code)
-  process.stdout.write(`\r\nfake ${cli}: bye (${why})\r\n`)
+  out(`${full ? '\x1b[?1000l\x1b[?1006l\x1b[?1049l' : ''}\r\nfake ${cli}: bye (${why})\r\n`)
   setTimeout(() => process.exit(code), 20)
 }
-process.stdout.write(`fake ${cli} ${argv.join(' ')}\r\ncwd ${process.cwd()}\r\nfake-${cli}> `)
+const prompt = () => out(`fake-${cli}> `)
+out(`fake ${cli} ${argv.join(' ')}\r\ncwd ${process.cwd()}\r\n`)
+prompt()
 let interrupts = 0
-process.on('SIGINT', () => { if (++interrupts >= 2) bye(0, 'ctrl-c'); else process.stdout.write('\r\n(press Ctrl-C again to exit)\r\nfake-' + cli + '> ') })
+process.on('SIGINT', () => { if (++interrupts >= 2) bye(0, 'ctrl-c'); else { out('\r\n(press Ctrl-C again to exit)\r\n'); prompt() } })
 process.on('SIGTERM', () => bye(0, 'sigterm'))
 process.on('SIGHUP', () => bye(0, 'sighup'))
+
+// ---- fullscreen: what Claude Code's alternate-screen renderer looks like to a terminal ----
+let full = false, wheel = { up: 0, down: 0 }, frames = 0
+function draw() {
+  const cols = process.stdout.columns, rows = process.stdout.rows
+  frames++
+  let s = '\x1b[?2026h\x1b[H\x1b[2J'
+  for (let r = 1; r <= rows; r++) {
+    const text = r === 1 ? `FULLSCREEN ${cols}x${rows} frame ${frames}` : r === 2 ? `wheel up ${wheel.up} down ${wheel.down}` : `row ${r}`
+    s += `\x1b[${r};1H${text.padEnd(cols - 1, '.').slice(0, cols - 1)}|`
+  }
+  out(s + '\x1b[?2026l')
+}
+process.on('SIGWINCH', () => {
+  log('winch', { cols: process.stdout.columns, rows: process.stdout.rows })
+  if (full) draw()
+})
 log('start') // only once every handler is in place, so a test that waits for it can signal at once
+
 let pending = ''
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', (d) => {
+  if (full && d.includes('\x03')) { if (++interrupts >= 2) return bye(0, 'ctrl-c'); d = d.replaceAll('\x03', '') } // raw: no SIGINT
   pending += d
+  // SGR mouse reports (wheel = buttons 64/65) and bracketed paste are not lines.
+  pending = pending.replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (_, b) => {
+    if (full && +b === 64) { wheel.up++; draw() } else if (full && +b === 65) { wheel.down++; draw() }
+    return ''
+  })
+  pending = pending.replace(/\x1b\[200~([\s\S]*?)\x1b\[201~/g, (_, p) => { out(`\r\npasted[${JSON.stringify(p)}]\r\n`); return '' })
+  if (pending.includes('\x1b[200~')) return // the rest of a paste is still on its way
   let i
   while ((i = pending.search(/\r|\n/)) >= 0) {
     const line = pending.slice(0, i)
     pending = pending.slice(i + 1).replace(/^\n/, '')
     interrupts = 0
     if (line === 'exit') return bye(7, 'exit')
-    if (line === 'size') process.stdout.write(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`)
-    else process.stdout.write(`echo: ${line}\r\n`)
-    process.stdout.write(`fake-${cli}> `)
+    const [cmd, arg] = line.split(' ')
+    if (cmd === 'size') out(`size ${process.stdout.columns}x${process.stdout.rows}\r\n`)
+    else if (cmd === 'flood') { let s = ''; for (let n = 1; n <= +arg; n++) s += `line ${n} of ${arg}\r\n`; out(s) }
+    else if (cmd === 'noise') { const kb = +arg; for (let n = 0; n < kb; n++) out(`\x1b[H${'#'.repeat(1000)}\x1b[H`); if (full) draw(); else out('noise done\r\n') }
+    else if (cmd === 'paste') out('\x1b[?2004h')
+    else if (cmd === 'tick') { let n = 0; const iv = setInterval(() => { out(`tick ${++n}\r\n`); if (n >= +(arg || 10)) clearInterval(iv) }, 150) }
+    // Raw mode, as a TUI: mouse reports arrive at once and the line discipline echoes nothing.
+    else if (cmd === 'fullscreen') { full = true; process.stdin.setRawMode(true); out('\x1b[?1049h\x1b[?1000h\x1b[?1006h'); draw(); continue }
+    else if (cmd === 'quit' && full) { full = false; process.stdin.setRawMode(false); out('\x1b[?1000l\x1b[?1006l\x1b[?1049l'); }
+    else out(`echo: ${line}\r\n`)
+    if (full) draw(); else prompt()
   }
 })
 process.stdin.on('end', () => bye(0, 'eof'))

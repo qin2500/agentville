@@ -126,8 +126,8 @@ test('a bg job runs `claude attach <short>`; I/O and resize reach the PTY', asyn
   assert.equal(body.kind, 'attach')
   const c = connect(body.ticket)
   assert.equal(await c.opened, true)
-  await c.see('fake-claude> ')
-  assert.deepEqual(c.msgs[0], { type: 'attached', name: c.msgs[0].name, kind: 'attach', replay: c.msgs[0].replay })
+  await c.see('fake-claude>')
+  assert.deepEqual(c.msgs[0], { type: 'attached', name: c.msgs[0].name, kind: 'attach', replay: c.msgs[0].replay, cols: 100, rows: 30 })
   assert.deepEqual(starts('aaaaaaa1').map((e) => e.argv), [['attach', 'aaaaaaa1']])
   c.type('hello there\r')
   await c.see('echo: hello there')
@@ -220,7 +220,7 @@ test('pop out (bg job): the attach client is hung up before Ghostty opens `claud
 test('pop out (resumed session): Ctrl-C ends it, it exits, then Ghostty runs the same resume', async () => {
   const { ticket } = await (await term(cc(ids.closed))).json()
   const c = connect(ticket)
-  await c.see('fake-claude> ')
+  await c.see('fake-claude>')
   assert.deepEqual(starts('aaaaaaa2').map((e) => e.argv), [['--resume', ids.closed]])
   const before = log().length
   const r = await post(`/api/term/${encodeURIComponent(cc(ids.closed))}/popout`)
@@ -239,7 +239,7 @@ test('pop out (resumed session): Ctrl-C ends it, it exits, then Ghostty runs the
 test('pop out: no terminal keeps the embedded PTY; a failed window says the PTY is gone', async () => {
   const { ticket } = await (await term(cc(ids.closed2))).json()
   const c = connect(ticket)
-  await c.see('fake-claude> ')
+  await c.see('fake-claude>')
   const saved = process.env.AGENTVILLE_TERMINAL
   try {
     process.env.AGENTVILLE_TERMINAL = path.join(root, 'missing-terminal')
@@ -258,7 +258,7 @@ test('pop out: no terminal keeps the embedded PTY; a failed window says the PTY 
 test('the process exiting ends the PTY and reports its code', async () => {
   const { ticket } = await (await term(`codex:${ids.codex}`)).json()
   const c = connect(ticket)
-  await c.see('fake-codex> ')
+  await c.see('fake-codex>')
   assert.deepEqual(log().filter((e) => e.event === 'start' && e.cli === 'codex').map((e) => e.argv), [['resume', ids.codex]])
   c.type('exit\r')
   await until(() => c.msgs.find((m) => m.type === 'exit'))
@@ -269,7 +269,7 @@ test('the process exiting ends the PTY and reports its code', async () => {
 test('DELETE stops it; with no socket attached it ends on its own after the idle timeout', async () => {
   let { ticket } = await (await term(cc(ids.idle))).json()
   let c = connect(ticket)
-  await c.see('fake-claude> ')
+  await c.see('fake-claude>')
   let r = await fetch(`${base}/api/term/${encodeURIComponent(cc(ids.idle))}`, { method: 'DELETE', headers: { origin: base } })
   assert.deepEqual([r.status, await r.json()], [200, { stopped: true }])
   await until(() => c.closed)
@@ -277,7 +277,7 @@ test('DELETE stops it; with no socket attached it ends on its own after the idle
   assert.deepEqual(await r.json(), { stopped: false })
   ;({ ticket } = await (await term(cc(ids.idle))).json())
   c = connect(ticket)
-  await c.see('fake-claude> ')
+  await c.see('fake-claude>')
   c.sock.close()
   await until(async () => !(await (await fetch(`${base}/api/agents`)).json()).term.running.length, 4000) // termIdleMs: 400
   assert.equal(log().filter((e) => e.event === 'exit' && e.argv.includes(ids.idle)).length, 2)
@@ -291,7 +291,7 @@ test('server shutdown hangs up every PTY', async () => {
   assert.equal(r.status, 200)
   // Wait for the fake's prompt (its signal handlers are set by then), not just its start.
   const session = s2.terms.get(cc(ids.job))
-  await until(() => session.chunks.join('').includes('fake-claude> '))
+  await until(async () => (await session.screen.snapshot()).includes('fake-claude>'))
   await new Promise((done) => s2.close(done))
   // Poll the PTY's own exit; the escalation window is ~2 s, so 8 s leaves a wide margin.
   const exit = await Promise.race([session.exited, new Promise((r) => setTimeout(() => r(null), 8000))])
@@ -319,7 +319,7 @@ test('a reconnect (reattach: boot) re-attaches a live PTY but never restarts one
     assert.equal(r.status, 200)
     assert.match(first.boot, /^[\w-]{8,}$/)
     let c = srv.conn(first.ticket)
-    await c.see('fake-claude> ')
+    await c.see('fake-claude>')
     c.type('before the drop\r')
     await c.see('echo: before the drop')
     // The app answers a ping (a page checks a socket that might have died in sleep).
@@ -345,7 +345,7 @@ test('a reconnect (reattach: boot) re-attaches a live PTY but never restarts one
     r = await srv.open(id)
     assert.equal(r.status, 200)
     c = srv.conn((await r.json()).ticket)
-    await c.see('fake-claude> ')
+    await c.see('fake-claude>')
     await until(() => starts(id8).length === n0 + 2)
     c.sock.close()
     // Ended idle (300 ms with no socket): still ended for a reconnect.
@@ -355,7 +355,7 @@ test('a reconnect (reattach: boot) re-attaches a live PTY but never restarts one
     // Stopped: the same.
     r = await srv.open(id)
     c = srv.conn((await r.json()).ticket)
-    await c.see('fake-claude> ')
+    await c.see('fake-claude>')
     await srv.stop(id)
     r = await srv.open(id, { reattach: first.boot })
     assert.deepEqual([r.status, (await r.json()).why], [410, 'stop'])
@@ -363,7 +363,7 @@ test('a reconnect (reattach: boot) re-attaches a live PTY but never restarts one
     // A boot this server never issued (it restarted): the old PTY is gone with it, so it starts one.
     r = await srv.open(id, { reattach: 'an-older-boot' })
     assert.equal(r.status, 200)
-    await srv.conn((await r.json()).ticket).see('fake-claude> ')
+    await srv.conn((await r.json()).ticket).see('fake-claude>')
     await until(() => starts(id8).length === n0 + 4)
   } finally { await srv.stop(id); await srv.close() }
 })
@@ -373,7 +373,7 @@ test('shutdown tells each page the server is restarting (1012); after the restar
   let srv = await ownServer()
   const { ticket, boot } = await (await srv.open(id)).json()
   const c = srv.conn(ticket)
-  await c.see('fake-claude> ')
+  await c.see('fake-claude>')
   const spare = (await (await srv.open(id)).json()).ticket // issued, never used
   const session = srv.s.terms.get(id)
   const at = srv.at
@@ -394,7 +394,7 @@ test('shutdown tells each page the server is restarting (1012); after the restar
     const fresh = await a.json()
     assert.notEqual(fresh.boot, boot)
     const c2 = srv.conn(fresh.ticket)
-    await c2.see('fake-claude> ')
+    await c2.see('fake-claude>')
     c2.type('back\r')
     await c2.see('echo: back')
     await new Promise((r) => setTimeout(r, 200))
@@ -406,7 +406,7 @@ test('terminal content never reaches a log or the data folder', async () => {
   const SECRET = 'sk-ant-term-secret-0123456789'
   const { ticket } = await (await term(cc(ids.closed))).json()
   const c = connect(ticket)
-  await c.see('fake-claude> ')
+  await c.see('fake-claude>')
   c.type(`${SECRET}\r`)
   await c.see(`echo: ${SECRET}`)
   c.sock.close()
@@ -440,11 +440,89 @@ test('shutdown escalates: a process that ignores the hang-up and SIGTERM is kill
     process.env.AGENTVILLE_FAKE_BIN = dir
     terms.open('z', { argv: [bin, 'attach', 'deadbeef'], cwd: ws, kind: 'attach', name: 'Z' })
     const s = terms.get('z')
-    await until(() => s.chunks.join('').includes('ready')) // its traps are set
+    await until(async () => (await s.screen.snapshot()).includes('ready')) // its traps are set
     const t0 = Date.now()
     await terms.closeAll()
     assert.equal(s.exit?.signal, 9, 'SIGKILL in the end')
     assert.ok(Date.now() - t0 < 3000)
     assert.deepEqual(terms.info().running, [])
   } finally { process.env.AGENTVILLE_FAKE_BIN = saved }
+})
+
+// ---------- sizes, repaints and the attach snapshot ----------
+const winches = (id8, since) => log().filter((e) => e.event === 'winch' && e.argv.some((a) => a.startsWith(id8)) && e.at >= since)
+
+test('a new PTY starts at the size the page asks for; sizes below 20×5 never reach it', async () => {
+  const srv = await ownServer({ termEndWaitMs: 3000 })
+  const id = cc(ids.closed), id8 = 'aaaaaaa2'
+  try {
+    const r = await srv.open(id, { cols: 132, rows: 41 })
+    const c = srv.conn((await r.json()).ticket)
+    await c.see('fake-claude>')
+    assert.deepEqual([c.msgs[0].cols, c.msgs[0].rows], [132, 41])
+    const t0 = Date.now()
+    for (const [cols, rows] of [[2, 45], [19, 40], [80, 4], [0, 0], [-5, 10], ['x', 'y'], [501, 40], [80, 301]]) c.sock.send(JSON.stringify({ type: 'resize', cols, rows }))
+    await new Promise((res) => setTimeout(res, 150))
+    c.type('size\r')
+    await c.see('size 132x41')
+    assert.deepEqual(winches(id8, t0), [], 'no SIGWINCH at all')
+    // A refused start size falls back to the default rather than a 2-column PTY.
+    await srv.stop(id)
+    const r2 = await srv.open(id, { cols: 2, rows: 45 })
+    const c2 = srv.conn((await r2.json()).ticket)
+    await c2.see('fake-claude>')
+    assert.deepEqual([c2.msgs[0].cols, c2.msgs[0].rows], [100, 30])
+  } finally { await srv.stop(id); await srv.close() }
+})
+
+test('repaint at an unchanged size nudges the PTY a column and back (two SIGWINCHes); a new size is one', async () => {
+  const srv = await ownServer({ termEndWaitMs: 3000 })
+  const id = cc(ids.closed), id8 = 'aaaaaaa2'
+  try {
+    const c = srv.conn((await (await srv.open(id, { cols: 90, rows: 30 })).json()).ticket)
+    await c.see('fake-claude>')
+    let t0 = Date.now()
+    c.sock.send(JSON.stringify({ type: 'resize', cols: 90, rows: 30 })) // unchanged, no repaint: nothing
+    await new Promise((res) => setTimeout(res, 150))
+    assert.deepEqual(winches(id8, t0), [])
+    c.sock.send(JSON.stringify({ type: 'resize', cols: 90, rows: 30, repaint: true }))
+    await until(() => winches(id8, t0).length >= 2)
+    assert.deepEqual(winches(id8, t0).map((w) => `${w.cols}x${w.rows}`), ['89x30', '90x30'])
+    t0 = Date.now()
+    c.sock.send(JSON.stringify({ type: 'resize', cols: 120, rows: 40, repaint: true })) // a real change is its own repaint
+    await until(() => winches(id8, t0).length >= 1)
+    await new Promise((res) => setTimeout(res, 150))
+    assert.deepEqual(winches(id8, t0).map((w) => `${w.cols}x${w.rows}`), ['120x40'])
+    // At the minimum width the nudge goes wider, never below it.
+    t0 = Date.now()
+    c.sock.send(JSON.stringify({ type: 'resize', cols: 20, rows: 40 }))
+    await until(() => winches(id8, t0).length >= 1)
+    c.sock.send(JSON.stringify({ type: 'resize', cols: 20, rows: 40, repaint: true }))
+    await until(() => winches(id8, t0).length >= 3)
+    assert.deepEqual(winches(id8, t0).map((w) => `${w.cols}x${w.rows}`), ['20x40', '21x40', '20x40'])
+  } finally { await srv.stop(id); await srv.close() }
+})
+
+test('attaching mid-stream gets a snapshot: the alternate screen and the mouse modes survive any amount of output', async () => {
+  const srv = await ownServer({ termEndWaitMs: 3000 })
+  const id = cc(ids.closed), id8 = 'aaaaaaa2'
+  try {
+    const c = srv.conn((await (await srv.open(id, { cols: 80, rows: 24 })).json()).ticket)
+    await c.see('fake-claude>')
+    c.type('fullscreen\r')
+    await c.see('FULLSCREEN 80x24')
+    c.type('noise 400\r') // far more than the 200 KB a raw replay kept: the mode sets are long gone from it
+    await until(() => (c.out.match(/frame (\d+)/g) || []).length >= 3)
+    await new Promise((res) => setTimeout(res, 300))
+    const c2 = srv.conn((await (await srv.open(id)).json()).ticket)
+    await until(() => c2.msgs[0]?.type === 'attached' && c2.out.includes('FULLSCREEN'))
+    assert.ok(c2.out.includes('\x1b[?1049h'), 'in the alternate screen')
+    assert.ok(c2.out.includes('\x1b[?1000h'), 'mouse tracking')
+    assert.ok(c2.out.includes('\x1b[?1006h'), 'SGR mouse encoding')
+    assert.ok(c2.msgs[0].replay < 64 * 1024, `a screen, not the stream (${c2.msgs[0].replay} bytes)`)
+    // Live output after the snapshot comes once, in order.
+    c2.type('after snap\r')
+    await c2.see('echo: after snap')
+    assert.equal(c2.out.split('echo: after snap').length, 2)
+  } finally { await srv.stop(id); await srv.close() }
 })

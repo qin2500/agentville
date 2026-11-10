@@ -82,7 +82,10 @@ errored agents*. You always confirm a preview that lists every recipient first.
 else Terminal.app on macOS; `$TERMINAL`, `gnome-terminal` or `x-terminal-emulator` on Linux.
 **Terminal** runs the same command in a terminal inside the page. The server picks the command itself
 (`claude attach <job>`, `claude --resume <id>` or `codex resume <id>`); the page can't choose it. A
-session that's already running somewhere else is never resumed a second time.
+session that's already running somewhere else is never resumed a second time. The last few terminals
+you opened stay live, so switching back shows one at once, as you left it. Cmd-C copies a selection,
+Cmd-V pastes, Cmd-F finds, Cmd-K clears the view and Cmd-click opens a link; the wheel goes to the
+program when it tracks the mouse (Claude Code's full-screen mode), as in any terminal.
 
 ## Quick start
 

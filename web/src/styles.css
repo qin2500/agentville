@@ -633,7 +633,30 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
 .stage .term-err { margin: 0; color: var(--error); }
 .stage .termhint { margin: 0; }
 .termwrap { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; }
-.termhost { flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--bg); }
+.termhost { flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--bg); position: relative; }
+/* The terminals kept live for instant switching are hidden, never re-created (term.js). */
+.termhost[hidden] { display: none; }
+/* A new terminal with nothing to show yet: a quiet line, after a beat so a fast start never flashes it. */
+.termwait { position: absolute; left: var(--space-3); top: var(--space-2); display: flex; align-items: center; gap: 8px;
+  font: 12px var(--mono, ui-monospace, Menlo, monospace); color: var(--text-dim); pointer-events: none; animation: term-fade .15s ease-out; }
+.termwait[hidden] { display: none; }
+.termwait .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); animation: term-pulse 1.2s ease-in-out infinite; }
+@keyframes term-fade { from { opacity: 0; } }
+@keyframes term-pulse { 50% { opacity: .3; } }
+/* Scrolled up: back to the latest output in one click; it says when more arrived meanwhile. */
+.termjump { position: absolute; right: var(--space-4, 16px); bottom: var(--space-3); z-index: 3; padding: 4px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text-muted); font-size: 12px; cursor: pointer;
+  box-shadow: 0 2px 8px rgb(0 0 0 / .25); animation: term-fade .12s ease-out; }
+.termjump:hover { color: var(--text); }
+.termjump.fresh { color: var(--text); border-color: var(--waiting); }
+.termjump[hidden] { display: none; }
+/* Find in the terminal (Cmd-F). */
+.termfind { position: absolute; top: var(--space-2); right: var(--space-4, 16px); z-index: 4; display: flex; align-items: center; gap: 4px;
+  padding: 4px 4px 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); box-shadow: 0 2px 8px rgb(0 0 0 / .25); }
+.termfind[hidden] { display: none; }
+.termfind input { width: 180px; min-width: 0; font: 12px var(--mono, ui-monospace, Menlo, monospace); }
+.termfind .findcount { font-size: 11px; color: var(--text-muted); min-width: 64px; text-align: right; white-space: nowrap; }
+.termfind .iconbtn { width: 24px; height: 24px; }
 /* Over the terminal while it can't take keys (term.js): quiet while reconnecting, louder once a key was dropped. */
 .termnotice { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); max-width: calc(100% - 2 * var(--space-2));
   padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text-muted);
@@ -654,10 +677,12 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
   .main.termview.full .pbody > .list { grid-column: 1; grid-row: 3; background: var(--surface); min-width: 0; }
   .main.termview.full .pbody > .drawer { grid-column: 3; grid-row: 1 / -1; border-left: 1px solid var(--line); }
   .main.termview.full > .stage { border-right: 1px solid var(--line); }
-  .main.tv-anim { transition: grid-template-columns .2s ease-out; }
+  .main.tv-anim { transition: grid-template-columns .15s ease-out; }
+  .main.tv-anim > .stage { animation: term-fade .15s ease-out; }
 }
 .reduce-motion .main.tv-anim { transition: none; }
-@media (prefers-reduced-motion: reduce) { .main.tv-anim { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .main.tv-anim { transition: none; } .main.tv-anim > .stage, .termwait, .termwait .dot, .termjump { animation: none; } }
+.reduce-motion .main.tv-anim > .stage, .reduce-motion .termwait, .reduce-motion .termwait .dot, .reduce-motion .termjump { animation: none; }
 @media (max-width: 900px) {
   /* Phone: the terminal is the whole screen; Back (or Shift+Esc) restores the previous view. */
   .stage { position: fixed; inset: 0; z-index: 25; border: 0; padding: var(--space-2) var(--space-2) max(var(--space-2), env(safe-area-inset-bottom)); background: var(--surface); }

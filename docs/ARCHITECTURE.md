@@ -38,6 +38,7 @@ The page polls `/api/agents` every 2 s while visible and every 15 s when the tab
 | `accounts.mjs`, `account.mjs`, `autoswitch.mjs`, `projection.mjs`, `network.mjs` | Saved Claude logins and their usage, switching (with backups, a canary and rollback), auto-switch, the run-out projection, and the work-network rule for quarantine accounts. |
 | `fleet.mjs`, `inbox.mjs` | Fleet messages: compose a previewed plan, then deliver to live sessions' local message sockets. |
 | `terminal.mjs`, `pty.mjs` | Open in a terminal window (Ghostty, Terminal.app, or a Linux terminal); the built-in terminal over a WebSocket. |
+| `term-screen.mjs` | The built-in terminal's screen on the server (a headless xterm): what a page gets when it attaches, and the sizes a PTY may be given. |
 | `datadir.mjs` | Where Agentville's own files live, and the one-time move from the pre-rename `village-ai` folder. |
 | `update.mjs` | The update check against GitHub's `main`, Update now (pull, install, build) and the self-restart. |
 

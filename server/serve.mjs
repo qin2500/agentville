@@ -275,12 +275,14 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       if (url.pathname === '/api/agents' && req.method === 'GET') return send(res, 200, { ...(await snapshot()), term: terms.info() })
       const tm = /^\/api\/term\/([^/]+)(\/popout)?$/.exec(url.pathname)
       if (tm && (req.method === 'POST' || (req.method === 'DELETE' && !tm[2]))) {
-        let reattach = null
+        let reattach = null, size = null
         if (req.method === 'POST') {
           if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
-          // The server decides the command; the body may only name the boot a page re-attaches from.
+          // The server decides the command; the body may only name the boot a page re-attaches from,
+          // and the size its terminal has (so a new PTY starts at that size; pty.mjs checks it).
           const body = await readBody(req)
           if (typeof body?.reattach === 'string' && body.reattach.length <= 64) reattach = body.reattach
+          if (body?.cols != null && body?.rows != null) size = { cols: body.cols, rows: body.rows }
         }
         const id = decodeURIComponent(tm[1])
         if (req.method === 'DELETE') {
@@ -303,7 +305,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const agent = (await snapshot()).agents.find((a) => a.id === id)
         // An agent already in our PTY is re-attached; otherwise openCommand decides (and refuses).
         const { argv, cwd } = running || await openCommand(agent)
-        const out = terms.open(id, { argv, cwd, kind: argv[1] === 'attach' ? 'attach' : 'resume', name: agent?.name || running?.name || id })
+        const out = terms.open(id, { argv, cwd, kind: argv[1] === 'attach' ? 'attach' : 'resume', name: agent?.name || running?.name || id, size })
         cached = null
         return send(res, 200, out)
       }

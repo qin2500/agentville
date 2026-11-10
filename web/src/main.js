@@ -144,19 +144,25 @@ const broadcast = createBroadcast(app);
 // Terminal takes the centre; the village (or the full-screen list) and the inspector compress to the
 // sides. Entering saves the view; leaving puts back exactly that view. The PTY outlives both.
 const termView = createTermView(app, { termName: () => panel.termName(), terminal: () => S.data?.open?.terminal || null, onClose: () => app.closeTerminal() });
+// The layout moves in 150 ms (styles.css); the terminal is fitted once it has settled, never to a
+// column caught mid-transition.
 let termPrev = null, tvAnim = false, tvTimer = 0;
+const reducedMotion = () => S.reduceMotion || matchMedia('(prefers-reduced-motion: reduce)').matches;
 function animateLayout() {
-  if (S.reduceMotion) return;
+  if (reducedMotion()) return;
   tvAnim = true;
   clearTimeout(tvTimer);
-  tvTimer = setTimeout(() => { tvAnim = false; $('main').classList.remove('tv-anim'); termView.fit(); }, 260);
+  tvTimer = setTimeout(() => { tvAnim = false; $('main').classList.remove('tv-anim'); termView.fit(); }, 170);
 }
 app.openTerminal = id => {
   const a = S.byId.get(id);
   if (!a) return;
   closePops();
   if (!S.term) {
+    // Where the keyboard was, to give it back exactly there on close.
+    const f = document.activeElement;
     termPrev = {
+      focus: f && f !== document.body && !f.closest('#stage') ? { el: f, key: focusKey(f) } : null,
       panel: S.panel, views: { ...S.views }, selected: S.selected, detail: S.detail, panelW: S.panelW,
       table: { sort: S.table.sort, dir: S.table.dir, flat: S.table.flat, resting: S.table.resting },
       cam: village.camera(), scroll: panel.scrollState(),
@@ -195,13 +201,28 @@ app.closeTerminal = () => {
     const put = () => {
       village.setCamera(p.cam);
       panel.restoreScroll(p.scroll);
-      if (document.activeElement === document.body) { if (S.detail) panel.focusTermButton(); else panel.focusSelectedRow(); }
+      if (document.activeElement === document.body || document.activeElement?.closest('#stage')) refocus(p);
     };
     put();
-    setTimeout(put, S.reduceMotion ? 0 : 280);
+    setTimeout(put, reducedMotion() ? 0 : 180);
   }
-  if (S.detail) panel.focusTermButton(); else panel.focusSelectedRow();
+  refocus(p);
 };
+/** Back to the control that had the keyboard before the terminal opened (or its re-rendered twin). */
+function refocus(p) {
+  const { el, key } = p?.focus || {};
+  const f = el?.isConnected ? el : key ? document.querySelector(key) : null;
+  if (f && f.offsetParent !== null && !f.disabled) { f.focus({ preventScroll: true }); if (document.activeElement === f) return; }
+  if (S.detail) panel.focusTermButton(); else panel.focusSelectedRow();
+}
+/** A selector for the same control after a re-render: its id, or what it acts on inside an id'd part. */
+function focusKey(f) {
+  if (f.id) return `#${CSS.escape(f.id)}`;
+  const attr = ['data-id', 'data-act', 'data-bucket', 'data-key', 'data-view'].find(a => f.hasAttribute(a));
+  if (!attr) return null;
+  const part = f.parentElement?.closest('[id]');
+  return `${part ? `#${CSS.escape(part.id)} ` : ''}${f.tagName.toLowerCase()}[${attr}="${CSS.escape(f.getAttribute(attr))}"]`;
+}
 // ?debug exposes the world layout for e2e checks (positions, bounds, zoom).
 if (new URLSearchParams(location.search).has('debug')) window.villageDebug = village.debug;
 
@@ -711,7 +732,7 @@ let altDown = false;
 document.addEventListener('keydown', e => {
   if (document.querySelector('dialog[open]')) return; // a modal sheet owns the keyboard (native Esc closes it)
   // The built-in terminal owns every key while focused, Esc included; Shift+Esc leaves it (term.js).
-  if (e.target.closest?.('#stage .xterm')) return;
+  if (e.target.closest?.('#stage .xterm, #stage .termfind')) return;
   if (e.key === 'Alt' && !altDown) { altDown = true; village.showAllTags(true); }
   const inField = e.target.matches('input, select, textarea');
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); return focusSearch(); }

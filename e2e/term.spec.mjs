@@ -11,7 +11,7 @@ const SHORT = IDS.leadBlocked.slice(0, 8)
 const lines = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [])
 const windows = () => lines(path.join(HOME, 'terminal.log'))
 const claudeEvents = () => lines(path.join(HOME, 'claude.log'))
-const screen = (page) => page.locator('#stage .xterm-rows')
+const screen = (page) => page.locator('#stage .termhost:not([hidden]) .xterm-rows')
 const box = async (page, sel) => page.locator(sel).boundingBox()
 const running = async (page) => (await (await page.request.get('/api/agents')).json()).term.running
 
@@ -207,7 +207,7 @@ test('on a phone the terminal is full screen, and Back restores the previous vie
   const st = await box(page, '#stage')
   const vp = page.viewportSize()
   expect([st.x, st.y, Math.round(st.width), Math.round(st.height)]).toEqual([0, 0, vp.width, vp.height])
-  await page.locator('#stage .xterm').click()
+  await page.locator('#stage .termhost:not([hidden]) .xterm').click()
   await typeLine(page, 'from the phone')
   await expect(screen(page)).toContainText('echo: from the phone')
   await expect(page.locator('#stage .tclose')).toBeHidden()
@@ -289,7 +289,7 @@ test('a process that exits shows Start again and is never restarted on its own',
   await expect(status(page)).toHaveText('Process exited (code 7) — Start again')
   // Coming back to the page and typing don't bring it back.
   await page.evaluate(() => { dispatchEvent(new Event('online')); dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')) })
-  await page.locator('#stage .xterm').click()
+  await page.locator('#stage .termhost:not([hidden]) .xterm').click()
   await page.keyboard.type('x')
   await expect(notice(page)).toHaveText('Not sent: this session has ended. Use Start again to run it again.')
   await page.waitForTimeout(2500) // longer than the first few reconnect delays

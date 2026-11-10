@@ -3,7 +3,12 @@
  * one from the page), streamed to the browser over a loopback-only, Origin-checked WebSocket.
  *
  * - A POST spawns (or finds) the agent's PTY and returns a one-time ticket (30 s, single use).
- * - Any number of sockets may watch one PTY; a new one first gets the last ~200 KB of output.
+ * - Any number of sockets may watch one PTY. A new one first gets `attached` with the PTY's size and
+ *   then one binary frame: a snapshot of the screen, scrollback and modes (term-screen.mjs) —
+ *   live output after it is queued until the snapshot has gone, so nothing is lost or doubled.
+ * - Sizes below MIN_COLS × MIN_ROWS are refused: a page measuring a hidden or collapsing host
+ *   must never make the app redraw for 2 columns. `{ type: 'resize', repaint: true }` at the size
+ *   the PTY already has nudges it one column and back, so the app gets SIGWINCH and redraws.
  * - The PTY ends when its process exits, on stop/popout, on server shutdown, or `idleMs` after the
  *   last socket left. A socket closing only detaches.
  * - Every ticket carries this server's `boot` id. A page that lost its socket re-attaches with it
@@ -19,9 +24,11 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { WebSocketServer } from 'ws'
 import { isLocalRequest } from './local-request.mjs'
+import { createScreen, validSize, MIN_COLS } from './term-screen.mjs'
 
 const TICKET_MS = 30_000
-const SCROLLBACK = 200 * 1024
+const SCROLLBACK = 200 * 1024 // the raw-output fallback, when @xterm/headless is missing
+const NUDGE_MS = 40
 const IDLE_MS = 10 * 60_000
 const END_WAIT_MS = 10_000
 const MAX_FRAME = 64 * 1024
@@ -95,7 +102,7 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
    * Spawn `argv` in `cwd` for this agent, or return the PTY it already has.
    * `kind`: 'attach' (a bg job's attach client) or 'resume' (the conversation's own process).
    */
-  function open(agentId, { argv, cwd, kind, name }) {
+  function open(agentId, { argv, cwd, kind, name, size }) {
     const { pty, error } = loadPty()
     if (!pty) throw Object.assign(new Error(error), { status: 501 })
     let s = get(agentId)
@@ -110,33 +117,40 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
       if (testing() && !(fakes && path.dirname(argv[0]) === path.resolve(fakes))) {
         throw Object.assign(new Error('Built-in terminal is disabled in tests unless AGENTVILLE_FAKE_BIN names the fake CLI folder'), { status: 501 })
       }
+      const start = validSize(size?.cols, size?.rows) || { cols: 100, rows: 30 }
       let proc
       try {
-        proc = pty.spawn(argv[0], argv.slice(1), { name: 'xterm-256color', cols: 100, rows: 30, cwd, env: ptyEnv() })
+        proc = pty.spawn(argv[0], argv.slice(1), { name: 'xterm-256color', cols: start.cols, rows: start.rows, cwd, env: ptyEnv() })
       } catch {
         // Not the error text: it can carry the argv (a session id).
         throw Object.assign(new Error('Could not start the terminal process'), { status: 502 })
       }
-      s = { agentId, name, kind, argv, cwd, proc, chunks: [], size: 0, clients: new Set(), exit: null, idleTimer: null, exited: null }
+      s = {
+        agentId, name, kind, argv, cwd, proc, clients: new Set(), exit: null, idleTimer: null, exited: null,
+        screen: createScreen({ ...start, fallbackBytes: scrollback }), cols: start.cols, rows: start.rows, phys: { ...start }, nudge: null,
+      }
       const session = s
       s.exited = new Promise((resolve) => {
         proc.onExit(({ exitCode, signal }) => {
           session.exit = { code: exitCode, signal: signal || null }
           clearTimeout(session.idleTimer)
+          clearTimeout(session.nudge)
           broadcast(session, { type: 'exit', code: exitCode, signal: signal || null, why: session.ending || null })
           for (const ws of session.clients) ws.close(1000, 'exited')
           if (sessions.get(agentId) === session) sessions.delete(agentId)
           lastEnd.delete(agentId)
           lastEnd.set(agentId, session.ending || 'exit')
           while (lastEnd.size > 500) lastEnd.delete(lastEnd.keys().next().value)
+          session.screen.dispose()
           resolve(session.exit)
         })
       })
       proc.onData((d) => {
-        session.chunks.push(d)
-        session.size += d.length
-        while (session.size > scrollback && session.chunks.length > 1) session.size -= session.chunks.shift().length
-        for (const ws of session.clients) if (ws.readyState === 1) ws.send(Buffer.from(d, 'utf8'), { binary: true })
+        session.screen.write(d)
+        for (const ws of session.clients) {
+          if (ws.queued) ws.queued.push(d)
+          else if (ws.readyState === 1) ws.send(Buffer.from(d, 'utf8'), { binary: true })
+        }
       })
       sessions.set(agentId, s)
       armIdle(s)
@@ -182,11 +196,40 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
     wss.handleUpgrade(req, socket, head, (ws) => attach(s, ws))
   }
 
+  /** The PTY's size as the app sees it (only ever a valid one; see `resize`). */
+  function setPhys(s, cols, rows) {
+    if (s.phys.cols === cols && s.phys.rows === rows) return
+    try { s.proc.resize(cols, rows); s.phys = { cols, rows } } catch { /* exited */ }
+  }
+  /**
+   * A page's terminal is `cols` × `rows`. A new size reaches the app as SIGWINCH and it redraws.
+   * With `repaint` and no change, the PTY is nudged a column and back (SIGWINCH twice; the kernel
+   * sends none for an unchanged size), so a TUI repaints a screen drawn while another size held.
+   */
+  function resize(s, cols, rows, repaint) {
+    clearTimeout(s.nudge); s.nudge = null
+    const changed = cols !== s.cols || rows !== s.rows
+    s.cols = cols; s.rows = rows
+    s.screen.resize(cols, rows)
+    if (changed || !repaint || s.phys.cols !== cols || s.phys.rows !== rows) return setPhys(s, cols, rows)
+    setPhys(s, cols > MIN_COLS ? cols - 1 : cols + 1, rows)
+    s.nudge = setTimeout(() => { s.nudge = null; if (!s.exit) setPhys(s, s.cols, s.rows) }, NUDGE_MS)
+    s.nudge.unref?.()
+  }
+
   function attach(s, ws) {
     clearTimeout(s.idleTimer)
     s.clients.add(ws)
-    ws.send(JSON.stringify({ type: 'attached', name: s.name, kind: s.kind, replay: s.size }))
-    if (s.size) ws.send(Buffer.from(s.chunks.join(''), 'utf8'), { binary: true })
+    // Output from now on waits until the snapshot (which covers everything before it) is sent.
+    ws.queued = []
+    s.screen.snapshot().then((snap) => {
+      const queued = ws.queued
+      ws.queued = null
+      if (ws.readyState !== 1) return
+      ws.send(JSON.stringify({ type: 'attached', name: s.name, kind: s.kind, replay: snap.length, cols: s.cols, rows: s.rows }))
+      ws.send(Buffer.from(snap, 'utf8'), { binary: true })
+      if (queued.length) ws.send(Buffer.from(queued.join(''), 'utf8'), { binary: true })
+    })
     ws.on('message', (data, isBinary) => {
       if (s.exit || s.ending) return
       if (isBinary) return s.proc.write(data.toString('utf8'))
@@ -195,8 +238,8 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
       if (m?.type === 'input' && typeof m.data === 'string') s.proc.write(m.data)
       else if (m?.type === 'ping') { if (ws.readyState === 1) ws.send('{"type":"pong"}') }
       else if (m?.type === 'resize') {
-        const cols = Math.round(Number(m.cols)), rows = Math.round(Number(m.rows))
-        if (cols >= 2 && cols <= 500 && rows >= 1 && rows <= 300) { try { s.proc.resize(cols, rows) } catch { /* exited */ } }
+        const size = validSize(m.cols, m.rows) // never a hidden or collapsing host's 2 columns
+        if (size) resize(s, size.cols, size.rows, m.repaint === true)
       }
     })
     ws.on('close', () => { s.clients.delete(ws); armIdle(s) })
