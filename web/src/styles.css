@@ -632,7 +632,13 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
 .termhead .ghost[aria-busy="true"] { opacity: .7; cursor: progress; }
 .stage .term-err { margin: 0; color: var(--error); }
 .stage .termhint { margin: 0; }
+.termwrap { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; }
 .termhost { flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--bg); }
+/* Over the terminal while it can't take keys (term.js): quiet while reconnecting, louder once a key was dropped. */
+.termnotice { position: absolute; top: var(--space-2); left: 50%; transform: translateX(-50%); max-width: calc(100% - 2 * var(--space-2));
+  padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text-muted);
+  font-size: 12px; pointer-events: none; z-index: 2; box-shadow: 0 2px 8px rgb(0 0 0 / .25); }
+.termnotice.dropped { color: var(--text); border-color: var(--stalled); }
 .termhost .xterm { height: 100%; padding: var(--space-1); }
 .termhost .xterm:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
 @media (min-width: 901px) {

@@ -6,6 +6,11 @@
  * - Any number of sockets may watch one PTY; a new one first gets the last ~200 KB of output.
  * - The PTY ends when its process exits, on stop/popout, on server shutdown, or `idleMs` after the
  *   last socket left. A socket closing only detaches.
+ * - Every ticket carries this server's `boot` id. A page that lost its socket re-attaches with it
+ *   (`reattach`): on the same boot a PTY that has since ended stays ended (`ended()`), so a
+ *   reconnect never restarts an exited, stopped or idle-ended session; after a restart (new boot)
+ *   the old PTY died with the old server, so it may start a fresh one.
+ * - On shutdown every socket hears `{ type: 'ending', why: 'server-restart' }` and closes with 1012.
  * - Terminal content is never logged; the only things kept are the scrollback buffer in memory.
  */
 import crypto from 'node:crypto'
@@ -67,6 +72,8 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
   const sessions = new Map() // agentId -> session
   const tickets = new Map() // ticket -> { agentId, expires }
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: false })
+  const boot = crypto.randomBytes(9).toString('base64url')
+  const lastEnd = new Map() // agentId -> why its last PTY ended (this boot only; reasons, never content)
 
   const available = () => !!loadPty().pty
   const info = () => ({ available: available(), running: [...sessions.values()].filter((s) => !s.exit).map((s) => s.agentId) })
@@ -119,6 +126,9 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
           broadcast(session, { type: 'exit', code: exitCode, signal: signal || null, why: session.ending || null })
           for (const ws of session.clients) ws.close(1000, 'exited')
           if (sessions.get(agentId) === session) sessions.delete(agentId)
+          lastEnd.delete(agentId)
+          lastEnd.set(agentId, session.ending || 'exit')
+          while (lastEnd.size > 500) lastEnd.delete(lastEnd.keys().next().value)
           resolve(session.exit)
         })
       })
@@ -134,7 +144,17 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
     for (const [k, v] of tickets) if (Date.now() > v.expires) tickets.delete(k)
     const ticket = crypto.randomBytes(24).toString('base64url')
     tickets.set(ticket, { agentId, expires: Date.now() + TICKET_MS })
-    return { ticket, existing, kind: s.kind, name: s.name }
+    return { ticket, existing, kind: s.kind, name: s.name, boot }
+  }
+
+  /**
+   * A page re-attaching after its socket dropped names the boot its last ticket came from. On this
+   * same boot with no live PTY, the session ended while it was away: why (never restarted for it).
+   * Any other boot means the server restarted and took the PTY with it: null (a fresh one may start).
+   */
+  function ended(agentId, reattach) {
+    if (typeof reattach !== 'string' || reattach !== boot || get(agentId)) return null
+    return lastEnd.get(agentId) || 'exit'
   }
 
   /** Validate and consume a ticket: the agent id it was issued for, or null. */
@@ -173,6 +193,7 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
       let m
       try { m = JSON.parse(data.toString('utf8')) } catch { return }
       if (m?.type === 'input' && typeof m.data === 'string') s.proc.write(m.data)
+      else if (m?.type === 'ping') { if (ws.readyState === 1) ws.send('{"type":"pong"}') }
       else if (m?.type === 'resize') {
         const cols = Math.round(Number(m.cols)), rows = Math.round(Number(m.rows))
         if (cols >= 2 && cols <= 500 && rows >= 1 && rows <= 300) { try { s.proc.resize(cols, rows) } catch { /* exited */ } }
@@ -213,14 +234,18 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
   }
 
   /**
-   * Server shutdown: hang up every PTY (for `claude attach`, that only detaches). A process that
-   * ignores the hang-up gets SIGTERM, then SIGKILL, so none outlives the server holding a
-   * conversation. Resolves once all have exited (at most ~2 s).
+   * Server shutdown: tell every page the server is going down (it reconnects once it is back), then
+   * hang up every PTY (for `claude attach`, that only detaches). A process that ignores the hang-up
+   * gets SIGTERM, then SIGKILL, so none outlives the server holding a conversation. Resolves once
+   * all have exited (at most ~2 s).
    */
   async function closeAll() {
     const all = [...sessions.values()]
+    for (const ws of wss.clients) {
+      if (ws.readyState === 1) { try { ws.send(JSON.stringify({ type: 'ending', why: 'server-restart' })); ws.close(1012, 'server-restart') } catch { /* gone */ } }
+      setTimeout(() => ws.terminate(), 300).unref?.() // a page that never answers the close
+    }
     for (const s of all) { clearTimeout(s.idleTimer); s.ending ||= 'shutdown'; signal(s, 'SIGHUP') }
-    for (const ws of wss.clients) ws.terminate()
     tickets.clear()
     await Promise.all(all.map(async (s) => {
       if (await wait(s, 800)) return
@@ -231,5 +256,5 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
     }))
   }
 
-  return { available, info, get, open, redeem, upgrade, end, closeAll, sessions }
+  return { available, info, get, open, ended, redeem, upgrade, end, closeAll, sessions, boot }
 }

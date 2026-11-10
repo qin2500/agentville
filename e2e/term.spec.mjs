@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
-import { HOME, IDS, claudeId, row, clearOverrides, inspect } from './helpers.mjs'
+import { HOME, IDS, claudeId, row, clearOverrides, inspect, prepareHome, startServer, nextPort, tmpDir } from './helpers.mjs'
 
 const ID = claudeId('leadBlocked') // "DB Lead", a background job → `claude attach <short>`
 const OTHER = claudeId('leadCi') // "CI Lead", also a job
@@ -225,4 +225,153 @@ test('refusals: a live session and a subagent have no Terminal', async ({ page }
   await inspect(page, `${claudeId('leadBuilding')}:sub:worker`)
   await expect(page.locator('#drawer [data-act="term"]')).toBeDisabled()
   await expect(page.locator('#openwhy')).toHaveText('Open its lead instead')
+})
+
+// ---------- dropped sockets, server restarts, focus ----------
+const status = (page) => page.locator('#stage .termstatus')
+const notice = (page) => page.locator('#stage .termnotice')
+const starts = () => claudeEvents().filter((e) => e.event === 'start' && e.argv.includes(SHORT)).length
+/** Every terminal socket goes through a pass-through proxy, so a test can kill one from the server side. */
+async function proxySockets(page) {
+  const socks = []
+  await page.routeWebSocket(/\/api\/term\/ws/, (ws) => { ws.connectToServer(); socks.push(ws) })
+  // Close the page's side as a dying server would (1001 "going away"); the proxy closes the server side.
+  return { kill: () => socks.at(-1).close({ code: 1001, reason: 'going away' }), count: () => socks.length }
+}
+const termFocused = (page) => page.evaluate(() => !!document.activeElement?.closest('#stage .xterm'))
+
+test('a socket that drops while the process runs reconnects on its own; typing works again without switching agents', async ({ page }) => {
+  const socks = await proxySockets(page)
+  await inspect(page, ID)
+  await enter(page)
+  await typeLine(page, 'before the drop')
+  await expect(screen(page)).toContainText('echo: before the drop')
+  const n = starts(), opened = socks.count()
+  await socks.kill() // what a server restart, sleep or a network blip does to the page
+  await expect.poll(() => socks.count()).toBeGreaterThan(opened) // reconnected by itself
+  await expect(status(page)).toHaveText('Attached')
+  await expect(notice(page)).toBeHidden()
+  expect(await termFocused(page)).toBe(true)
+  await typeLine(page, 'after the drop')
+  await expect(screen(page)).toContainText('echo: after the drop')
+  await expect(screen(page)).toContainText('echo: before the drop') // the same PTY, replayed
+  await expect(page.locator('#stage .tname')).toHaveText('DB Lead')
+  expect(starts()).toBe(n) // re-attached, never a second `claude attach`
+})
+
+test('typing while disconnected is not sent, and says so; it works again once reconnected', async ({ page }) => {
+  const socks = await proxySockets(page)
+  await inspect(page, ID)
+  await enter(page)
+  // Hold every reconnect off until the test lets go.
+  let hold = true
+  await page.route(/\/api\/term\/[^/]+$/, (r) => (hold && r.request().method() === 'POST' ? r.fulfill({ status: 503, body: '{}' }) : r.continue()))
+  await socks.kill()
+  await expect(status(page)).toHaveText('Reconnecting…')
+  await expect(notice(page)).toBeVisible()
+  await expect(notice(page)).toContainText('Reconnecting')
+  await typeLine(page, 'lost keys')
+  await expect(notice(page)).toHaveText('Reconnecting — what you just typed was not sent. Typing works again in a moment.')
+  await expect(notice(page)).toHaveClass(/dropped/)
+  hold = false
+  await expect(status(page)).toHaveText('Attached', { timeout: 15_000 })
+  await expect(notice(page)).toBeHidden()
+  await typeLine(page, 'found keys')
+  await expect(screen(page)).toContainText('echo: found keys')
+  await expect(screen(page)).not.toContainText('lost keys') // dropped, never replayed late
+})
+
+test('a process that exits shows Start again and is never restarted on its own', async ({ page }) => {
+  await inspect(page, ID)
+  await enter(page)
+  const n = starts()
+  await typeLine(page, 'exit')
+  await expect(status(page)).toHaveText('Process exited (code 7) — Start again')
+  // Coming back to the page and typing don't bring it back.
+  await page.evaluate(() => { dispatchEvent(new Event('online')); dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')) })
+  await page.locator('#stage .xterm').click()
+  await page.keyboard.type('x')
+  await expect(notice(page)).toHaveText('Not sent: this session has ended. Use Start again to run it again.')
+  await page.waitForTimeout(2500) // longer than the first few reconnect delays
+  await expect(status(page)).toHaveText('Process exited (code 7) — Start again')
+  expect(starts()).toBe(n)
+  expect(await running(page)).not.toContain(ID)
+  await page.locator('#stage [data-tact="reconnect"]').click()
+  await expect(status(page)).toHaveText('Attached')
+  await expect.poll(starts).toBe(n + 1)
+  expect(await termFocused(page)).toBe(true) // the button gives the keyboard back
+  await typeLine(page, 'started again')
+  await expect(screen(page)).toContainText('echo: started again')
+})
+
+test('a session that ended while the page was disconnected stays ended (Start again), like an idle end', async ({ page, baseURL }) => {
+  const socks = await proxySockets(page)
+  await inspect(page, ID)
+  await enter(page)
+  const n = starts()
+  let hold = true
+  await page.route(/\/api\/term\/[^/]+$/, (r) => (hold && r.request().method() === 'POST' ? r.fulfill({ status: 503, body: '{}' }) : r.continue()))
+  await socks.kill()
+  await expect(status(page)).toHaveText('Reconnecting…')
+  // Meanwhile it ends on the server (the idle timeout, or a Stop from elsewhere).
+  await page.request.delete(`/api/term/${encodeURIComponent(ID)}`, { headers: { origin: baseURL } })
+  hold = false
+  await expect(status(page)).toHaveText('Stopped — Start again', { timeout: 15_000 })
+  await page.waitForTimeout(1500)
+  expect(starts()).toBe(n)
+  expect(await running(page)).not.toContain(ID)
+})
+
+test('the terminal keeps the keyboard across data refreshes and re-renders; a click anywhere in it takes it back', async ({ page, request, baseURL }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'desktop layout (the hint is hidden on a phone)')
+  await inspect(page, ID)
+  await enter(page)
+  expect(await termFocused(page)).toBe(true)
+  // A rename re-renders the header and the inspector; then let a few 2 s polls go by.
+  await request.patch(`/api/overrides/${encodeURIComponent(ID)}`, { headers: { origin: baseURL, 'content-type': 'application/json' }, data: { name: 'DB Lead Two' } })
+  await expect(page.locator('#stage .tname')).toHaveText('DB Lead Two')
+  await page.waitForTimeout(4500)
+  expect(await termFocused(page)).toBe(true)
+  await page.keyboard.type('v') // a global shortcut (switch view) belongs to the terminal here
+  await typeLine(page, 'kept')
+  await expect(screen(page)).toContainText('echo: vkept')
+  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true')
+  // Clicks outside the xterm but inside the terminal area: header text, the hint, the frame.
+  for (const [sel, position] of [['#stage .tname'], ['#stage .termhint'], ['#stage', { x: 3, y: 3 }]]) {
+    await page.locator('#q').focus()
+    expect(await termFocused(page)).toBe(false)
+    await page.locator(sel).click({ position })
+    expect(await termFocused(page), sel).toBe(true)
+  }
+  await typeLine(page, 'clicked')
+  await expect(screen(page)).toContainText('echo: clicked')
+  await clearOverrides(request)
+})
+
+test('a server restart: the page says so, reconnects by itself, and typing reaches a fresh `claude attach`', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'one layout is enough for the restart')
+  const dir = tmpDir('term-restart')
+  const env = prepareHome(dir), port = nextPort()
+  const log = () => lines(env.AGENTVILLE_FAKE_CLAUDE_LOG).filter((e) => e.argv.includes(SHORT))
+  let s = await startServer(env, port)
+  try {
+    await page.goto(`${s.url}/?debug`)
+    await expect(page.locator('#conn')).toHaveText(/Live/)
+    await inspect(page, ID)
+    await enter(page)
+    await typeLine(page, 'before restart')
+    await expect(screen(page)).toContainText('echo: before restart')
+    await s.stop() // SIGTERM: the server tells the page, hangs up the PTY and exits
+    await expect(status(page)).toHaveText('Server restarting — reconnecting…')
+    await expect(notice(page)).toContainText('Server restarting')
+    expect(log().filter((e) => e.event === 'exit').length).toBe(1)
+    s = await startServer(env, port)
+    await expect(status(page)).toHaveText('Attached', { timeout: 20_000 })
+    await expect(notice(page)).toBeHidden()
+    await expect(page.locator('#stage .tname')).toHaveText('DB Lead') // never switched agents
+    await typeLine(page, 'after restart')
+    await expect(screen(page)).toContainText('echo: after restart')
+    const ev = log()
+    expect(ev.filter((e) => e.event === 'start').length - ev.filter((e) => e.event === 'exit').length).toBe(1) // exactly one alive
+  } finally { await s.stop() }
 })

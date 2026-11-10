@@ -6,6 +6,7 @@
  */
 import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -89,14 +90,14 @@ const until = async (fn, ms = 5000) => {
 }
 
 /** A WebSocket client that collects output text and control messages. */
-function connect(ticket, { origin = base, host } = {}) {
+function connect(ticket, { origin = base, host, at = port } = {}) {
   const headers = { ...(origin !== null && { origin }), ...(host && { host }) }
-  const sock = new WebSocket(`ws://127.0.0.1:${port}/api/term/ws?ticket=${encodeURIComponent(ticket)}`, { headers })
-  const c = { sock, out: '', msgs: [], status: null, closed: false }
+  const sock = new WebSocket(`ws://127.0.0.1:${at}/api/term/ws?ticket=${encodeURIComponent(ticket)}`, { headers })
+  const c = { sock, out: '', msgs: [], status: null, closed: false, code: null }
   sock.on('message', (d, bin) => { if (bin) c.out += d.toString('utf8'); else c.msgs.push(JSON.parse(d.toString('utf8'))) })
   sock.on('unexpected-response', (_req, res) => { c.status = res.statusCode; sock.terminate() })
   sock.on('error', () => {})
-  sock.on('close', () => { c.closed = true })
+  sock.on('close', (code) => { c.closed = true; c.code = code })
   c.opened = new Promise((resolve) => { sock.on('open', () => resolve(true)); sock.on('close', () => resolve(false)) })
   c.type = (text) => sock.send(JSON.stringify({ type: 'input', data: text }))
   c.see = (s) => until(() => c.out.includes(s))
@@ -296,6 +297,109 @@ test('server shutdown hangs up every PTY', async () => {
   const exit = await Promise.race([session.exited, new Promise((r) => setTimeout(() => r(null), 8000))])
   assert.ok(exit, 'the PTY exited')
   assert.deepEqual(s2.terms.info().running, [])
+})
+
+/** Its own server (the main one's rate limit is shared): `open(id, body)` POSTs /api/term/:id. */
+async function ownServer(opts = {}, listenPort = 0) {
+  const s = createServer({ dataDir: path.join(root, `data-${crypto.randomUUID()}`), ...opts })
+  await new Promise((r) => s.listen(listenPort, '127.0.0.1', r))
+  const at = s.address().port, b = `http://127.0.0.1:${at}`
+  const open = (id, body = {}) => fetch(`${b}/api/term/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: b }, body: JSON.stringify(body) })
+  const stop = (id) => fetch(`${b}/api/term/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { origin: b } })
+  return { s, at, b, open, stop, conn: (ticket) => connect(ticket, { origin: b, at }), close: () => new Promise((r) => s.close(r)) }
+}
+
+test('a reconnect (reattach: boot) re-attaches a live PTY but never restarts one that ended meanwhile', async () => {
+  const srv = await ownServer({ termIdleMs: 300, termEndWaitMs: 3000 })
+  const id = cc(ids.closed2), id8 = 'aaaaaaa4'
+  const n0 = starts(id8).length
+  try {
+    let r = await srv.open(id)
+    const first = await r.json()
+    assert.equal(r.status, 200)
+    assert.match(first.boot, /^[\w-]{8,}$/)
+    let c = srv.conn(first.ticket)
+    await c.see('fake-claude> ')
+    c.type('before the drop\r')
+    await c.see('echo: before the drop')
+    // The app answers a ping (a page checks a socket that might have died in sleep).
+    c.sock.send(JSON.stringify({ type: 'ping' }))
+    await until(() => c.msgs.some((m) => m.type === 'pong'))
+    c.sock.terminate() // the socket dies; the process does not
+    r = await srv.open(id, { reattach: first.boot })
+    const again = await r.json()
+    assert.deepEqual([r.status, again.existing, again.boot], [200, true, first.boot])
+    c = srv.conn(again.ticket)
+    await c.see('echo: before the drop') // replayed
+    c.type('after\r')
+    await c.see('echo: after')
+    assert.equal(starts(id8).length, n0 + 1, 'the same process, never a second')
+
+    // It exits while the page is away: a reconnect is refused, and nothing starts.
+    c.type('exit\r')
+    await until(() => c.closed)
+    r = await srv.open(id, { reattach: first.boot })
+    assert.deepEqual([r.status, await r.json()], [410, { error: 'The terminal session has ended', ended: true, why: 'exit' }])
+    assert.equal(starts(id8).length, n0 + 1)
+    // "Start again" (no reattach) does start it.
+    r = await srv.open(id)
+    assert.equal(r.status, 200)
+    c = srv.conn((await r.json()).ticket)
+    await c.see('fake-claude> ')
+    await until(() => starts(id8).length === n0 + 2)
+    c.sock.close()
+    // Ended idle (300 ms with no socket): still ended for a reconnect.
+    await until(() => !srv.s.terms.get(id), 4000)
+    r = await srv.open(id, { reattach: first.boot })
+    assert.deepEqual([r.status, (await r.json()).why], [410, 'idle'])
+    // Stopped: the same.
+    r = await srv.open(id)
+    c = srv.conn((await r.json()).ticket)
+    await c.see('fake-claude> ')
+    await srv.stop(id)
+    r = await srv.open(id, { reattach: first.boot })
+    assert.deepEqual([r.status, (await r.json()).why], [410, 'stop'])
+    assert.equal(starts(id8).length, n0 + 3)
+    // A boot this server never issued (it restarted): the old PTY is gone with it, so it starts one.
+    r = await srv.open(id, { reattach: 'an-older-boot' })
+    assert.equal(r.status, 200)
+    await srv.conn((await r.json()).ticket).see('fake-claude> ')
+    await until(() => starts(id8).length === n0 + 4)
+  } finally { await srv.stop(id); await srv.close() }
+})
+
+test('shutdown tells each page the server is restarting (1012); after the restart old tickets are dead and a reconnect starts one PTY', async () => {
+  const id = cc(ids.closed2), id8 = 'aaaaaaa4'
+  let srv = await ownServer()
+  const { ticket, boot } = await (await srv.open(id)).json()
+  const c = srv.conn(ticket)
+  await c.see('fake-claude> ')
+  const spare = (await (await srv.open(id)).json()).ticket // issued, never used
+  const session = srv.s.terms.get(id)
+  const at = srv.at
+  await srv.close()
+  await until(() => c.closed)
+  assert.deepEqual(c.msgs.filter((m) => m.type === 'ending'), [{ type: 'ending', why: 'server-restart' }])
+  assert.equal(c.code, 1012)
+  assert.ok(await Promise.race([session.exited, new Promise((r) => setTimeout(() => r(null), 8000))]), 'the PTY went with the server')
+  // The "restarted" server on the same port.
+  const n0 = starts(id8).length
+  srv = await ownServer({}, at)
+  try {
+    const stale = srv.conn(spare)
+    assert.equal(await stale.opened, false)
+    assert.equal(stale.status, 401)
+    const [a, b] = await Promise.all([srv.open(id, { reattach: boot }), srv.open(id, { reattach: boot })]) // two pages at once
+    assert.deepEqual([a.status, b.status], [200, 200])
+    const fresh = await a.json()
+    assert.notEqual(fresh.boot, boot)
+    const c2 = srv.conn(fresh.ticket)
+    await c2.see('fake-claude> ')
+    c2.type('back\r')
+    await c2.see('echo: back')
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(starts(id8).length, n0 + 1, 'one process, not one per reconnect')
+  } finally { await srv.stop(id); await srv.close() }
 })
 
 test('terminal content never reaches a log or the data folder', async () => {

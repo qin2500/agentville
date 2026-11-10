@@ -275,9 +275,12 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       if (url.pathname === '/api/agents' && req.method === 'GET') return send(res, 200, { ...(await snapshot()), term: terms.info() })
       const tm = /^\/api\/term\/([^/]+)(\/popout)?$/.exec(url.pathname)
       if (tm && (req.method === 'POST' || (req.method === 'DELETE' && !tm[2]))) {
+        let reattach = null
         if (req.method === 'POST') {
           if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
-          await readBody(req) // the body carries nothing we use: the server decides the command
+          // The server decides the command; the body may only name the boot a page re-attaches from.
+          const body = await readBody(req)
+          if (typeof body?.reattach === 'string' && body.reattach.length <= 64) reattach = body.reattach
         }
         const id = decodeURIComponent(tm[1])
         if (req.method === 'DELETE') {
@@ -293,6 +296,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         termActs.push(now)
         if (tm[2]) return send(res, ...await popout(id))
         if (!terms.available()) return send(res, 501, { error: 'Built-in terminal unavailable (node-pty did not load). Run npm install.' })
+        // A reconnect never restarts a session that ended (exit, stop, idle) while the page was away.
+        const why = terms.ended(id, reattach)
+        if (why) return send(res, 410, { error: 'The terminal session has ended', ended: true, why })
         const running = terms.get(id)
         const agent = (await snapshot()).agents.find((a) => a.id === id)
         // An agent already in our PTY is re-attached; otherwise openCommand decides (and refuses).
