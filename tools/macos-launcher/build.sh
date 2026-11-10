@@ -8,15 +8,10 @@ DEST="${1:-$HOME/Desktop}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 APP="$WORK/Agentville.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$WORK/Agentville.iconset"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O "$HERE/DrawIcon.swift" -o "$WORK/draw-icon"
-"$WORK/draw-icon" "$WORK/icon-1024.png"
-for s in 16 32 128 256 512; do
-  sips -z $s $s "$WORK/icon-1024.png" --out "$WORK/Agentville.iconset/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) "$WORK/icon-1024.png" --out "$WORK/Agentville.iconset/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$WORK/Agentville.iconset" -o "$APP/Contents/Resources/Agentville.icns"
+# The icon is drawn by tools/icon/build.mjs (desktop/icons/icon.icns), shared with the desktop app.
+cp "$REPO/desktop/icons/icon.icns" "$APP/Contents/Resources/Agentville.icns"
 
 swiftc -O "$HERE/Launcher.swift" -o "$APP/Contents/MacOS/Agentville"
 # The checkout's path goes in its own file, read verbatim by launch.sh: no quoting or sed escaping.
@@ -46,5 +41,4 @@ codesign --force --deep --sign - "$APP"
 
 rm -rf "$DEST/Agentville.app"
 mv "$APP" "$DEST/"
-cp "$WORK/icon-1024.png" "$HERE/icon-preview.png"
 echo "Built $DEST/Agentville.app (launches $REPO)"

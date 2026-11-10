@@ -16,7 +16,6 @@ blob-report/
 coverage/
 
 # macOS launcher build output
-tools/macos-launcher/icon-preview.png
 *.app/
 
 # OS and editor clutter

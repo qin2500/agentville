@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Agentville</title>
-<link rel="icon" id="favicon" href="data:,">
+<link rel="icon" id="favicon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
 <link rel="stylesheet" href="/src/styles.css">
 </head>
 <body>
 <a class="skip" href="#list">Skip to agent list</a>
 <div class="app" id="app">
   <header class="top">
-    <h1 class="brand"><i aria-hidden="true"></i><span>Agentville</span></h1>
+    <h1 class="brand"><img class="mark" src="/icon-16.png" srcset="/icon-16.png 1x, /icon-32.png 2x" alt="" width="16" height="16"><span>Agentville</span></h1>
     <div class="counters" id="counters" role="group" aria-label="Agent counts"></div>
     <div class="spacer"></div>
     <button class="ghost warn" id="btn-warnings" hidden aria-haspopup="dialog" aria-expanded="false"></button>

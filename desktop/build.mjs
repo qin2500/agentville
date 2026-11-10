@@ -9,13 +9,13 @@
  *
  * The app holds only the shell (desktop/*). It runs the server and page from this checkout, whose
  * path is baked into the app (Resources/repo-path), so pulling new code here updates the app too.
- * macOS: signed ad hoc (codesign -s -); the icon is drawn by tools/macos-launcher/DrawIcon.swift.
+ * macOS: signed ad hoc (codesign -s -). The icon is desktop/icons/icon.icns, drawn by tools/icon/build.mjs.
  */
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -43,21 +43,7 @@ fs.writeFileSync(path.join(BUILD, 'repo-path'), REPO)
 require('electron')
 const electronVersion = JSON.parse(fs.readFileSync(require.resolve('electron/package.json'), 'utf8')).version
 
-let icon = null
-if (mac && has('swiftc') && has('iconutil')) {
-  const draw = path.join(BUILD, 'draw-icon'), png = path.join(BUILD, 'icon.png'), set = path.join(BUILD, 'icon.iconset')
-  execFileSync('swiftc', ['-O', path.join(ROOT, 'tools', 'macos-launcher', 'DrawIcon.swift'), '-o', draw], { stdio: 'inherit' })
-  execFileSync(draw, [png], { stdio: 'inherit' })
-  fs.mkdirSync(set)
-  for (const s of [16, 32, 128, 256, 512]) {
-    execFileSync('sips', ['-z', String(s), String(s), png, '--out', path.join(set, `icon_${s}x${s}.png`)], { stdio: 'ignore' })
-    execFileSync('sips', ['-z', String(s * 2), String(s * 2), png, '--out', path.join(set, `icon_${s}x${s}@2x.png`)], { stdio: 'ignore' })
-  }
-  icon = path.join(BUILD, 'icon.icns')
-  execFileSync('iconutil', ['-c', 'icns', set, '-o', icon])
-} else if (mac) {
-  console.log('No swiftc/iconutil (xcode-select --install): building with the default Electron icon.')
-}
+const icon = path.join(DESKTOP, 'icons', 'icon.icns')
 
 const { build, Platform } = require('electron-builder')
 fs.rmSync(OUT, { recursive: true, force: true })
@@ -78,7 +64,7 @@ await build({
     asar: true,
     publish: null,
     mac: {
-      ...(icon && { icon }),
+      icon,
       identity: null, // signed ad hoc below
       category: 'public.app-category.developer-tools',
       extendInfo: { NSHighResolutionCapable: true },
@@ -103,7 +89,6 @@ if (installDir) {
   console.log(`Installed ${dest}`)
 }
 
-function has(cmd) { return spawnSync('/usr/bin/which', [cmd], { stdio: 'ignore' }).status === 0 }
 function findApp(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (!e.isDirectory()) continue

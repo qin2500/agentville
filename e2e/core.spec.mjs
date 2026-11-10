@@ -34,6 +34,15 @@ test('top bar counts match the API and the section headers', async ({ page, requ
   await expect(page).toHaveTitle(`(${counts.stalled}) Agentville`)
 })
 
+test('the app icon is the favicon and the mark beside the name; stalled agents add a dot to the tab icon', async ({ page }) => {
+  await expect(page.locator('.brand span')).toHaveText('Agentville')
+  // Fully loaded (the 16 px file, or the 32 px one on a high-density screen), drawn at 16 CSS px.
+  await expect.poll(() => page.locator('.brand .mark').evaluate((img) => img.complete && img.naturalWidth > 0 && img.currentSrc.endsWith(devicePixelRatio > 1 ? '/icon-32.png' : '/icon-16.png'))).toBe(true)
+  expect(await page.locator('.brand .mark').evaluate((img) => img.getBoundingClientRect().width)).toBe(16)
+  // The fixture has stalled agents, so the tab icon is the icon redrawn with a dot.
+  await expect.poll(() => page.locator('#favicon').getAttribute('href')).toMatch(/^data:image\/png;base64,/)
+})
+
 test('Stalled is the first, filled attention list; Waiting is calm', async ({ page }) => {
   await expect(page.locator('#list .sec').first()).toHaveClass(/stalled/)
   const bg = (sel) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).backgroundColor)

@@ -338,15 +338,21 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
   $('btn-filters').textContent = nf ? `Filters · ${nf} ▾` : 'Filters ▾';
 }
 
+// The tab icon is the app icon (tools/icon), with a coloured dot when something needs you.
 let favState = null;
+const favImg = new Image();
+favImg.src = '/icon-32.png';
 function setFavicon(alert) {
   if (favState === alert) return;
   favState = alert;
+  if (!alert) { $('favicon').href = '/icon-32.png'; return; }
+  if (!favImg.complete) { favImg.onload = () => { const a = favState; favState = null; setFavicon(a); }; return; }
   const c = document.createElement('canvas');
   c.width = c.height = 32;
   const g = c.getContext('2d');
-  g.fillStyle = '#c96442'; g.fillRect(6, 6, 20, 20);
-  if (alert) { g.fillStyle = alert === 'prompt' ? '#c39bff' : alert === 'error' ? '#ff7262' : '#f2b84b'; g.beginPath(); g.arc(24, 8, 7, 0, 7); g.fill(); g.strokeStyle = '#0f1115'; g.lineWidth = 2; g.stroke(); }
+  g.imageSmoothingEnabled = false;
+  if (favImg.naturalWidth) g.drawImage(favImg, 0, 0, 32, 32);
+  g.fillStyle = alert === 'prompt' ? '#c39bff' : alert === 'error' ? '#ff7262' : '#f2b84b'; g.beginPath(); g.arc(24, 8, 7, 0, 7); g.fill(); g.strokeStyle = '#0f1115'; g.lineWidth = 2; g.stroke();
   $('favicon').href = c.toDataURL();
 }
 

@@ -98,7 +98,7 @@ keys, settings and data are exactly the browser's.
 
 ```sh
 npm run app                      # try it straight from the checkout
-npm run app:build                # build dist-app/…/Agentville.app (macOS; signed ad hoc, icon needs the Xcode tools)
+npm run app:build                # build dist-app/…/Agentville.app (macOS; signed ad hoc)
 npm run app:build -- --install   # …and copy it to ~/Applications (or --install <folder>)
 npm run app:build -- --repo DIR  # run the checkout at DIR instead of this one
 ```
@@ -121,6 +121,8 @@ npm run app:build -- --repo DIR  # run the checkout at DIR instead of this one
   village style) start from their defaults once. Settings the server keeps are shared.
 - Logs: `~/Library/Application Support/Agentville/server.log` (a server the app started) and
   `app.log`. Window size and position are remembered there too.
+- **Icon:** drawn in code by `tools/icon` (pixel art, no image assets): `npm run icon` redraws
+  `desktop/icons/` (the app's `.icns` and PNGs) and the page's favicon, `web/public/icon-*.png`.
 
 ## Updates
 

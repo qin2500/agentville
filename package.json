@@ -21,6 +21,7 @@
     "test:e2e": "playwright test",
     "app": "electron desktop",
     "app:build": "node desktop/build.mjs",
+    "icon": "node tools/icon/build.mjs",
     "test:app": "playwright test -c playwright.app.config.mjs"
   },
   "devDependencies": {
