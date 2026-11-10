@@ -184,6 +184,8 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       // A job that needs you: what it asks for and the scheduler's suggested reply (short strings).
       ask: c.bucket === 'stalled' && a.ask?.needs ? a.ask : null,
       resume: a.resume || null,
+      // A background job reopened in a terminal: the session id open there, or null.
+      reopened: typeof a.reopened === 'string' && a.reopened ? a.reopened : null,
       // A launch that failed before it ran: no session exists, so there is nothing to open.
       neverStarted: a.neverStarted === true,
       hidden: o.hidden === true,

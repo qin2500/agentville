@@ -229,3 +229,19 @@ test('150+ agents: renders, scrolls, and idles cheaply', async ({ page }, testIn
   expect(t).toBeLessThan(50)
   await s.stop()
 })
+
+test('a done job reopened in a terminal leaves Resting, and its inspector says where it is open', async ({ page }) => {
+  const id = claudeId('leadDone')
+  const reg = path.join(HOME, 'claude', 'sessions', 'reopened.json')
+  const now = Date.now()
+  fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', status: 'busy', startedAt: now - 60_000, statusUpdatedAt: now }))
+  try {
+    await page.goto(`/#agent=${encodeURIComponent(id)}`)
+    await inspect(page, id)
+    const d = page.locator('#drawer')
+    await expect(d.locator('.reopened')).toContainText('Reopened in a terminal')
+  } finally { fs.rmSync(reg, { force: true }) }
+  await page.reload()
+  await inspect(page, id)
+  await expect(page.locator('#drawer .reopened')).toHaveCount(0)
+})

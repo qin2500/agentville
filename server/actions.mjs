@@ -107,6 +107,7 @@ export function stopPlan(a) {
   if (a.harness !== 'claude-code') throw bad("Codex threads can't be stopped from here. Stop it in Codex.", 409)
   if (SUB_KINDS.includes(a.kind)) throw bad('A subagent stops with its lead. Stop the lead instead.', 409)
   if (a.kind !== 'job') throw bad("This is an interactive session, not a background job. Stop it in its own terminal (Esc to interrupt, /exit to quit).", 409)
+  if (a.reopened && a.live) throw bad('This job is open in a terminal. Stop it there (Esc to interrupt, /exit to quit).', 409)
   if (!/^[0-9a-f]{8}$/.test(a.jobId || '')) throw bad("This job has no id to stop", 409)
   if (a.bucket === 'resting' && !a.live) throw bad("This job isn't running", 409)
   return { kind: 'stop', args: ['stop', a.jobId], cwd: HOME, id: a.id, name: a.name, jobId: a.jobId }

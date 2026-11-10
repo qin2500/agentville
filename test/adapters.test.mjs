@@ -460,3 +460,63 @@ test('Codex error and stream_error events are error severity', async () => {
   }
   fs.writeFileSync(file, before)
 })
+
+test('a stale "done" job reopened in a terminal is that live interactive session; an older terminal entry is not; it falls back when the terminal ends', async () => {
+  const claude = process.env.AGENTVILLE_CLAUDE_HOME
+  const id = `claude-code:${IDS.leadDone}` // job record: state done, tempo idle, written 10 min ago
+  const reg = path.join(claude, 'sessions', 'reopened.json')
+  const t = Date.now()
+  const open = (extra) => fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', startedAt: t - 60_000, statusUpdatedAt: t - 1000, ...extra }))
+  const get = async () => (await agents()).find((x) => x.id === id)
+  try {
+    const before = await get()
+    assert.deepEqual([before.bucket, before.reason, before.reopened], ['resting', 'Done', null])
+    // Busy in the terminal: Building, whatever the job record says.
+    open({ status: 'busy' })
+    let a = await get()
+    assert.deepEqual([a.bucket, a.live, a.reopened, a.kind, a.jobId, a.role], ['building', true, IDS.leadDone, 'job', IDS.leadDone.slice(0, 8), before.role])
+    assert.equal(a.resume, `claude --resume ${IDS.leadDone}`, 'an interactive session is resumed, never attached')
+    // Idle after a finished turn: awaiting the user's reply, not resting.
+    open({ status: 'idle' })
+    a = await get()
+    assert.deepEqual([a.bucket, a.reason], ['stalled', 'Turn finished — awaiting your reply'])
+    // Idle with a tool call left pending: the permission prompt, like any interactive session.
+    const file = path.join(claude, 'projects', '-work-demo-app', `${IDS.leadDone}.jsonl`)
+    const saved = fs.readFileSync(file, 'utf8')
+    fs.appendFileSync(file, JSON.stringify({ type: 'assistant', timestamp: new Date(t).toISOString(), message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'ls' } }] } }) + '\n')
+    a = await get()
+    assert.deepEqual([a.bucket, a.prompt], ['stalled', 'permission'])
+    fs.writeFileSync(file, saved)
+    // A terminal entry older than the job record does not override it: the job's 'done' stands.
+    open({ status: 'idle', startedAt: t - 3_600_000, statusUpdatedAt: t - 1_800_000 })
+    a = await get()
+    assert.deepEqual([a.bucket, a.reason, a.reopened, a.resume], ['resting', 'Done', null, `claude attach ${IDS.leadDone.slice(0, 8)}`])
+    // A background process for the job (kind 'bg') is not a terminal.
+    open({ status: 'idle', kind: 'bg' })
+    assert.equal((await get()).reopened, null)
+  } finally { fs.rmSync(reg, { force: true }) }
+  // The terminal session ended: back to the job record.
+  const a = await get()
+  assert.deepEqual([a.bucket, a.reason, a.live, a.reopened], ['resting', 'Done', false, null])
+})
+
+test('reopened in a terminal: a stale failed or blocked job record raises no API error, cut-off or question', async () => {
+  const claude = process.env.AGENTVILLE_CLAUDE_HOME
+  const id = IDS.leadDone
+  const stateFile = path.join(claude, 'jobs', id.slice(0, 8), 'state.json')
+  const saved = fs.readFileSync(stateFile, 'utf8')
+  const reg = path.join(claude, 'sessions', 'reopened.json')
+  const t = Date.now()
+  try {
+    fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: id, kind: 'interactive', status: 'idle', startedAt: t - 60_000, statusUpdatedAt: t - 1000 }))
+    for (const patch of [
+      { state: 'failed', tempo: 'idle', detail: 'API Error: 529 overloaded' },
+      { state: 'blocked', tempo: 'blocked', detail: 'Your computer went to sleep', needs: 'Pick one' },
+      { state: 'blocked', tempo: 'blocked', detail: "You've hit your weekly limit · resets Oct 28 at 7am" },
+    ]) {
+      fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(saved), ...patch }))
+      const a = (await agents()).find((x) => x.id === `claude-code:${id}`)
+      assert.deepEqual([a.bucket, a.reason, a.severity, a.ask], ['stalled', 'Turn finished — awaiting your reply', 'attention', null], patch.detail)
+    }
+  } finally { fs.writeFileSync(stateFile, saved); fs.rmSync(reg, { force: true }) }
+})

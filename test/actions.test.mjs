@@ -54,6 +54,8 @@ test('stop and fork: jobs and Claude conversations only, each refusal says why',
   assert.throws(() => A.stopPlan({ ...job, harness: 'codex' }), /Codex/)
   assert.throws(() => A.stopPlan({ ...job, kind: 'subagent' }), /stops with its lead/)
   assert.throws(() => A.stopPlan({ ...job, jobId: '../x' }), /no id/)
+  // Reopened in a terminal: `claude stop` is for background processes; it is stopped in that terminal.
+  assert.throws(() => A.stopPlan({ ...job, reopened: '11111111-0000-4000-8000-000000000000' }), /open in a terminal\. Stop it there/)
   const sid = IDS.soloTurn
   assert.deepEqual(A.forkPlan({ ...job, kind: 'session' }, { sid, cwd }, 'Try B').args, ['--resume', sid, '--fork-session', '--bg', '--name=Try B'])
   assert.throws(() => A.forkPlan({ ...job, harness: 'codex' }, { sid, cwd }), /Claude Code sessions only/)

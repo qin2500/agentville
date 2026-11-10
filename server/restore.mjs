@@ -114,13 +114,16 @@ export function safeName(a, short) {
   if (n) return n.slice(0, 80)
   return a.harness === 'codex' ? 'Codex thread' : a.kind === 'job' ? `Job ${short}` : 'Untitled session'
 }
-const KIND = (a) => (a.harness === 'codex' ? 'codex' : a.kind === 'job' ? 'job' : 'session')
+// A job reopened in a terminal is remembered as that interactive session: after a crash it is
+// resumed in a terminal (`claude --resume`), never counted as a lost background job.
+const reopenedSid = (a) => (a.kind === 'job' && UUID.test(a.reopened || '') ? a.reopened : null)
+const KIND = (a) => (a.harness === 'codex' ? 'codex' : a.kind === 'job' && !reopenedSid(a) ? 'job' : 'session')
 const entryOf = (a, seen) => {
-  const sid = a.id.slice(a.id.indexOf(':') + 1)
+  const sid = reopenedSid(a) || a.id.slice(a.id.indexOf(':') + 1)
   return {
     kind: KIND(a),
     id: a.id,
-    ...(a.kind === 'job' && { short: a.jobId }),
+    ...(KIND(a) === 'job' && { short: a.jobId }),
     sid,
     name: safeName(a, a.jobId),
     project: a.project || '',
@@ -202,7 +205,7 @@ export function createRestore({ dataDir, claudeHome }) {
           if (n && n !== e.name) e.name = n
         }
       }
-      const ids = (xs) => xs.map((x) => `${x.id}:${x.role}:${x.important}:${x.name}:${x.cwd}`).join('|')
+      const ids = (xs) => xs.map((x) => `${x.id}:${x.kind}:${x.sid}:${x.role}:${x.important}:${x.name}:${x.cwd}`).join('|')
       if (ids(running) !== ids(d.running) || (running.length && running[0].seen !== d.at)) {
         d.running = running
         d.at = running.length ? running[0].seen : d.at

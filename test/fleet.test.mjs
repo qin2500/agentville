@@ -123,3 +123,23 @@ test('mark is rate limited', async () => {
   for (let i = 0; i < 12; i++) last = await post('/api/fleet/mark', { action: 'offline', ids: [] })
   assert.equal(last.status, 429)
 })
+
+test('a job reopened in a terminal is reached and restarted like the interactive session it is', async () => {
+  const claude = process.env.AGENTVILLE_CLAUDE_HOME
+  const reg = path.join(claude, 'sessions', 'reopened.json')
+  const now = Date.now()
+  fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', status: 'idle', startedAt: now - 60_000, statusUpdatedAt: now }))
+  // Top level, so it is a target of its own rather than reached through the boss.
+  const patch = (body) => fetch(`${base}/api/overrides/${encodeURIComponent(C('leadDone'))}`, { method: 'PATCH', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify(body) })
+  assert.equal((await patch({ parentId: '' })).status, 200)
+  try {
+    await new Promise((r) => setTimeout(r, 2100)) // past the scan cache
+    const p = await get('/api/fleet/preview?action=reboot')
+    const t = p.targets.find((x) => x.id === C('leadDone'))
+    assert.deepEqual(t.reach.how, 'Switch to its terminal')
+    assert.match(t.reach.command, new RegExp(`claude --resume ${IDS.leadDone}$`))
+    const cmds = p.commands.map((c) => c.command)
+    assert.ok(!cmds.includes(`claude respawn ${IDS.leadDone.slice(0, 8)}`), 'never respawned as a background job')
+    assert.ok(cmds.some((c) => c.endsWith(`claude --resume ${IDS.leadDone}`)))
+  } finally { fs.rmSync(reg, { force: true }); await patch({ parentId: null }) }
+})

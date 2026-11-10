@@ -129,13 +129,14 @@ function continuePlan(visible, problemOf) {
 /** Shown as text only; the server never runs any of it. */
 function reachOf(a) {
   if (a.harness === 'codex') return { how: 'Open the thread in Codex', command: a.resume }
-  if (a.jobId) return { how: 'Attach to the background job', command: `claude attach ${a.jobId}` }
+  if (a.jobId && !a.reopened) return { how: 'Attach to the background job', command: `claude attach ${a.jobId}` }
   return { how: a.live ? 'Switch to its terminal' : 'Resume it in a terminal', command: a.cwd ? `cd ${quote(a.cwd)} && ${a.resume}` : a.resume }
 }
 
 function resumeCommands(targets) {
-  const jobs = targets.filter((a) => a.harness === 'claude-code' && a.jobId)
-  const sessions = targets.filter((a) => a.harness === 'claude-code' && !a.jobId && a.resume)
+  // A job reopened in a terminal is resumed like the interactive session it is.
+  const jobs = targets.filter((a) => a.harness === 'claude-code' && a.jobId && !a.reopened)
+  const sessions = targets.filter((a) => a.harness === 'claude-code' && (!a.jobId || a.reopened) && a.resume)
   return [
     ...(jobs.length ? [{ id: null, name: 'All background jobs', command: 'claude respawn --all' }] : []),
     ...jobs.map((a) => ({ id: a.id, name: a.name, command: `claude respawn ${a.jobId}` })),

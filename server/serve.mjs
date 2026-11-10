@@ -59,7 +59,8 @@ export async function openCommand(a) {
   }
   const claudeBin = await findExecutable('claude', CLAUDE_DIRS)
   if (!claudeBin) throw refuse(409, 'Claude Code CLI not found')
-  if (a.kind === 'job' && /^[0-9a-f]{8}$/.test(a.jobId || '')) return { argv: [claudeBin, 'attach', a.jobId], cwd }
+  // A job reopened in a terminal is that interactive session now: attaching would start a second process.
+  if (a.kind === 'job' && !a.reopened && /^[0-9a-f]{8}$/.test(a.jobId || '')) return { argv: [claudeBin, 'attach', a.jobId], cwd }
   // Resuming a session that is already open elsewhere makes a second process on one conversation.
   if (a.live) throw refuse(409, 'Already running in another terminal')
   const sid = a.id.slice('claude-code:'.length)
@@ -74,6 +75,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
   const termActs = []
+  // A person opens a handful of terminals a minute. The shared e2e server opens many more, so a test
+  // run (and only a test run) may raise the cap with AGENTVILLE_TERM_PER_MINUTE.
+  const termTesting = process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
+  const termPerMinute = (termTesting && Number(process.env.AGENTVILLE_TERM_PER_MINUTE)) || 30
   const fleetStore = createFleetStore(dataDir)
   // Server-private, never in the API: each live Claude agent's inbox and transcript file.
   let inboxes = new Map()
@@ -294,7 +299,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         // ponytail: one global window, single local user. Starts, re-attaches and pop-outs all count.
         const now = Date.now()
         while (termActs.length && now - termActs[0] > 60_000) termActs.shift()
-        if (termActs.length >= 30) return send(res, 429, { error: 'Too many terminal requests; wait a minute' })
+        if (termActs.length >= termPerMinute) return send(res, 429, { error: 'Too many terminal requests; wait a minute' })
         termActs.push(now)
         if (tm[2]) return send(res, ...await popout(id))
         if (!terms.available()) return send(res, 501, { error: 'Built-in terminal unavailable (node-pty did not load). Run npm install.' })

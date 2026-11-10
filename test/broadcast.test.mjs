@@ -245,3 +245,25 @@ test('rate limit: 3 broadcasts a minute, apart from the single-message limit', a
   assert.equal((await (await post('/api/message/send', { confirm: one.confirm })).json()).status, 'delivered')
   assert.equal(frames.boss.length, 4)
 })
+
+test('a stale "done" job reopened in a terminal with a socket can be messaged; once the terminal ends it cannot', async () => {
+  const sock = path.join(sockRoot, 'reopened.sock')
+  const got = []
+  const srv = net.createServer((c) => { let b = ''; c.on('data', (d) => { b += d }); c.on('end', () => got.push(b)) })
+  await new Promise((r) => srv.listen(sock, r))
+  const reg = path.join(claudeHome, 'sessions', 'reopened.json')
+  const now = Date.now()
+  fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', status: 'idle', startedAt: now - 60_000, statusUpdatedAt: now, messagingSocketPath: sock, peerProtocol: 1 }))
+  const fresh = async () => { await new Promise((r) => setTimeout(r, 2100)); return (await get('/api/agents')).agents } // past the scan cache
+  try {
+    const a = (await fresh()).find((x) => x.id === C('leadDone'))
+    assert.deepEqual([a.live, a.bucket, a.messageWhy, a.reopened], [true, 'stalled', '', IDS.leadDone])
+    assert.ok(pick([a], {}).eligible.length === 1)
+    const pv = await preview([C('leadDone')], TEXT)
+    assert.equal(pv.status, 200)
+    assert.equal(got.length, 0, 'a preview sends nothing')
+  } finally { fs.rmSync(reg, { force: true }); srv.close() }
+  const a = (await fresh()).find((x) => x.id === C('leadDone'))
+  assert.deepEqual([a.live, a.bucket, a.reopened], [false, 'resting', null])
+  assert.match(a.messageWhy, /Not running/)
+})

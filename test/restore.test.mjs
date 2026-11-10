@@ -348,3 +348,24 @@ test('Codex threads: Important ones are listed with a note, never with a command
   assert.equal((await r.summary({ boot: BOOT2, live: (id) => id === 'codex:t3' })).sessions, 1)
   await assert.rejects(r.preview(undefined, { boot: BOOT2 }), /Pick at least one/, 'nothing to confirm')
 })
+
+test('a job reopened in a terminal is remembered as that interactive session, never as a lost background job', async () => {
+  const dataDir = path.join(root, 'reopened-data')
+  const r = R.createRestore({ dataDir, claudeHome: () => claudeHome })
+  const reopened = { id: C('leadDone'), harness: 'claude-code', kind: 'job', jobId: short('leadDone'), name: 'Docs Lead', safeName: 'Docs Lead', live: true, role: 'lead', important: true, cwd: '/w/docs', reopened: IDS.leadDone }
+  const set = R.runningSet([reopened])
+  assert.deepEqual(set.map((e) => [e.id, e.kind, e.sid, e.short]), [[C('leadDone'), 'session', IDS.leadDone, undefined]])
+  // Snapshotted as a job earlier, then reopened: the snapshot follows.
+  await r.record([{ ...reopened, reopened: null }], Date.now(), BOOT1)
+  assert.equal((await r.load()).running[0].kind, 'job')
+  await r.record([reopened], Date.now(), BOOT1)
+  assert.equal((await r.load()).running[0].kind, 'session')
+  // After the crash its terminal is gone: a lost session to resume in a terminal, not a job to respawn.
+  kill('leadDone')
+  await r.record([], Date.now(), BOOT2)
+  const x = await r.examine({ boot: BOOT2 })
+  assert.deepEqual(x.jobs, [])
+  assert.deepEqual(x.sessions.map((e) => [e.id, e.verdict, e.command]), [[C('leadDone'), 'lost', `cd '/w/docs' && claude --resume ${IDS.leadDone}`]])
+  assert.deepEqual([(await r.summary({ boot: BOOT2 })).lost, (await r.summary({ boot: BOOT2 })).sessions], [0, 1])
+  await assert.rejects(r.preview(undefined, { boot: BOOT2 }), /Pick at least one/)
+})

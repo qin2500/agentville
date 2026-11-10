@@ -8,7 +8,8 @@ sweepStaleTemp()
 // If stopped by a catchable signal, take the fixture home along (teardown.mjs covers SIGKILL).
 const bye = () => { fs.rmSync(HOME, { recursive: true, force: true }); process.exit(0) }
 process.once('SIGTERM', bye).once('SIGINT', bye)
-Object.assign(process.env, prepareHome(), { AGENTVILLE_PORT: String(PORT), XDG_CONFIG_HOME: path.join(HOME, 'xdg') }, SAFE_ENV)
+// The suite opens more terminals a minute than the 30 a person gets (term.test.mjs covers that cap).
+Object.assign(process.env, prepareHome(), { AGENTVILLE_TERM_PER_MINUTE: '600', AGENTVILLE_PORT: String(PORT), XDG_CONFIG_HOME: path.join(HOME, 'xdg') }, SAFE_ENV)
 const b = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit' })
 if (b.status !== 0) process.exit(1)
 await import('../server/cli.mjs')

@@ -194,3 +194,10 @@ test('a launch that failed before it started is refused: there is no session to 
   await assert.rejects(openCommand({ id: 'claude-code:f0000001-0000-4000-8000-000000000000', harness: 'claude-code', kind: 'job', jobId: 'f0000001', cwd: os.tmpdir(), neverStarted: true }),
     (e) => e.status === 409 && e.message === NEVER_STARTED)
 })
+
+test('a job reopened in a terminal is opened like the live interactive session it is: never attached', async () => {
+  const { openCommand } = await import('../server/serve.mjs')
+  const job = { id: `claude-code:${ids.job}`, harness: 'claude-code', kind: 'job', jobId: 'aaaaaaa1', cwd: os.tmpdir() }
+  await assert.rejects(openCommand({ ...job, live: true, reopened: ids.job }), (e) => e.status === 409 && e.message === 'Already running in another terminal')
+  assert.equal((await openCommand({ ...job, live: true, reopened: null })).argv[1], 'attach')
+})

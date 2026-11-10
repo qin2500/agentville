@@ -226,9 +226,11 @@ export function createInspect(app) {
     if (nb) { const m = M(S.selected); nb.value = m.draft ?? m.suggested ?? ''; }
     if (st) { const b = el.querySelector(`#${st.id}`); if (b) { b.focus(); try { b.setSelectionRange(st.start, st.end); } catch { /* not a text box */ } } }
   }
+  // A background job reopened in a terminal: its status comes from that session, not the job record.
+  const reopenedHTML = a => (a.reopened && a.live ? `<p class="helper reopened">Reopened in a terminal · shown as that live session; switch to its terminal to work with it.</p>` : '');
   function render(a, { reply, extra }) {
     patch(reply, replyHTML(a));
-    patch(extra, actHTML(a) + changesHTML(a) + prsHTML(a));
+    patch(extra, reopenedHTML(a) + actHTML(a) + changesHTML(a) + prsHTML(a));
   }
   function onClick(e) {
     const t = e.target.closest('[data-ins]');

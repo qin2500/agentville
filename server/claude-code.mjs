@@ -203,11 +203,57 @@ async function liveSessions() {
       waitingFor: typeof s.waitingFor === 'string' ? s.waitingFor : '',
       cwd: typeof s.cwd === 'string' ? s.cwd : '', // a forked or compacted transcript can lack one
       inbox: typeof s.messagingSocketPath === 'string' ? { sock: s.messagingSocketPath, proto: s.peerProtocol } : null,
+      // 'interactive' (a terminal) or 'bg' (a background job), and when it last started or changed status.
+      kind: typeof s.kind === 'string' ? s.kind : '',
+      activeAt: Math.max(stamp(s.statusUpdatedAt), stamp(s.startedAt)),
     }
+    // Two entries for one conversation: the most recently active one is the one that counts.
+    const set = () => { if (!(live.get(s.sessionId)?.activeAt > entry.activeAt)) live.set(s.sessionId, entry) }
     // Signal 0 only probes. EPERM means the process exists but belongs to someone else.
-    try { process.kill(s.pid, 0); live.set(s.sessionId, entry) } catch (e) { if (e.code === 'EPERM') live.set(s.sessionId, entry) }
+    try { process.kill(s.pid, 0); set() } catch (e) { if (e.code === 'EPERM') set() }
   }
   return live
+}
+
+/** A registry time (ms, or an ISO string) -> ms; 0 when absent. */
+const stamp = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' ? Date.parse(v) || 0 : 0)
+
+/**
+ * A background job the user has reopened in a terminal (`claude --resume <id>`): a live registry
+ * entry of kind 'interactive' for its session (or the session it resumed into) that started or
+ * changed status after the job's record was last written. The record is then stale (it can still
+ * say 'done' from weeks ago), so the agent is classified as the interactive session it now is.
+ * An older interactive entry never overrides a newer job state. `{ sid, entry }` or null.
+ */
+export function reopenedIn(j, live) {
+  const updatedAt = Date.parse(j.updatedAt) || 0
+  for (const sid of [j.resumeSessionId, j.sessionId]) {
+    const e = UUID.test(sid || '') && live.get(sid)
+    if (e?.kind === 'interactive' && e.activeAt > updatedAt) return { sid, entry: e }
+  }
+  return null
+}
+
+/**
+ * An interactive session's lifecycle and cut-off, from its registry verdict and transcript tail.
+ * `superseded()` is only asked of a session that is not live.
+ */
+function sessionState(f, reg, isLive, fresh, superseded = () => false) {
+  const cutOff = !reg.running ? f?.cutOff || '' : ''
+  let lifecycle
+  if (f?.apiError) lifecycle = 'failed'
+  else if (reg.running) lifecycle = 'running'
+  else if (cutOff) lifecycle = 'idle'
+  else if (!f) lifecycle = isLive ? 'idle' : 'closed'
+  else if (f.turnEnded || f.interrupted) lifecycle = isLive ? 'idle' : 'closed'
+  // A recent mtime is not liveness: without a live process a mid-turn transcript stopped.
+  // A live process never "stopped unexpectedly"; quiet for 30 min mid-turn, it made no progress.
+  // Never a real turn (e.g. an empty copy a compaction tool left behind): nothing stopped.
+  else if (!isLive && !f.transcriptAt) lifecycle = 'closed'
+  // A compacted copy that never took over: its source is running again, or was written to since.
+  else if (!isLive && superseded()) lifecycle = 'superseded'
+  else lifecycle = isLive ? (fresh ? 'running' : 'stuck') : 'dead'
+  return { lifecycle, cutOff }
 }
 
 // Seen: busy, idle, shell. The rest are defined by the CLI and accepted ahead of being seen here.
@@ -398,23 +444,30 @@ export async function scan(now = Date.now()) {
   const fromTranscript = async (t) => ({ meta: metas.get(t.sid) || {}, f: await tailFacts(t.file, t.stamp) })
 
   for (const j of jobs) {
-    const current = transcripts.get(j.resumeSessionId) || transcripts.get(j.sessionId)
+    // Reopened in a terminal: the interactive session is the agent now; the job record is stale.
+    const reopened = reopenedIn(j, live)
+    const current = (reopened && transcripts.get(reopened.sid)) || transcripts.get(j.resumeSessionId) || transcripts.get(j.sessionId)
     const { meta, f } = current ? await fromTranscript(current) : { meta: {}, f: null }
-    const liveEntry = live.get(j.resumeSessionId) ?? live.get(j.sessionId)
+    const liveEntry = reopened ? reopened.entry : live.get(j.resumeSessionId) ?? live.get(j.sessionId)
     const status = liveEntry?.status
     const isLive = liveEntry !== undefined
     const reg = isLive ? registryVerdict(status, f, now, liveEntry.waitingFor) : {}
     const updatedAt = Date.parse(j.updatedAt) || 0
-    const lastActivityAt = Math.max(updatedAt, current?.mtime || 0)
+    const lastActivityAt = Math.max(updatedAt, current?.mtime || 0, reopened?.entry.activeAt || 0)
     // A newer real transcript operation supersedes the scheduler snapshot; bookkeeping does not.
-    const jobCurrent = !f || updatedAt >= f.transcriptAt
+    // Reopened, the scheduler snapshot describes a process that is no longer the one running.
+    const jobCurrent = !reopened && (!f || updatedAt >= f.transcriptAt)
     const sched = jobCurrent ? jobWaitEvidence(j, now, { live: isLive }) : null
     const toolNeedsUser = isLive && f?.evidence?.needsUser === true
     // A new prompt starts a turn without clearing `state: blocked` from the last one: the scheduler
     // saying active, or the process busy, means the question was answered and it is working again.
-    const parked = (j.state === 'blocked' || j.tempo === 'blocked') && j.tempo !== 'active' && !reg.running
+    const parked = !reopened && (j.state === 'blocked' || j.tempo === 'blocked') && j.tempo !== 'active' && !reg.running
+    // Reopened: `j.state` is ignored throughout (lifecycle, API error, cut-off, superseded).
+    const state = reopened ? '' : j.state
+    const term = reopened ? sessionState(f, reg, true, now - (current?.mtime || 0) < ACTIVE_MS) : null
     let lifecycle
-    if (['done', 'stopped', 'failed'].includes(j.state)) lifecycle = j.state
+    if (term) lifecycle = term.lifecycle
+    else if (['done', 'stopped', 'failed'].includes(j.state)) lifecycle = j.state
     else if (parked && (isLive || jobCurrent)) lifecycle = 'idle'
     // Not live: a cleanly finished turn is nobody's to answer any more; mid-turn means it stopped.
     else if (!isLive) lifecycle = j.tempo === 'active' && now - lastActivityAt < ACTIVE_MS ? 'running'
@@ -429,25 +482,25 @@ export async function scan(now = Date.now()) {
     else if (isLive && lifecycle === 'stopped') lifecycle = 'idle'
     // An API failure the scheduler parks as `blocked` is an error, not a question for the user.
     // A newer non-blocked scheduler state or newer real main-thread work clears it.
-    const stuckState = ['blocked', 'failed'].includes(j.state) || j.tempo === 'blocked'
+    const stuckState = !reopened && (['blocked', 'failed'].includes(j.state) || j.tempo === 'blocked')
     const schedCut = jobCurrent && stuckState ? cutOffReason(j.detail) : ''
     const schedApiError = jobCurrent && stuckState && !schedCut && /^API Error\b/.test(j.detail || '')
     // "You've hit your weekly limit · resets Oct 28 at 7am": the account ran out, not a question.
     const limit = jobCurrent && stuckState ? usageLimitReason(j.detail) : ''
     const transcriptApiError = Boolean(f?.apiError) && (!jobCurrent || stuckState)
-    const apiError = (schedApiError || transcriptApiError || Boolean(limit)) && !['done', 'stopped'].includes(j.state)
+    const apiError = (schedApiError || transcriptApiError || Boolean(limit)) && !['done', 'stopped'].includes(state)
     if (apiError) lifecycle = 'failed'
     // Interrupted by sleep or a dropped connection, and not already retrying: it needs a "continue".
-    const cutOff = !apiError && !reg.running && !['done', 'stopped'].includes(j.state) ? schedCut || ((!jobCurrent || stuckState) && f?.cutOff) || '' : ''
+    const cutOff = term ? term.cutOff : !apiError && !reg.running && !['done', 'stopped'].includes(j.state) ? schedCut || ((!jobCurrent || stuckState) && f?.cutOff) || '' : ''
     if (cutOff && lifecycle === 'running') lifecycle = 'idle'
     // Failed before it ever ran (no transcript: e.g. "source session … not found" on a bad resume).
     // Nothing to see in a terminal, so say what happened; a newer launch of the same name replaces it.
-    const neverRan = j.state === 'failed' && !current
+    const neverRan = state === 'failed' && !current
     // A newer launch with the same name replaces an older copy that is no longer running (a lead
     // relaunched after a restart, a duplicate coordinator): the old copy's questions are moot.
     const newer = jobs.some((o) => o !== j && o.name && o.name === j.name && (Date.parse(o.createdAt) || 0) > (Date.parse(j.createdAt) || 0))
     if (newer && neverRan) lifecycle = 'replaced'
-    else if (newer && !isLive && !['done', 'stopped'].includes(j.state)) lifecycle = 'superseded'
+    else if (newer && !isLive && !['done', 'stopped'].includes(state)) lifecycle = 'superseded'
     // Blocked, unless the job's own status says it is waiting on CI or another agent.
     const schedNeedsUser = !apiError && jobCurrent && parked && !sched?.kind
     // A respawn (e.g. an account switch) mid-turn leaves the job idle on "send a prompt to start",
@@ -470,6 +523,8 @@ export async function scan(now = Date.now()) {
       lastActivityAt,
       sizeBytes: current?.size || 0,
       lifecycle,
+      // Reopened in a terminal: the session id open there (classified as that interactive session).
+      reopened: reopened?.sid || null,
       // Scheduler `blocked` is the job's current state, not a 30-minute report, so it is not TTL'd.
       needsUser: Boolean(cutOff) || schedNeedsUser || toolNeedsUser || reg.needsUser === true,
       needsUserSource: toolNeedsUser ? 'tool' : 'scheduler',
@@ -482,11 +537,12 @@ export async function scan(now = Date.now()) {
         .filter((c) => c?.kind === 'pr' && typeof c.href === 'string' && /^https:\/\/github\.com\//.test(c.href))
         .map((c) => ({ id: String(c.id ?? ''), href: c.href })), current && edgeCache.get(current.file)?.prs),
       // What it is asking for, and the scheduler's suggested reply: short machine-written strings.
-      ask: typeof j.needs === 'string' && j.needs.trim() ? {
+      ask: !reopened && typeof j.needs === 'string' && j.needs.trim() ? {
         needs: j.needs.replace(/\s+/g, ' ').trim().slice(0, 400),
         suggestedReply: typeof j.suggestedReply === 'string' ? j.suggestedReply.trim().slice(0, 4000) : '',
       } : null,
-      resume: neverRan ? null : `claude attach ${j.short}`,
+      // Reopened, the conversation is open in a terminal: `claude attach` would start a second process.
+      resume: neverRan ? null : reopened ? `claude --resume ${reopened.sid}` : `claude attach ${j.short}`,
       // Server-private (not in the API): the conversation a fork would copy, and its folder.
       fork: current ? { sid: current.sid, cwd: meta.cwd || f?.cwd || j.cwd || null } : null,
       neverStarted: neverRan,
@@ -511,19 +567,8 @@ export async function scan(now = Date.now()) {
     const isLive = liveEntry !== undefined
     const reg = isLive ? registryVerdict(status, f, now, liveEntry.waitingFor) : {}
     const fresh = now - t.mtime < ACTIVE_MS
-    let lifecycle
-    const cutOff = !reg.running ? f.cutOff : ''
-    if (f.apiError) lifecycle = 'failed'
-    else if (reg.running) lifecycle = 'running'
-    else if (cutOff) lifecycle = 'idle'
-    else if (f.turnEnded || f.interrupted) lifecycle = isLive ? 'idle' : 'closed'
-    // A recent mtime is not liveness: without a live process a mid-turn transcript stopped.
-    // A live process never "stopped unexpectedly"; quiet for 30 min mid-turn, it made no progress.
-    // Never a real turn (e.g. an empty copy a compaction tool left behind): nothing stopped.
-    else if (!isLive && !f.transcriptAt) lifecycle = 'closed'
-    // A compacted copy that never took over: its source is running again, or was written to since.
-    else if (!isLive && f.copyOf && f.copyOf !== t.sid && (live.has(f.copyOf) || (transcripts.get(f.copyOf)?.mtime || 0) > t.mtime)) lifecycle = 'superseded'
-    else lifecycle = isLive ? (fresh ? 'running' : 'stuck') : 'dead'
+    const { lifecycle, cutOff } = sessionState(f, reg, isLive, fresh,
+      () => f.copyOf && f.copyOf !== t.sid && (live.has(f.copyOf) || (transcripts.get(f.copyOf)?.mtime || 0) > t.mtime))
     const toolNeedsUser = isLive && f.evidence?.needsUser === true
     const id = ID(t.sid)
     const agent = {
