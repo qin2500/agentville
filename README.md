@@ -34,10 +34,17 @@ lead's yard, and pull requests become buildings. Stalled villagers show a "!" bu
 and night, an isometric (2.5D) and a top-down view (**I** toggles), and buildings never move around
 between visits. Click a villager to select its row, and the other way round.
 
-**Views.** The panel groups agents four ways (**V** cycles):
+**Views.** The panel groups agents five ways (**V** cycles):
 
 - **Status**: Stalled, Waiting, Building and Resting sections, longest-waiting first.
 - **Team**: the boss → lead → sub tree.
+- **Tree**: the same hierarchy as an org chart. Crowned bosses sit at the top with their leads and
+  workers below, grouped by project, and solo agents go in one group at the end. Resting teams fold
+  into a "+N resting" pill, and each team folds on its own (**Expand all** and **Collapse to live**
+  do this for everything). Drag or scroll to pan, and pinch or Cmd/Ctrl-scroll to zoom. Arrow keys
+  move between a parent, its reports and their siblings. A search keeps each match's chain of
+  command, shown dimmed. Narrow panels and phones get an indented outline instead. Only cards near
+  the screen are drawn, so a thousand agents stay smooth.
 - **Table**: everything in sortable columns.
 - **Models**: which model each agent is *really* using (from its latest reply) next to what it was
   told to use, its route, context use and tokens, with flags for mismatches.

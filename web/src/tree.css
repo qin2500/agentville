@@ -1,0 +1,65 @@
+/* Tree view (tree.js): org chart on wide panels, indented outline on narrow ones and phones. */
+.list.treeview.chart { overflow: hidden; display: flex; flex-direction: column; }
+.tv { position: relative; }
+.tv.chart { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tvbar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+.tvcount { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.tvzoom { display: inline-flex; align-items: center; gap: 2px; }
+.tv.outline .tvzoom { display: none; }
+.tvport { position: relative; }
+.tv.chart .tvport { flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+  background: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--line) 70%, transparent) 1px, transparent 0) 0 0 / 24px 24px; }
+.tv.chart .tvport.dragging { cursor: grabbing; }
+.tvworld { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.tv.outline .tvworld { position: relative; width: 100%; }
+.tvedges { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.tvedges path { fill: none; stroke: var(--text-dim); stroke-width: 1.25; opacity: .7; }
+.tv.outline .tvedges { display: none; }
+.tvtree { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.tv.outline .tvtree { position: static; width: auto; height: auto; }
+
+/* a card */
+.tnode { position: absolute; left: 0; top: 0; width: 200px; height: 50px; display: grid; grid-template-rows: 1fr 1fr; align-content: center; gap: 1px; padding: 4px 10px 4px 9px;
+  background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--resting); border-radius: var(--radius); color: var(--text); cursor: pointer; outline: none; contain: layout style; }
+.tnode:hover { background: var(--surface-3); }
+.tnode:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; z-index: 1; }
+.tnode.cur { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.tnode .tn1, .tnode .tn2 { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+.tnode .tnm { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.tnode.r-boss .tnm, .tnode.r-lead .tnm { font-weight: 600; }
+.tnode.r-boss .tn1 > svg { color: var(--stalled); }
+.tnode .tn1 .live { margin-left: auto; }
+.tnode .tn2 { font-size: 11px; color: var(--text-muted); }
+.tnode .tn2 .tst { overflow: hidden; text-overflow: ellipsis; }
+.tnode .tago { flex: none; }
+.tnode.t-building { border-left-color: var(--building); } .tnode.t-building .tn2 svg { color: var(--building); }
+.tnode.t-waiting { border-left-color: var(--waiting); } .tnode.t-waiting .tn2 svg { color: var(--waiting); }
+.tnode.t-stalled { border-left-color: var(--stalled); background: var(--stalled-bg); } .tnode.t-stalled .tn2 svg, .tnode.t-stalled .tst { color: var(--stalled); }
+.tnode.t-error { border-left-color: var(--error); background: var(--error-bg); } .tnode.t-error .tn2 svg, .tnode.t-error .tst { color: var(--error); }
+.tnode.t-prompt { border-left-color: var(--prompt); background: var(--prompt-bg); } .tnode.t-prompt .tn2 svg, .tnode.t-prompt .tst { color: var(--prompt); }
+.tnode.t-resting, .tnode.t-resting .tn1 { color: var(--text-muted); }
+.tnode.ctx { opacity: .45; }
+.tnode.is-hidden { opacity: .5; }
+.tpill { margin-left: auto; flex: none; font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-3); color: var(--text-muted); cursor: pointer; }
+.tpill:hover { color: var(--text); background: var(--line); }
+.tpill.on { background: none; box-shadow: inset 0 0 0 1px var(--line); }
+/* fold toggle: a small round tab on the card's bottom edge, where the connector leaves */
+.ttog { position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%); min-width: 18px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill); background: var(--surface); border: 1px solid var(--text-dim);
+  color: var(--text-muted); font: 600 10px/14px var(--font); text-align: center; cursor: pointer; }
+.ttog:hover { color: var(--text); border-color: var(--text); }
+
+/* project headings */
+.thd { position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: var(--space-2); height: 28px; padding: 0 var(--space-2); border-radius: var(--radius); white-space: nowrap; outline: none;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+.thd:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.thd .thn { color: var(--text); overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+.thd .thc { color: var(--text-dim); font-weight: 400; }
+.thd .tally, .thd .tpill { letter-spacing: 0; text-transform: none; font-weight: 400; }
+.thd .tpill { margin-left: var(--space-1); }
+
+/* outline: one row per item, indented by level */
+.tv.outline .tnode, .tv.outline .thd { left: calc(var(--space-2) + var(--lvl, 0) * 14px); right: var(--space-2); width: auto; }
+.tv.outline .tnode { height: 44px; padding-left: 24px; }
+.tv.outline .thd { height: 44px; }
+.tv.outline .ttog { left: 4px; bottom: auto; top: 50%; transform: translateY(-50%); min-width: 16px; padding: 0 2px; }
+.reduce-motion .tvworld { will-change: auto; }

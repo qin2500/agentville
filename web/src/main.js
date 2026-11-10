@@ -324,6 +324,7 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
   setFavicon(clicks ? 'prompt' : errs ? 'error' : st > 0 ? 'stalled' : '');
   $('view-status').setAttribute('aria-pressed', String(S.view === 'status'));
   $('view-team').setAttribute('aria-pressed', String(S.view === 'team'));
+  $('view-tree').setAttribute('aria-pressed', String(S.view === 'tree'));
   $('view-table').setAttribute('aria-pressed', String(S.view === 'table'));
   $('view-models').setAttribute('aria-pressed', String(S.view === 'models'));
   $('btn-new').hidden = S.view !== 'team';
@@ -652,6 +653,7 @@ document.addEventListener('click', e => {
   if (t.closest('#btn-full')) return setPanel(S.panel === 'full' ? 'docked' : 'full');
   if (t.closest('#view-status')) return setView('status');
   if (t.closest('#view-team')) return setView('team');
+  if (t.closest('#view-tree')) return setView('tree');
   if (t.closest('#view-table')) return setView('table');
   if (t.closest('#view-models')) return setView('models');
   if (t.closest('#btn-retry')) return poll();
@@ -724,7 +726,7 @@ document.addEventListener('keydown', e => {
     const id = e.target.closest?.('[data-id]')?.dataset.id || S.selected;
     if (id) panel.open(id);
   }
-  else if (k === 'v' || k === 'V') setView({ status: 'team', team: 'table', table: 'models', models: 'status' }[S.view] || 'status');
+  else if (k === 'v' || k === 'V') setView({ status: 'team', team: 'tree', tree: 'table', table: 'models', models: 'status' }[S.view] || 'status');
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
   else if (k === 'Backspace' && S.detail) { e.preventDefault(); app.closeDetail(); }
   else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && S.panel !== 'full' && !e.target.closest('.panel')) village.key(k);

@@ -136,7 +136,7 @@ test('it refreshes live: a reply on another model shows up without a reload', as
   await expect(solo.locator('.c-changed')).toContainText('Opus 5.5 → Sonnet 5.5')
 })
 
-test('V cycles Status → Team → Table → Models; keys move through the Models rows', async ({ page }, testInfo) => {
+test('V cycles Status → Team → Tree → Table → Models; keys move through the Models rows', async ({ page }, testInfo) => {
   test.skip(isMobile(testInfo), 'keyboard shortcuts are a desktop path')
   await openModels(page)
   await page.locator('#view-table').click()

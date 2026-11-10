@@ -58,8 +58,9 @@ test.describe('reusing a running server', () => {
     await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
     // The page's own keys reach it (no menu accelerator swallows them): V cycles the views.
     await page.locator('body').press('v')
-    await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
-    expect(await page.evaluate(() => localStorage.getItem('va.view'))).toContain('table')
+    await expect(page.locator('#view-tree')).toHaveAttribute('aria-pressed', 'true')
+    expect(await page.evaluate(() => localStorage.getItem('va.view'))).toContain('tree')
+    await expect(page.locator('.tv .tnode').first()).toBeVisible()
 
     // A new-window link (PR chips, the README) opens in the default browser, not in the app.
     await page.evaluate(() => window.open('https://github.com/example/repo/pull/7', '_blank', 'noopener'))

@@ -3,6 +3,7 @@
 import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, bucketIcon, icon, ago, agoLong, clock, esc, safeHref, h, store } from './ui.js';
 import { createTable } from './table.js';
 import { createModels } from './models.js';
+import { createTree } from './tree.js';
 import { rank, byRank, enteredAt, syncNodes } from './order.js';
 import { createInspect, prTone, changesLabel } from './inspect.js';
 
@@ -523,6 +524,7 @@ export function createPanel(app) {
     list.classList.toggle('full', S.panel === 'full');
     list.classList.toggle('tableview', S.view === 'table' || S.view === 'models');
     list.classList.toggle('modelsview', S.view === 'models');
+    list.classList.toggle('treeview', S.view === 'tree');
     wide = S.panel === 'docked' && !list.hidden && list.clientWidth >= 600;
     let nodes;
     const all = S.data?.agents || [];
@@ -547,7 +549,7 @@ export function createPanel(app) {
         nodes = [stateNode(`nomatch:${S.query}`, S.query
           ? `<b>No agents match “${esc(S.query)}”.</b><span><button class="link" type="button" data-act="clearsearch">Clear search</button></span>`
           : '<b>No agents match these filters.</b><span><button class="link" type="button" data-act="clearfilters">Clear filters</button></span>')];
-      } else nodes = S.view === 'status' ? statusView(agents) : teamView(S.agents);
+      } else nodes = S.view === 'status' ? statusView(agents) : S.view === 'tree' ? tree.render() : teamView(S.agents);
       const conv = S.view === 'status' || S.view === 'team' ? convSection() : null;
       if (conv) nodes = [...nodes, conv];
     }
@@ -556,6 +558,7 @@ export function createPanel(app) {
     const listHidden = detailOpen && S.panel !== 'full';
     if (listHidden && !list.hidden) listScroll = list.scrollTop;
     list.hidden = listHidden;
+    if (!nodes.includes(tree.el)) list.classList.remove('chart');
     sync(list, nodes);
     if (!hold) shownBucket = new Map(S.agents.map(a => [a.id, a.bucket]));
     if (before) flip(before, wasHeld);
@@ -834,6 +837,7 @@ export function createPanel(app) {
   const inspect = createInspect(app);
   const table = createTable({ S, keyed, sync, matches, byBucket, store, dupOf, chip, render: () => app.render(), app, openHTML: a => (terminal() && !openBlock(a) ? `<button class="openbtn" type="button" data-open="${esc(a.id)}" aria-label="Open ${esc(a.name)} in ${esc(termName())}" title="Open in ${esc(termName())} (O)">↗</button>` : '') });
   const models = createModels({ S, keyed, sync, matches, store, dupOf, render: () => app.render(), app });
+  const tree = createTree({ S, app, matches, filtering });
   let lastWide = null;
 
   return {
@@ -853,6 +857,7 @@ export function createPanel(app) {
       for (let p = a.parentId, g = 0; p && g < 50; p = S.byId.get(p)?.parentId, g++) S.collapsed.delete(p);
       if (a.bucket === 'resting') (S.restExpanded ||= new Set()).add(a.parentId && S.byId.has(a.parentId) ? a.parentId : '__solo');
       pendingScroll = id;
+      if (S.view === 'tree') tree.reveal(id);
     },
     focusDetail() { drawer.querySelector('h3')?.focus(); },
     focusTermButton() { drawer.querySelector('[data-act="term"]')?.focus(); },
@@ -860,7 +865,7 @@ export function createPanel(app) {
     scrollState: () => ({ list: list.hidden ? listScroll : list.scrollTop, listLeft: list.scrollLeft, drawer: drawer.scrollTop }),
     restoreScroll(st) { if (!st) return; listScroll = st.list; if (!list.hidden) { list.scrollTop = st.list; list.scrollLeft = st.listLeft; } drawer.scrollTop = st.drawer; },
     focusSelectedRow() { cache.get(`row:${S.selected}`)?.focus({ preventScroll: false }); },
-    firstMatch() { return [...list.querySelectorAll('.row:not(.ctx)')].find(r => r.offsetParent)?.dataset.id; },
+    firstMatch() { return [...list.querySelectorAll('.row:not(.ctx), .tnode:not(.ctx)')].find(r => r.offsetParent)?.dataset.id; },
     jumpStalled(dir) {
       const rs = [...list.querySelectorAll('.row.b-stalled')].filter(r => r.offsetParent);
       if (!rs.length) return;

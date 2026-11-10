@@ -89,7 +89,9 @@ test('panel modes via keys and buttons persist across reload', async ({ page }, 
   await page.screenshot({ path: `${SHOTS}/desktop-full-table.png` })
   await page.locator('#view-team').click()
   await page.screenshot({ path: `${SHOTS}/desktop-full-team.png` })
-  await page.locator('body').press('v') // Status → Team → Table → Models → Status
+  await page.locator('body').press('v') // Status → Team → Tree → Table → Models → Status
+  await expect(page.locator('#view-tree')).toHaveAttribute('aria-pressed', 'true')
+  await page.locator('body').press('v')
   await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
   await page.locator('body').press('v')
   await expect(page.locator('#view-models')).toHaveAttribute('aria-pressed', 'true')
