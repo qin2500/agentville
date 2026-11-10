@@ -100,7 +100,7 @@ export function createPanel(app) {
   const byWorst = byRank;
 
   // ---------- rows ----------
-  function rowBtn(a, { crumb = false, dropProject = false, noProject = false, depth = 0, ctx = false } = {}) {
+  function rowBtn(a, { crumb = false, dropProject = false, noProject = false, depth = 0, ctx = false, sum = '' } = {}) {
     const btn = keyed(`row:${a.id}`, () => h('button', { class: 'row', type: 'button', 'data-id': a.id }));
     const parent = a.parentId && S.byId.get(a.parentId);
     const t = (S.data?.serverTime || Date.now()) - (a.since || 0);
@@ -118,12 +118,12 @@ export function createPanel(app) {
       a.live ? '' : 'not running'].filter(Boolean).join(', ');
     // Changed files in its folder: a small chip where there is room (expanded, or a wide panel).
     const chg = a.changes && (S.panel === 'full' || wide) ? changesLabel(a.changes) : '';
-    const sig = [a.name, a.important, dup, a.role, a.roleSource, a.bucket, a.severity, a.prompt, a.live, a.hidden, l2, prs.map(p => `${p.id}:${p.state}:${p.checks?.failed}:${p.checks?.pending}`).join(), chg, t > 30 * 60e3, tail].join('|');
+    const sig = [a.name, a.important, dup, a.role, a.roleSource, a.bucket, a.severity, a.prompt, a.live, a.hidden, l2, prs.map(p => `${p.id}:${p.state}:${p.checks?.failed}:${p.checks?.pending}`).join(), chg, t > 30 * 60e3, tail, sum].join('|');
     if (btn._sig !== sig) {
       btn.innerHTML = `<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}${a.roleSource === 'override' ? '<i class="ov"></i>' : ''}</span>
         <span class="nm"><span>${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${dup ? `<span class="dup">${esc(dup)}</span>` : ''}<span class="nmx">${a.hidden ? '<span class="htag">Hidden</span>' : ''}${prs.slice(0, 2).map(p => chip(p)).join('')}${prs.length > 2 ? `<span class="chip">+${prs.length - 2}</span>` : ''}${chg ? `<span class="chip chg" title="Changed in its folder: ${esc(chg)}"><span class="sr">Changes: </span>${esc(chg)}</span>` : ''}</span></span>
         <span class="meta"><i class="live ${a.live ? '' : 'no'}" aria-hidden="true"></i><span class="num ${a.bucket === 'stalled' && t > 30 * 60e3 ? 'old' : ''}">${ago(t)}</span></span>
-        <span class="l2">${icon(bucketIcon(a))}<span>${esc(l2)}</span></span><span class="sr">, ${esc(tail)}</span>`;
+        <span class="l2">${icon(bucketIcon(a))}<span>${esc(l2)}</span></span>${sum}<span class="sr">, ${esc(tail)}</span>`;
       btn.querySelector('.nm > span').title = a.name;
       btn.title = S.compact ? `${reason}${project ? ` · ${project}` : ''}` : '';
       if (btn._bucket && btn._bucket !== a.bucket) { btn.classList.remove('flash'); void btn.offsetWidth; btn.classList.add('flash'); }
@@ -259,6 +259,49 @@ export function createPanel(app) {
   }
 
   // ---------- team view ----------
+  // Docked Team shows the top level only: a team opens one level per caret click, and what is open
+  // is remembered per agent id (localStorage), so polls and reloads keep it. Search, filters and the
+  // selection reveal the ancestors of what they point at for as long as they apply, without
+  // touching the saved state; a caret can still fold a revealed team (`unrevealed`) until they change.
+  const OPEN_KEY = 'va.teamOpen', OPEN_MAX = 500, SOLO = '__solo';
+  const teamOpen = new Set((v => (Array.isArray(v) ? v.filter(x => typeof x === 'string') : []))(store.get(OPEN_KEY, [])));
+  let revealed = new Set(), unrevealed = new Set(), revealKey = '';
+  const isOpen = id => !unrevealed.has(id) && (teamOpen.has(id) || revealed.has(id));
+  function setOpen(id, open) {
+    teamOpen.delete(id); // re-added last, so the oldest ids are the ones dropped past OPEN_MAX
+    if (open) { teamOpen.add(id); unrevealed.delete(id); } else if (revealed.has(id)) unrevealed.add(id);
+    store.set(OPEN_KEY, [...teamOpen].slice(-OPEN_MAX));
+  }
+  const ancestors = id => {
+    const out = [];
+    for (let p = S.byId.get(id)?.parentId, g = 0; p && S.byId.has(p) && g < 50; p = S.byId.get(p).parentId, g++) out.push(p);
+    return out;
+  };
+  function computeReveal(sets) {
+    const f = S.filters;
+    const key = [S.query, [...f.projects], [...f.harness], [...f.roles], f.bucket, S.selected].join('|');
+    if (key !== revealKey) { revealKey = key; unrevealed = new Set(); }
+    revealed = new Set();
+    if (filtering()) {
+      for (const id of sets.match) {
+        const up = ancestors(id);
+        for (const p of up) revealed.add(p);
+        if (!up.length && S.byId.get(id)?.bucket === 'resting') revealed.add(SOLO);
+      }
+    }
+    const sel = S.selected && S.byId.get(S.selected);
+    if (sel) {
+      const up = ancestors(sel.id);
+      for (const p of up) revealed.add(p);
+      if (!up.length && sel.bucket === 'resting') revealed.add(SOLO); // a resting solo sits under Solo's caret
+    }
+  }
+  // One line under a folded parent: how many are under it, and their statuses (errors and "needs you" first).
+  function teamSummary(a, keep) {
+    const ds = descendants(a).filter(d => keep.has(d.id));
+    if (!ds.length) return '';
+    return `<span class="tsum"><span class="sr">, </span><span class="tsn">${ds.length} ${ds.length === 1 ? 'report' : 'reports'}</span>${tallyHTML(ds)}</span>`;
+  }
   // keep = agents shown: matches plus their ancestors (ancestors that don't match render dimmed).
   function teamSets(agents) {
     const match = new Set(agents.filter(matches).map(a => a.id));
@@ -286,8 +329,8 @@ export function createPanel(app) {
     seen.add(a.id);
     const { shown, rest } = splitKids(a, sets.keep);
     const hasKids = shown.length + rest > 0;
-    const open = hasKids && !S.collapsed.has(a.id);
-    const row = rowBtn(a, { dropProject: true, depth, ctx: !sets.match.has(a.id) });
+    const open = hasKids && isOpen(a.id);
+    const row = rowBtn(a, { dropProject: true, depth, ctx: !sets.match.has(a.id), sum: hasKids && !open ? teamSummary(a, sets.keep) : '' });
     const wrapKids = [];
     if (!hasKids) wrapKids.push(keyed(`chevsp:${a.id}`, () => h('span', { class: 'chev-sp', 'aria-hidden': 'true' })));
     else {
@@ -316,21 +359,42 @@ export function createPanel(app) {
   function teamView(agents) {
     const sets = teamSets(agents);
     if (S.panel === 'full') return fullTeam(agents, sets);
+    computeReveal(sets);
     const top = roots(agents).filter(a => sets.keep.has(a.id)).sort(byWorst);
     const heads = top.filter(a => kidsOf(a).some(k => sets.keep.has(k.id)));
     const solos = top.filter(a => !heads.includes(a));
+    // Resting solos fold behind the Solo heading's caret (its tally counts them), not a "+N resting" line.
     const restSolos = S.query ? 0 : solos.filter(a => a.bucket === 'resting').length;
-    const soloShown = S.query || S.restExpanded?.has('__solo') ? solos : solos.filter(a => a.bucket !== 'resting');
+    const soloOpen = !restSolos || isOpen(SOLO);
+    const soloShown = soloOpen ? solos : solos.filter(a => a.bucket !== 'resting');
     const seen = new Set();
+    const out = [];
+    if (heads.length) {
+      const tools = keyed('ttools', () => h('div', { class: 'ttools' }));
+      const anyOpen = heads.some(a => isOpen(a.id));
+      const html = `<span>${heads.length} ${heads.length === 1 ? 'team' : 'teams'}</span><span class="tta"><button class="linkbtn" type="button" data-act="expandall">Expand all</button><button class="linkbtn" type="button" data-act="collapseall"${anyOpen ? '' : ' disabled'}>Collapse all</button></span>`;
+      if (tools._html !== html) { tools.innerHTML = html; tools._html = html; }
+      out.push(tools);
+    }
     const tree = keyed('tree', () => h('ul', { class: 'tree' }));
     sync(tree, heads.map(a => treeNode(a, 0, sets, seen)));
-    const out = [tree];
+    out.push(tree);
     if (solos.length) {
-      const sec = keyed('tsolo', () => h('section', { class: 'sec' }));
+      const sec = keyed('tsolo', () => h('section', { class: 'sec tsolo' }));
       const h2 = keyed('tsolo:h2', () => h('h2'));
-      h2.innerHTML = `Solo · <span class="c num">${solos.length}</span>`;
+      const label = keyed('tsolo:lbl', () => h('span', { class: 'tsl' }));
+      const lhtml = `Solo · <span class="c num">${solos.length}</span>${tallyHTML(solos)}`;
+      if (label._html !== lhtml) { label.innerHTML = lhtml; label._html = lhtml; }
+      const hk = [label];
+      if (restSolos) {
+        const chev = keyed('tsolo:chev', () => h('button', { class: 'chev', type: 'button', 'data-act': 'chev', 'data-id': SOLO }));
+        chev.textContent = soloOpen ? '▾' : '▸';
+        chev.setAttribute('aria-expanded', String(soloOpen));
+        chev.setAttribute('aria-label', `${soloOpen ? 'Hide' : 'Show'} ${restSolos} resting solo ${restSolos === 1 ? 'agent' : 'agents'}`);
+        hk.unshift(chev);
+      }
+      sync(h2, hk);
       const items = soloShown.map(a => li(`tli:${a.id}`, rowBtn(a, { ctx: !sets.match.has(a.id) })));
-      if (restSolos && !S.restExpanded?.has('__solo')) items.push(moreLine('tsolomore', { id: '__solo' }, restSolos));
       sync(sec, [h2, ul('tsolo:ul', items)]);
       out.push(sec);
     }
@@ -744,7 +808,13 @@ export function createPanel(app) {
       const a = S.byId.get(S.selected);
       switch (act.dataset.act) {
         case 'resting': S.restingOpen = !S.restingOpen; return app.render();
-        case 'chev': S.collapsed.has(id) ? S.collapsed.delete(id) : S.collapsed.add(id); return app.render();
+        case 'chev': setOpen(id, !isOpen(id)); return app.render();
+        case 'expandall': for (const x of S.agents) if (kidsOf(x).length) setOpen(x.id, true); return app.render();
+        case 'collapseall': {
+          for (const x of [...teamOpen]) if (x !== SOLO) setOpen(x, false);
+          if (!filtering()) for (const x of revealed) if (x !== SOLO) unrevealed.add(x); // the selection's too
+          return app.render();
+        }
         case 'more': (S.restExpanded ||= new Set()).add(id); return app.render();
         case 'clearsearch': S.query = ''; document.getElementById('q').value = ''; return app.render();
         case 'clearfilters': Object.assign(S.filters, { projects: new Set(), harness: new Set(), roles: new Set(), bucket: null }); return app.render();
@@ -828,7 +898,7 @@ export function createPanel(app) {
         if (S.view === 'team' && S.panel !== 'full' && row.previousElementSibling?.classList.contains('chev')) {
           e.preventDefault();
           const close = e.key === 'ArrowLeft';
-          if (close !== S.collapsed.has(id)) { close ? S.collapsed.add(id) : S.collapsed.delete(id); app.render(); }
+          if (close === isOpen(id)) { setOpen(id, !close); app.render(); }
         }
         break;
     }
@@ -854,8 +924,8 @@ export function createPanel(app) {
       if (a.bucket === 'resting') S.restingOpen = true;
       if (S.filters.bucket && S.filters.bucket !== a.bucket) S.filters.bucket = null;
       if (!matches(a)) { S.query = ''; document.getElementById('q').value = ''; }
-      for (let p = a.parentId, g = 0; p && g < 50; p = S.byId.get(p)?.parentId, g++) S.collapsed.delete(p);
-      if (a.bucket === 'resting') (S.restExpanded ||= new Set()).add(a.parentId && S.byId.has(a.parentId) ? a.parentId : '__solo');
+      // Its ancestors (and Solo's caret) open while it stays selected: computeReveal().
+      if (a.bucket === 'resting' && a.parentId && S.byId.has(a.parentId)) (S.restExpanded ||= new Set()).add(a.parentId);
       pendingScroll = id;
       if (S.view === 'tree') tree.reveal(id);
     },

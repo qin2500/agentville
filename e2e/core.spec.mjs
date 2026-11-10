@@ -65,8 +65,12 @@ test('roles are distinguishable without colour (glyph shape + accessible name)',
 test('Team view nests leads under the boss and subs under their lead', async ({ page }, testInfo) => {
   await page.locator('#view-team').click()
   const boss = page.locator(`li:has(> .tw .row[data-id="${claudeId('boss')}"])`)
+  // Top level only until a caret opens a team, one level at a time (team-docked.spec.mjs has the rest).
+  await expect(boss.locator('> ul.kids')).toHaveCount(0)
+  await boss.locator('> .tw > .chev').click()
   for (const k of ['leadBuilding', 'leadBlocked', 'leadCi']) await expect(boss.locator(`> ul.kids .row[data-id="${claudeId(k)}"]`)).toHaveCount(1)
   const api = page.locator(`li:has(> .tw .row[data-id="${claudeId('leadBuilding')}"])`)
+  await api.locator('> .tw > .chev').click()
   for (const s of ['worker', 'mate']) await expect(api.locator(`> ul.kids .row[data-id="${claudeId('leadBuilding')}:sub:${s}"]`)).toHaveCount(1)
   await expect(page.locator('.tsolo, section.sec').filter({ hasText: 'Solo' }).locator(`.row[data-id="${claudeId('soloTurn')}"]`)).toHaveCount(1)
   await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-team-docked.png` })

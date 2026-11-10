@@ -190,12 +190,23 @@ a.chip:hover { color: var(--text); text-decoration: underline; }
 .compact .row { min-height: 30px; padding-top: 3px; padding-bottom: 3px; }
 .compact .row .l2 { display: none; }
 .tw { display: flex; align-items: stretch; }
-.tw > .chev { flex: none; width: 20px; background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 0; }
+.tw > .chev { flex: none; width: 20px; background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 0; font-size: 13px; }
 .tw > .chev:hover { color: var(--text); background: var(--surface-2); }
 .tw > .row { flex: 1; min-width: 0; }
 .tree .row { padding-left: calc(var(--space-3) + var(--depth, 0) * 16px); }
 .tree .tw > .row { padding-left: calc(var(--space-1) + var(--depth, 0) * 16px); }
 .tree ul.kids { margin-left: calc(var(--space-3) + 6px + var(--depth, 0) * 16px); border-left: 1px solid var(--line); }
+/* Docked Team: a folded parent's one-line summary, the Expand/Collapse all line, Solo's caret. */
+.row .tsum { grid-column: 2 / 4; display: flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.row .tsum .tsn { flex: none; }
+.ttools { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1) var(--space-1) 0 var(--space-3); font-size: 11px; color: var(--text-muted); }
+.ttools .tta { display: inline-flex; }
+.ttools .linkbtn { font-size: 11px; padding: var(--space-1) var(--space-2); }
+.ttools .linkbtn:disabled { opacity: .45; cursor: default; text-decoration: none; }
+.tsolo h2 .chev { flex: none; width: 16px; margin-left: -4px; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font-size: 12px; }
+.tsolo h2 .chev:hover { color: var(--text); }
+.tsolo h2 .tsl { display: inline-flex; align-items: center; gap: 6px; }
+.tsolo h2 .tally { margin-left: var(--space-1); letter-spacing: 0; text-transform: none; font-weight: 400; }
 .more { padding: var(--space-1) var(--space-3) var(--space-2); font-size: 12px; color: var(--text-muted); }
 .teamgroup + .teamgroup { border-top: 1px solid var(--line); }
 

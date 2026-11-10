@@ -48,7 +48,6 @@ const S = {
   selected: null,
   detail: false,
   restingOpen: false,
-  collapsed: new Set(),
   term: null,            // agent id shown in the terminal view, or null
   get view() { return this.views[this.panel === 'full' ? 'full' : 'docked']; },
   get reduceMotion() { return this.reduceSetting || reducedMotionQuery.matches; },
