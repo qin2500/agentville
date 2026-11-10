@@ -214,6 +214,7 @@ Code keeps it: the macOS Keychain (read and written with `security`, never on a 
 - **Open** and **Terminal** run the resume command the server chose for that agent.
 - **Fleet** sends messages only after you confirm a preview listing every recipient.
 - **Reply / Message** sends one message to one live Claude session, after you confirm the exact text.
+- **Message agents** sends one message you wrote to the agents you picked (up to 50), after you confirm the exact text and recipients.
 - **New agent**, **Stop job** and **Fork** run `claude --bg`, `claude stop` or
   `claude --resume --fork-session --bg`, after you confirm the exact command (see
   [Acting on one agent](#acting-on-one-agent)).
@@ -353,6 +354,35 @@ a fake `claude` (`AGENTVILLE_CLAUDE_BIN`) are both set.
   list show under **Conversations by name**; choosing one opens the agent. The names come from an
   index the server keeps as it reads transcripts (only new bytes each time), so typing never
   triggers a scan.
+
+## Message agents
+
+One message you write, sent to many agents at once. **Message agents…** sits next to **+ New agent**
+in the Team view's toolbar, and in the **Fleet** menu.
+
+- **Pick who.** **Everyone**, or filters that combine: a name contains (any case); rank (Boss, Lead,
+  Subagent, Solo); status (Error, Needs a click, Needs you, Waiting, Building, Resting, the same
+  categories as the counters); and project. Kinds combine with AND, choices within one kind with OR.
+  The list below updates as you go, with a count, and every agent has a tick box to leave it out.
+  Hidden agents are left out unless **Show hidden agents** is on.
+- **Who can't get it.** Agents that can't receive a message are listed under "N matching agents
+  can't be messaged" with the reason, and aren't counted: Codex threads, subagents, sessions that
+  aren't running or have no message socket, and the session Agentville itself runs in (its
+  `CLAUDE_CODE_SESSION_ID`, or `AGENTVILLE_SELF_SESSION`).
+- **Write it.** Free text, up to 8000 characters, like the inspector's message.
+- **Confirm.** **Review…** shows the message exactly as it will arrive (inside the
+  `<cross-session-message from-name="Agentville">` wrapper), the exact recipients and the count.
+  **Send to N agents** is good once, for 2 minutes, and only for that set and that text: if the
+  matching agents change while you look (one stops, another appears), the sheet says so and you
+  review again. One broadcast goes to at most 50 agents, and at most 3 broadcasts a minute are
+  allowed (separate from the inspector's 10 messages a minute).
+- **Results.** It sends to 4 sessions at a time over each one's message socket, the inspector's
+  path. Each agent's line shows **Delivered** (the session recorded it), **Sent (no receipt in
+  10 s)**, or **Failed** with the reason, as it happens, and the sheet ends with a summary such as
+  "Delivered to 12 of 14".
+
+`fleet-log.jsonl` records each broadcast's agent ids, count and outcomes, never the text. Under test,
+nothing is sent unless `AGENTVILLE_FLEET_SOCKET_ROOT` points at the test's own sockets.
 
 ## Fleet actions (experimental)
 

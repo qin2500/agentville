@@ -8,6 +8,7 @@
 <link rel="icon" id="favicon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
 <link rel="stylesheet" href="/src/styles.css">
+<link rel="stylesheet" href="/src/broadcast.css">
 </head>
 <body>
 <a class="skip" href="#list">Skip to agent list</a>
@@ -56,6 +57,7 @@
             <button class="ghost" id="btn-filters" aria-haspopup="dialog" aria-expanded="false">Filters ▾</button>
             <button class="ghost muted" id="btn-hidden" aria-haspopup="dialog" aria-expanded="false" hidden></button>
             <button class="ghost newbtn" id="btn-new" type="button" aria-haspopup="dialog" title="Start a Claude Code background agent in one of your projects" hidden>+ New agent</button>
+            <button class="ghost msgbtn" id="btn-msg" type="button" aria-haspopup="dialog" title="Send one message to many agents at once" hidden>Message agents…</button>
           </div>
           <div class="fchips" id="fchips"></div>
         </div>
@@ -75,6 +77,7 @@
 <dialog class="sheet" id="sheet" aria-labelledby="sheet-title"></dialog>
 <dialog class="sheet" id="acct" aria-labelledby="acct-title"></dialog>
 <dialog class="sheet" id="newagent" aria-labelledby="na-title"></dialog>
+<dialog class="sheet bcsheet" id="broadcast" aria-labelledby="bc-title"></dialog>
 <dialog class="sheet upd" id="update" aria-labelledby="update-title"></dialog>
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="sr" id="live" aria-live="polite"></div>

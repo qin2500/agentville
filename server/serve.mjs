@@ -17,6 +17,7 @@ import { ACTIONS, createFleetStore, currentPending, preview, continuable } from 
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
 import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
 import { createChanges } from './changes.mjs'
+import { fanOut, PER_MINUTE as BROADCASTS_PER_MINUTE, MAX_RECIPIENTS, recipientIds, sameSet, SELF_WHY, selfId, summarize, textProblem } from './broadcast.mjs'
 import { createPrStatus } from './prstatus.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
@@ -85,6 +86,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // previewed plan behind a one-time confirm token, like Fleet's.
   const oneOffs = new Map() // confirm token -> { kind, ..., expires }
   const messages = [] // message sends in the last minute
+  const broadcasts = [] // "Message agents" sends in the last minute
   const runs = [] // starts, stops and forks in the last minute
   let forks = new Map() // server-private: id -> { sid, cwd } a fork would copy
   let titles = [] // server-private: conversation names for search (never prompt text)
@@ -139,10 +141,13 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
     titles = results.flatMap((r) => (r.status === 'fulfilled' && r.value.titles) || [])
     const byId = new Map(agents.map((a) => [a.id, a]))
+    const self = selfId()
     const dirs = new Set()
     for (const a of agents) {
       // Why it can't be messaged from the inspector ('' = it can). Fixed strings only.
       a.messageWhy = messageProblem(a)
+      // The session Agentville itself runs in (if any): never one of "Message agents"' recipients.
+      a.self = a.id === self
       // Changed files in its folder: never for resting agents, and a subagent working in its lead's
       // folder leaves that to the lead.
       const parent = ['subagent', 'teammate', 'thread'].includes(a.kind) && a.parentId && byId.get(a.parentId)
@@ -445,6 +450,68 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         await logFleet({ at: Date.now(), action: 'message', results: [out] })
         cached = null
         return send(res, 200, out)
+      }
+      // ---- many agents: "Message agents" (broadcast.mjs, README "Message agents") ----
+      if (url.pathname === '/api/broadcast/preview' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const bad = textProblem(body?.text)
+        if (bad) return send(res, 400, { error: bad })
+        const picked = recipientIds(body?.ids)
+        if (picked.error) return send(res, 400, { error: picked.error, max: MAX_RECIPIENTS })
+        const blocked = sendingBlocked()
+        if (blocked) return send(res, 409, { error: blocked })
+        const byId = new Map((await snapshot()).agents.map((a) => [a.id, a]))
+        const refused = picked.ids.map((id) => {
+          const a = byId.get(id)
+          const why = !a ? 'No longer listed' : a.messageWhy || (a.self ? SELF_WHY : '')
+          return why && { id, name: a?.name || id, why }
+        }).filter(Boolean)
+        if (refused.length) return send(res, 409, { error: `${refused.length === 1 ? '1 of these agents' : `${refused.length} of these agents`} can't be messaged now. Review the list again.`, refused })
+        const recipients = picked.ids.map((id) => ({ id, name: byId.get(id).name }))
+        return send(res, 200, { recipients, count: recipients.length, text: body.text, sent: wrap(body.text), max: MAX_RECIPIENTS, confirm: token({ kind: 'broadcast', ids: picked.ids, text: body.text }) })
+      }
+      if (url.pathname === '/api/broadcast/send' && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        const blocked = sendingBlocked()
+        if (blocked) return send(res, 501, { error: blocked })
+        const held = typeof body?.confirm === 'string' && oneOffs.get(body.confirm)
+        if (!held || Date.now() > held.expires || held.kind !== 'broadcast') return send(res, 409, { error: 'This confirmation has expired. Check it again.' })
+        // Bound to the exact set and text that were confirmed: anything else needs a new confirm.
+        const picked = recipientIds(body?.ids)
+        if (picked.error || !sameSet(picked.ids, held.ids) || body?.text !== held.text) {
+          oneOffs.delete(body.confirm)
+          return send(res, 409, { error: 'The recipients or the message changed since you confirmed. Review them again.', changed: true })
+        }
+        limit(broadcasts, BROADCASTS_PER_MINUTE, 'broadcasts') // before redeeming: a 429 leaves the token usable
+        const plan = redeem(body.confirm, ['broadcast'])
+        cached = null
+        const byId = new Map((await snapshot()).agents.map((a) => [a.id, a]))
+        res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
+        const line = (o) => { try { res.write(JSON.stringify(o) + '\n') } catch { /* the page went away; sending goes on */ } }
+        line({ start: true, count: plan.ids.length })
+        const results = await fanOut(plan.ids, {
+          emit: ({ id, status, detail }) => line({ id, status, ...(detail && { detail }) }),
+          send: async (id) => {
+            const a = byId.get(id)
+            const why = !a ? 'No longer listed' : a.messageWhy || (a.self ? SELF_WHY : '')
+            if (why) return { ok: false, detail: why }
+            const inbox = inboxes.get(id)
+            if (!inbox) return { ok: false, detail: 'Session ended' }
+            const problem = inboxProblem(inbox)
+            if (problem) return { ok: false, detail: problem }
+            if (dryRun()) return { skipped: true, detail: 'Dry run' }
+            const r = await deliver(inbox, plan.text)
+            return r.ok ? { ok: true, msgId: r.msgId, file: transcriptOf.get(id) } : { ok: false, detail: r.detail }
+          },
+        })
+        const summary = summarize(results)
+        // Ids, counts and outcomes only: never the text.
+        await logFleet({ at: Date.now(), action: 'broadcast', count: results.length, summary, results: results.map(({ id, status, detail }) => ({ id, status, ...(detail && { detail }) })) })
+        cached = null
+        line({ done: true, summary })
+        return res.end()
       }
       const ch = /^\/api\/agents\/([^/]+)\/changes$/.exec(url.pathname)
       if (ch && req.method === 'GET') {

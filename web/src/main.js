@@ -9,6 +9,7 @@ import { createTermView } from './term.js';
 import { loadModels } from './models.js';
 import { createUpdate } from './update.js';
 import { createLaunch } from './launch.js';
+import { createBroadcast } from './broadcast.js';
 import { transitions } from './notify.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
@@ -137,6 +138,7 @@ const account = createAccount(app, panel);
 const spend = createSpend(app);
 const update = createUpdate(app);
 const launch = createLaunch(app);
+const broadcast = createBroadcast(app);
 
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) and the inspector compress to the
@@ -277,6 +279,7 @@ function render() {
   panel.render({ loading });
   fleet.update();
   launch.update();
+  broadcast.update();
   village.update({ loading, offline: off });
 }
 
@@ -522,7 +525,7 @@ function togglePop(name) {
 }
 function fillPop(name) {
   const el = pops[name];
-  if (name === 'fleet') { el.innerHTML = fleet.menuHTML(); return; }
+  if (name === 'fleet') { el.innerHTML = fleet.menuHTML() + broadcast.menuItemHTML(); return; }
   if (name === 'account') { account.fillMenu(el); return; }
   if (name === 'spend') { spend.fillMenu(el); return; }
   if (name === 'hidden') { el.innerHTML = hiddenHTML(); return; }
