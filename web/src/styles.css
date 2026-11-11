@@ -665,10 +665,12 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
   .main.termview { grid-template-columns: var(--panel-w) 1fr 0px; }
   .main.termview.collapsed { grid-template-columns: 40px 1fr 0px; }
   .main.termview:not(.full) > .village { visibility: hidden; }
-  .main.termview .splitter { display: none; }
+  .main.termview.collapsed .splitter { display: none; }
   /* From full screen: the list (Team, Tree or Models) is the left column. */
-  .main.termview.full { grid-template-columns: .34fr 1fr 0px; grid-template-rows: auto auto minmax(0, 1fr); }
+  .main.termview.full { grid-template-columns: var(--tfull-w, .34fr) 1fr 0px; grid-template-rows: auto auto minmax(0, 1fr); }
   .main.termview.full > .village { display: none; }
+  /* The splitter sits in the (display: contents) panel: its containing block is the first grid column. */
+  .main.termview.full .splitter { display: block; grid-column: 1; grid-row: 1 / -1; }
   .main.termview.full > .panel, .main.termview.full .pbody { display: contents; }
   .main.termview.full .pbody > .banner { grid-column: 1; grid-row: 1; }
   .main.termview.full .pbody > .phead { grid-column: 1; grid-row: 2; background: var(--surface); }
@@ -814,7 +816,7 @@ li > .openbtn, .tw > .openbtn { right: 92px; }
   /* Outranks ".main.termview:not(.full) > .village { visibility: hidden }": the peek must show it. */
   .main.termview.peek > .village { visibility: visible; }
   .main.termview.peek.collapsed { grid-template-columns: 40px minmax(0, 1fr) var(--peek-w, 380px); }
-  .main.termview.full.peek { grid-template-columns: .34fr minmax(0, 1fr) var(--peek-w, 380px); }
+  .main.termview.full.peek { grid-template-columns: var(--tfull-w, .34fr) minmax(0, 1fr) var(--peek-w, 380px); }
   .main.termview.full.peek > .village { display: block; }
   .main.peek .peekgrip { display: block; position: absolute; left: -1px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 6; touch-action: none; }
   .peekgrip::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .15s; }
