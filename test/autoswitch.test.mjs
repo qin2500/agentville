@@ -62,12 +62,12 @@ const PEOPLE = () => ({
   C: { email: 'c@example.com', five: 40, week: 30, fiveResetsIn: 1 * 3600e3 },
 })
 async function setup() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-auto-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'village-auto-'))
   const home = makeAccountHome(root)
   const people = PEOPLE()
   const api = await fakeAnthropic(people)
   Object.assign(process.env, home.env, api.env)
-  for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY', 'AGENTVILLE_TERMINAL', 'AGENTVILLE_SAMPLE_MS']) delete process.env[k]
+  for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY', 'VILLAGE_TERMINAL', 'VILLAGE_SAMPLE_MS']) delete process.env[k]
   const dataDir = path.join(root, 'data')
   const server = createServer({ dataDir })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
@@ -113,7 +113,10 @@ test('projection: the binding window, and where auto-switch would go (cached rea
     assert.deepEqual([p.binding.window, p.binding.at], ['fiveHour', p.fiveHour.at])
     assert.equal(p.weekly.basis, 'flatOut')
     assert.equal(calls(), n0, 'the projection makes no usage calls')
-    // The sample's rebalance check read B and C too: the cache knows C resets soonest.
+    // B and C not read yet: nothing known to switch to but the pool.
+    assert.deepEqual(p.next, { to: 'pool', label: 'the pool' })
+    await t.req('GET', '/api/accounts/usage') // the menu reads every account: now the cache knows C resets soonest
+    p = (await t.req('GET', '/api/spend')).json.projection
     assert.deepEqual(p.next, { to: UUID.C, label: 'c@example.com' })
     await t.req('POST', '/api/autoswitch', { enabled: false })
     assert.equal((await t.req('GET', '/api/spend')).json.projection.next, null, 'auto-switch off: no hint')
@@ -127,10 +130,7 @@ test('sampler: samples the active account only; when it runs out, switches to th
     const n0 = usageCalls().length
     let d = await t.server.sampler.sample()
     assert.equal(d.why, 'not out')
-    assert.deepEqual(usageCalls().slice(n0).sort(), ['A', 'A', 'B', 'C'], 'the active account, plus one rebalance read of all of them')
-    const n1 = usageCalls().length
-    assert.equal((await t.server.sampler.sample()).why, 'not out')
-    assert.deepEqual(usageCalls().slice(n1), ['A'], 'then only the active account until the next rebalance check (15 min)')
+    assert.deepEqual(usageCalls().slice(n0), ['A'], 'only the active account is sampled')
     assert.equal(t.api.requests.filter((r) => r.path === '/v1/oauth/token').length, 0, 'and nothing is refreshed')
     let spend = (await t.req('GET', '/api/spend')).json
     assert.deepEqual([spend.projection.account, spend.projection.fiveHour.used, spend.projection.fiveHour.state], [UUID.A, 20, 'gathering'])
@@ -185,10 +185,10 @@ test('sampler: everything exhausted goes to the pool, and never back; the toggle
   } finally { await t.done() }
 })
 
-test('decide: quarantine accounts — gone at once on the work Wi-Fi, preferred elsewhere', () => {
+test('decide: quarantine accounts — gone at once on the Sideshift Wi-Fi, preferred elsewhere', () => {
   const quarantine = new Set(['B', 'D'])
   const fine = { fiveHour: w(20), weekly: w(10) }
-  // On the work Wi-Fi a quarantine account leaves at once: not out, auto-switch off, in cooldown.
+  // On the Sideshift Wi-Fi a quarantine account leaves at once: not out, auto-switch off, in cooldown.
   const banned = { ...base, active: 'B', activeUsage: fine, onWork: true, quarantine, enabled: false, lastAutoAt: NOW - 1000 }
   assert.deepEqual(decide(banned), { action: 'switch', to: 'C', why: 'quarantine' })
   assert.equal(decide({ ...banned, busy: true }).why, 'a switch is running')
@@ -197,13 +197,13 @@ test('decide: quarantine accounts — gone at once on the work Wi-Fi, preferred 
   assert.deepEqual(decide({ ...banned, usage: spent }), { action: 'switch', to: 'C', why: 'quarantine' })
   assert.deepEqual(decide({ ...banned, usage: new Map() }), { action: 'switch', to: 'A', why: 'quarantine' }, 'usage unknown: still a regular account')
   assert.equal(decide({ ...banned, saved: ['B', 'D'], poolAvailable: false }).why, 'nowhere to go', 'no regular account at all')
-  // Out on the work Wi-Fi: regular accounts only.
+  // Out on the Sideshift Wi-Fi: regular accounts only.
   const both = new Map([['B', { fiveHour: w(10, 600e3), weekly: w(10) }], ['C', { fiveHour: w(10, 3600e3), weekly: w(10) }]])
   assert.equal(decide({ ...base, usage: both, onWork: true, quarantine }).to, 'C')
   // Out anywhere else: a quarantine account first, even when a regular one resets sooner.
   const regularSooner = new Map([['B', { fiveHour: w(10, 3 * 3600e3), weekly: w(10) }], ['C', { fiveHour: w(10, 600e3), weekly: w(10) }]])
   assert.equal(decide({ ...base, usage: regularSooner, quarantine }).to, 'B')
-  // The 10 s check off the work Wi-Fi on a regular account: a quarantine account with room, else stay.
+  // The 10 s check off the Sideshift Wi-Fi on a regular account: a quarantine account with room, else stay.
   const prefer = { ...base, active: 'A', activeUsage: null, quarantine, usage: regularSooner, prefer: true }
   assert.deepEqual(decide(prefer), { action: 'switch', to: 'B', why: 'prefer' })
   assert.equal(decide({ ...prefer, usage: new Map([['B', { fiveHour: w(99), weekly: w(10) }], ['C', fine]]) }).why, 'no quarantine account available', 'never to another regular one')
@@ -212,31 +212,31 @@ test('decide: quarantine accounts — gone at once on the work Wi-Fi, preferred 
   assert.equal(decide({ ...prefer, lastAutoAt: NOW - 1000 }).why, 'cooldown', 'and the cooldown')
 })
 
-test('network rule (every 10 s): off a quarantine account at once on the work Wi-Fi, onto one anywhere else', async () => {
+test('network rule (every 10 s): off a quarantine account at once on the Sideshift Wi-Fi, onto one anywhere else', async () => {
   const t = await setup()
   const settle = () => new Promise((r) => setTimeout(r, 300)) // the check that marking the network starts
   try {
-    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:01' // fake networks: the real one is never read
+    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:01' // fake networks: the real one is never read
     await t.req('PATCH', `/api/accounts/${UUID.B}`, { quarantine: true })
-    assert.equal((await t.server.sampler.enforce()).why, 'no work network marked', 'nothing happens until one is marked')
+    assert.equal((await t.server.sampler.enforce()).why, 'no Sideshift network marked', 'nothing happens until one is marked')
 
-    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:0f' // at the office
+    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:0f' // at the office
     assert.equal((await t.req('POST', '/api/network/work', { work: true })).json.current.work, true)
     await settle()
     assert.equal((await t.server.sampler.enforce()).why, 'right kind of account', 'a regular account at the office stays')
 
-    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:01' // home again: onto the quarantine account
+    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:01' // home again: onto the quarantine account
     let d = await t.server.sampler.enforce()
     assert.deepEqual([d.action, d.to, d.why], ['switch', UUID.B, 'prefer'])
     assert.equal(t.live(), t.creds.B)
 
-    process.env.AGENTVILLE_NETWORK_ID = 'none' // offline: nothing changes
+    process.env.VILLAGE_NETWORK_ID = 'none' // offline: nothing changes
     assert.equal((await t.server.sampler.enforce()).why, 'offline')
 
     // Back at the office, inside the cooldown and with every regular account used up: off B anyway.
     t.people.A.five = 100; t.people.C.five = 100
     await t.req('GET', '/api/accounts/usage?fresh=1')
-    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:0f'
+    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:0f'
     d = await t.server.sampler.enforce()
     assert.deepEqual([d.action, d.why], ['switch', 'quarantine'])
     assert.equal(d.to, UUID.C, 'the regular account that frees up soonest')
@@ -246,12 +246,12 @@ test('network rule (every 10 s): off a quarantine account at once on the work Wi
     // Home, but the quarantine account has no room: stay on the regular one.
     t.people.B.five = 100
     await t.req('GET', '/api/accounts/usage?fresh=1')
-    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:01'
+    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:01'
     await t.req('POST', '/api/autoswitch', { enabled: true })
     d = await t.server.sampler.enforce()
     assert.ok(['cooldown', 'no quarantine account available'].includes(d.why), d.why)
     assert.equal(t.live(), t.creds.C)
-  } finally { delete process.env.AGENTVILLE_NETWORK_ID; await t.done() }
+  } finally { delete process.env.VILLAGE_NETWORK_ID; await t.done() }
 })
 
 test('decide: prefers the account whose weekly window resets soonest, then the 5-hour one', () => {

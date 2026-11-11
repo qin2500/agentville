@@ -76,7 +76,10 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   const best = saved.filter((id) => id !== active && ok(usage.get(id)) && !(onWork && quarantine.has(id)) && (why !== 'prefer' || quarantine.has(id)))
     .sort((a, b) => rank(a) - rank(b) || week(a, b) || at(a, 'fiveHour') - at(b, 'fiveHour'))[0]
   if (why === 'rebalance') { // only for an account whose allowance expires well before the active one's, with real room
-    const b = best && usage.get(best), mine = activeUsage?.weekly?.resetsAt ?? Infinity
+    // The active account's week must be known: an unreadable one (rate-limited, expired) is not "never expires".
+    const w = !activeUsage?.error && activeUsage?.weekly
+    if (!w || (w.resetsAt == null && w.used > 0)) return { action: 'none', why: 'not out' }
+    const b = best && usage.get(best), mine = w.resetsAt ?? Infinity
     const worth = b && rank(best) <= rank(active) && at(best, 'weekly') + REBALANCE_LEAD_MS <= mine && 100 - b.weekly.used >= REBALANCE_MIN_ROOM && (b.fiveHour.none || b.fiveHour.used < REBALANCE_MAX_FIVE)
     return worth ? { action: 'switch', to: best, why } : { action: 'none', why: 'not out' }
   }
@@ -143,6 +146,8 @@ export function createSampler({ dataDir, account, agents, network, now = Date.no
     const pre = decide({ ...base, usage: new Map(), poolAvailable: true })
     if (pre.action === 'none') {
       if (pre.why !== 'not out' || list.length < 2 || at - (state.lastRebalanceCheck || 0) < REBALANCE_CHECK_MS) return pre
+      // An account picked by hand stays until it runs out: only rebalance away from one auto-switch chose.
+      if (since > (state.lastAutoAt || 0) + 5 * 60e3) return pre
       state.lastRebalanceCheck = at // a fresh read of the others, at most every 15 min
       const all = await account.accounts.usage({ fresh: true })
       const d = decide({ ...base, usage: new Map(all.accounts.map((x) => [x.id, fresh(x, at)])), busy: account.isBusy(), rebalance: true })

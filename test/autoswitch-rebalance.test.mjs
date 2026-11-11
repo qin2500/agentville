@@ -107,9 +107,9 @@ test('lead threshold: 6h earlier moves, just under 6h does not', () => {
   assert.deepEqual(at(REBALANCE_LEAD_MS - 1), NOT_OUT)
 })
 
-test('active weekly reset null/unknown counts as Infinity', () => {
+test('active weekly reset unknown while used: no rebalance (an unreadable week is not "never expires")', () => {
   const d = decide({ ...base, activeUsage: u(w(20), { used: 30, resetsAt: null }), usage: new Map([['B', u(w(10), w(30, 30 * DAY))]]) })
-  assert.deepEqual(d, { action: 'switch', to: 'B', why: 'rebalance' })
+  assert.deepEqual(d, NOT_OUT)
 })
 
 test('room threshold: 10% weekly left moves, under 10% does not', () => {
@@ -162,4 +162,14 @@ test('guards: cooldown, busy, disabled, pool active all suppress a rebalance', (
 test('when the active account IS out, rebalance does not change the reason', () => {
   const d = decide({ ...base, activeUsage: u(w(OUT_AT), w(30, 5 * DAY)) })
   assert.deepEqual(d, { action: 'switch', to: 'B', why: 'five_hour' })
+})
+
+test('rebalance: never away from an account whose week is unreadable (rate-limited or errored)', () => {
+  const usage = new Map([['B', { fiveHour: { used: 5, resetsAt: NOW + 3600e3 }, weekly: { used: 5, resetsAt: NOW + 6.5 * 86400e3 } }]])
+  const args = { enabled: true, active: 'A', saved: ['A', 'B'], usage, limitHit: false, busy: false, lastAutoAt: 0, poolAvailable: true, now: NOW, rebalance: true }
+  assert.equal(decide({ ...args, activeUsage: { error: 'Anthropic is rate-limiting usage checks' } }).action, 'none')
+  assert.equal(decide({ ...args, activeUsage: { fiveHour: { used: 10, resetsAt: NOW + 3600e3 } } }).action, 'none')
+  assert.equal(decide({ ...args, activeUsage: { fiveHour: { used: 10, resetsAt: NOW + 3600e3 }, weekly: { used: 40, resetsAt: null } } }).action, 'none')
+  // A week not started yet (nothing used, no reset) really has no deadline.
+  assert.equal(decide({ ...args, activeUsage: { fiveHour: { used: 0, resetsAt: null }, weekly: { used: 0, resetsAt: null } } }).why, 'rebalance')
 })
