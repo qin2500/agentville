@@ -1,17 +1,14 @@
-// The agent panel: Status, Team, Tree, Table and Models views. Rows are cached by id and patched in
+// The agent panel: Team, Tree and Models views. Rows are cached by id and patched in
 // place; containers are keyed too, so a poll moves at most a few nodes and never rebuilds the list.
-import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, bucketIcon, icon, ago, agoLong, clock, esc, safeHref, h, store } from './ui.js';
-import { createTable } from './table.js';
+import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, bucketIcon, icon, ago, agoLong, esc, h, store } from './ui.js';
 import { createModels } from './models.js';
 import { createTree } from './tree.js';
-import { rank, byRank, enteredAt, syncNodes } from './order.js';
-import { prTone, changesLabel } from './prs.js';
+import { rank, byRank, syncNodes } from './order.js';
+import { changesLabel } from './prs.js';
 import { createMenu } from './ctxmenu.js';
 import { createAgentSheet } from './agentsheet.js';
 import { pinned, folds, stoppedNote } from './important.js';
 
-const LIVE = ['stalled', 'waiting', 'building'];
-const EMPTY_NOTE = { stalled: 'Nobody needs you.', waiting: 'Nothing is waiting.', building: 'Nobody is building right now.' };
 
 export function createPanel(app) {
   const { S } = app;
@@ -48,9 +45,6 @@ export function createPanel(app) {
   panelEl.addEventListener('focusin', () => { kbFocus = lastInput === 'kb'; });
   panelEl.addEventListener('focusout', e => { if (!panelEl.contains(e.relatedTarget)) { kbFocus = false; maybeRelease(); } });
   list.addEventListener('scroll', () => { scrolledAt = Date.now(); clearTimeout(releaseTimer); releaseTimer = setTimeout(() => { if (hold && !engaged()) app.render(); }, 3050); }, { passive: true });
-  // Buckets as last shown: while held, a row stays in its section (its colours still update).
-  let shownBucket = new Map();
-  const bucketOf = a => (hold && shownBucket.get(a.id)) || a.bucket;
 
   // ---------- filtering & sorting ----------
   const q = () => S.query.toLowerCase();
@@ -70,10 +64,8 @@ export function createPanel(app) {
       && matchesQuery(a, q());
   }
   const filtering = () => !!(S.query || S.filters.projects.size || S.filters.harness.size || S.filters.roles.size || S.filters.bucket);
-  // Stable orders. Sections: errors first (Stalled), then by when the agent entered the section, then
-  // first-seen rank; an existing row never moves and a newcomer lands at the end. Everything else
-  // (teams, cards, members) is by rank alone: urgency shows as colour, edges and counts, not order.
-  const inBucket = (a, b) => isError(b) - isError(a) || enteredAt(a) - enteredAt(b) || byRank(a, b);
+  // Stable orders: teams, cards and members are by first-seen rank alone; an existing row never moves
+  // and a newcomer lands at the end. Urgency shows as colour, edges and counts, not order.
   const byBucket = byRank;
   const kidsOf = a => S.kids.get(a.id) || [];
   function worst(a, seen = new Set()) {
@@ -137,11 +129,6 @@ export function createPanel(app) {
     if (S.selected === a.id) btn.setAttribute('aria-current', 'true'); else btn.removeAttribute('aria-current');
     return btn;
   }
-  const chip = p => {
-    const href = safeHref(p.href), t = prTone(p);
-    const words = t.words ? ` (${t.words})` : '';
-    return `<span class="chip${t.cls}"${href ? ` data-href="${esc(href)}" title="Open PR #${esc(p.id)}${esc(words)} in a new tab"` : t.words ? ` title="PR #${esc(p.id)}${esc(words)}"` : ''}>#${esc(p.id)}</span>`;
-  };
   // A row's <li> also carries the compact "open in terminal" button (shown on hover/focus) and the
   // "⋯" that opens its menu (always shown on touch screens).
   const li = (key, ...kids) => {
@@ -210,63 +197,7 @@ export function createPanel(app) {
     }
   }
 
-  // ---------- status view ----------
-  function section(b, items, { restingToggle = false, tag = 'section' } = {}) {
-    const sec = keyed(`sec:${S.panel === 'full' ? 'f' : 'd'}:${b}`, () => h(tag, { class: `sec ${b}` }));
-    const nodes = [];
-    if (restingToggle) {
-      const open = S.restingOpen || !!S.query;
-      const tg = keyed(`rtog:${b}`, () => h('button', { class: 'resting-toggle', type: 'button', 'data-act': 'resting' }));
-      tg.setAttribute('aria-expanded', String(open));
-      tg.innerHTML = `${open ? '▾' : '▸'} Resting · <span class="num">${items.length}</span>${S.panel === 'full' && !open ? ' — show' : ''}`;
-      nodes.push(tg);
-      if (open) nodes.push(ul(`rul:${b}`, items.map(a => li(`sli:${a.id}`, rowBtn(a, { crumb: true })))));
-      // Folded, Important resting agents still show under the toggle (only a hide removes them).
-      else if (items.some(pinned)) nodes.push(ul(`rpin:${b}`, items.filter(pinned).map(a => li(`sli:${a.id}`, rowBtn(a, { crumb: true }))), 'pinned'));
-    } else {
-      const h2 = keyed(`h2:${S.panel}:${b}`, () => h('h2'));
-      h2.innerHTML = `${icon(b)}${BUCKET_NAME[b]} · <span class="c num">${items.length}</span>`;
-      nodes.push(h2);
-      if (items.length && S.panel === 'full') {
-        // Full-screen columns: light sub-headers by project, in the order their first row sorts.
-        const groups = new Map();
-        for (const a of items) { const p = a.project || '—'; if (!groups.has(p)) groups.set(p, []); groups.get(p).push(a); }
-        for (const [p, list] of groups) {
-          const sh = keyed(`psub:${b}:${p}`, () => h('h3', { class: 'psub' }));
-          const t = `${p} · ${list.length}`;
-          if (sh.textContent !== t) sh.textContent = t;
-          nodes.push(sh, ul(`psul:${b}:${p}`, list.map(a => li(`sli:${a.id}`, rowBtn(a, { crumb: true, noProject: true })))));
-        }
-      } else if (items.length) nodes.push(ul(`sul:${S.panel}:${b}`, items.map(a => li(`sli:${a.id}`, rowBtn(a, { crumb: true })))));
-      else {
-        const p = keyed(`empty:${S.panel}:${b}`, () => h('p', { class: 'empty-note' }));
-        p.textContent = filtering() ? 'No matches.' : EMPTY_NOTE[b];
-        nodes.push(p);
-      }
-    }
-    sync(sec, nodes);
-    return sec;
-  }
   const ul = (key, kids, cls) => { const el = keyed(key, () => h('ul', cls ? { class: cls } : {})); sync(el, kids); return el; };
-
-  function statusView(agents) {
-    const by = b => agents.filter(a => bucketOf(a) === b).sort(inBucket);
-    const shown = S.filters.bucket ? [['error', 'prompt'].includes(S.filters.bucket) ? 'stalled' : S.filters.bucket] : LIVE;
-    if (S.panel === 'full') {
-      const cols = keyed('fcols', () => h('div', { class: 'cols' }));
-      sync(cols, shown.map(b => section(b, by(b))));
-      if (shown.length === 1) cols.style.gridTemplateColumns = '1fr'; else cols.style.removeProperty('grid-template-columns');
-      const wrap = keyed('fstatus', () => h('div', { class: 'fullstatus' }));
-      const rest = by('resting');
-      const bar = keyed('frest', () => h('div', { class: 'restbar' }));
-      sync(bar, S.filters.bucket ? [] : [section('resting', rest, { restingToggle: true, tag: 'div' })]);
-      sync(wrap, [cols, bar]);
-      return [wrap];
-    }
-    const out = shown.map(b => section(b, by(b)));
-    if (!S.filters.bucket) out.push(section('resting', by('resting'), { restingToggle: true, tag: 'div' }));
-    return out;
-  }
 
   // ---------- team view ----------
   // Docked Team shows the top level only: a team opens one level per caret click, and what is open
@@ -382,8 +313,10 @@ export function createPanel(app) {
     if (S.panel === 'full') return fullTeam(agents, sets);
     computeReveal(sets);
     const top = roots(agents).filter(a => sets.keep.has(a.id)).sort(byWorst);
-    const heads = top.filter(a => kidsOf(a).some(k => sets.keep.has(k.id)));
-    const solos = top.filter(a => !heads.includes(a));
+    // Crowned agents (bosses) come first, together, ahead of the other teams and the solos.
+    const crowns = top.filter(crowned);
+    const heads = top.filter(a => !crowned(a) && kidsOf(a).some(k => sets.keep.has(k.id)));
+    const solos = top.filter(a => !crowned(a) && !heads.includes(a));
     // Resting solos fold behind the Solo heading's caret (its tally counts them), not a "+N resting" line.
     // Important resting solos stay out of the fold.
     const restSolos = S.query ? 0 : solos.filter(folds).length;
@@ -391,12 +324,23 @@ export function createPanel(app) {
     const soloShown = soloOpen ? solos : solos.filter(a => !folds(a));
     const seen = new Set();
     const out = [];
-    if (heads.length) {
+    const teams = [...crowns, ...heads].filter(a => kidsOf(a).some(k => sets.keep.has(k.id)));
+    if (teams.length) {
       const tools = keyed('ttools', () => h('div', { class: 'ttools' }));
-      const anyOpen = heads.some(a => isOpen(a.id));
-      const html = `<span>${heads.length} ${heads.length === 1 ? 'team' : 'teams'}</span><span class="tta"><button class="linkbtn" type="button" data-act="expandall">Expand all</button><button class="linkbtn" type="button" data-act="collapseall"${anyOpen ? '' : ' disabled'}>Collapse all</button></span>`;
+      const anyOpen = teams.some(a => isOpen(a.id));
+      const html = `<span>${teams.length} ${teams.length === 1 ? 'team' : 'teams'}</span><span class="tta"><button class="linkbtn" type="button" data-act="expandall">Expand all</button><button class="linkbtn" type="button" data-act="collapseall"${anyOpen ? '' : ' disabled'}>Collapse all</button></span>`;
       if (tools._html !== html) { tools.innerHTML = html; tools._html = html; }
       out.push(tools);
+    }
+    if (crowns.length) {
+      const sec = keyed('tcrowns', () => h('section', { class: 'sec tcrowns' }));
+      const h2 = keyed('tcrowns:h2', () => h('h2'));
+      const hh = `${icon('boss', 'px role')}Crowns · <span class="c num">${crowns.length}</span>${tallyHTML(crowns.flatMap(a => [a, ...descendants(a)]).filter(x => sets.keep.has(x.id)))}`;
+      if (h2._html !== hh) { h2.innerHTML = hh; h2._html = hh; }
+      const ctree = keyed('tcrowns:tree', () => h('ul', { class: 'tree' }));
+      sync(ctree, crowns.map(a => treeNode(a, 0, sets, seen)));
+      sync(sec, [h2, ctree]);
+      out.push(sec);
     }
     const tree = keyed('tree', () => h('ul', { class: 'tree' }));
     sync(tree, heads.map(a => treeNode(a, 0, sets, seen)));
@@ -422,30 +366,59 @@ export function createPanel(app) {
     }
     return out;
   }
-  // Full-screen Team: one section per project (most urgent first), team cards in a masonry so there
-  // are no holes, and quiet teams (nobody awake) folded into a one-line chip strip at the bottom.
+  // Full-screen Team: crowned agents first (role boss, the role drawn with a crown, overrides
+  // included), in one "Crowns" group across projects with the project on each card. Then one section
+  // per project for everything else (most urgent first), team cards in a masonry so there are no
+  // holes, and quiet teams (nobody awake) folded into a one-line chip strip at the bottom of their
+  // project. A project with nothing awake isn't listed (Important agents always count as awake).
   const awakeAt = new Map();
+  const crowned = a => a.role === 'boss';
   function fullTeam(agents, sets) {
     // Shown as a row rather than "+N resting" / "Quiet": awake, Important, or a search match.
     const live = a => !folds(a) || (S.query && sets.match.has(a.id));
-    const heads = agents.filter(a => sets.keep.has(a.id) && kidsOf(a).some(k => sets.keep.has(k.id)));
-    const placed = new Map(); // project -> { cards: [head], solos: [], quiet: [head] }
-    const slot = p => { if (!placed.has(p)) placed.set(p, { cards: [], solos: [], quiet: [], all: [] }); return placed.get(p); };
-    for (const a of agents) if (sets.keep.has(a.id)) slot(a.project || '—').all.push(a);
+    const kept = a => sets.keep.has(a.id);
+    const hasCard = a => kidsOf(a).some(kept);
     const now = Date.now();
-    for (const a of heads) {
-      // A lead only folds into "Quiet" after 10 min with nobody awake, so it doesn't flap.
+    // A team only folds into "Quiet" after 10 min with nobody awake, so it doesn't flap.
+    const isQuiet = a => {
       if ([a, ...descendants(a)].some(live)) awakeAt.set(a.id, now);
-      const quiet = now - (awakeAt.get(a.id) ?? 0) > 10 * 60e3;
-      slot(a.project || '—')[quiet ? 'quiet' : 'cards'].push(a);
+      return now - (awakeAt.get(a.id) ?? 0) > 10 * 60e3;
+    };
+    // Every crowned agent gets a card, team or not; its card's plain members leave their project too.
+    const crowns = agents.filter(a => kept(a) && crowned(a)).sort(byWorst);
+    const inCrown = new Set();
+    for (const a of crowns) {
+      inCrown.add(a.id);
+      for (const k of kidsOf(a)) if (kept(k) && !hasCard(k) && !crowned(k)) inCrown.add(k.id);
     }
-    for (const a of roots(agents)) if (sets.keep.has(a.id) && !heads.includes(a)) slot(a.project || '—').solos.push(a);
+    const heads = agents.filter(a => kept(a) && !crowned(a) && hasCard(a));
+    const placed = new Map(); // project -> { cards: [head], solos: [], quiet: [head], all: [] }
+    const slot = p => { if (!placed.has(p)) placed.set(p, { cards: [], solos: [], quiet: [], all: [] }); return placed.get(p); };
+    for (const a of agents) if (kept(a) && !inCrown.has(a.id)) slot(a.project || '—').all.push(a);
+    for (const a of heads) slot(a.project || '—')[isQuiet(a) ? 'quiet' : 'cards'].push(a);
+    for (const a of roots(agents)) if (kept(a) && !crowned(a) && !heads.includes(a)) slot(a.project || '—').solos.push(a);
     const first = x => Math.min(...x.all.map(rank));
     const projects = [...placed].sort((x, y) => first(x[1]) - first(y[1]));
-    const out = [], quietProjects = [], shared = [];
+    const out = [], shared = [];
+    if (crowns.length) {
+      const awake = crowns.filter(a => !isQuiet(a)), quiet = crowns.filter(a => !awake.includes(a));
+      const sec = keyed('fcrowns', () => h('section', { class: 'proj crowns' }));
+      const h2 = keyed('fcrowns:h2', () => h('h2', { class: 'projhead' }));
+      const html = `<span>${icon('boss', 'px role')}Crowns</span>${tallyHTML(crowns.flatMap(a => [a, ...descendants(a)]).filter(kept))}`;
+      if (h2._html !== html) { h2.innerHTML = html; h2._html = html; }
+      const nodes = [h2];
+      if (awake.length) {
+        const mas = keyed('fcrowns:mas', () => h('div', { class: 'masonry' }));
+        sync(mas, awake.map(a => teamCard(a, sets, live, a.project || '—')));
+        nodes.push(mas);
+      }
+      if (quiet.length) nodes.push(quietStrip('fquiet:__crowns', quiet.map(a => [a.id, a.name, descendants(a).length + 1])));
+      sync(sec, nodes);
+      out.push(sec);
+    }
     for (const [project, g] of projects) {
       const awakeSolos = g.solos.filter(live);
-      if (!g.cards.length && !awakeSolos.length) { quietProjects.push([project, g]); continue; }
+      if (!g.cards.length && !awakeSolos.length) continue; // a quiet project: not listed
       // A project with a single card doesn't get a whole row: it joins one shared masonry, with
       // the project name on the card instead of a section header.
       if (g.cards.length + (awakeSolos.length ? 1 : 0) === 1 && !g.quiet.length) {
@@ -475,13 +448,6 @@ export function createPanel(app) {
       sync(sec, [h2, mas]);
       out.push(sec);
     }
-    if (quietProjects.length) {
-      const sec = keyed('fquietprojects', () => h('section', { class: 'proj' }));
-      const h2 = keyed('fquietprojects:h2', () => h('h2', { class: 'projhead' }));
-      h2.textContent = 'Quiet projects';
-      sync(sec, [h2, quietStrip('fquietp', quietProjects.map(([p, g]) => [null, p, g.all.length]))]);
-      out.push(sec);
-    }
     return out;
   }
   function tallyHTML(list) {
@@ -508,7 +474,7 @@ export function createPanel(app) {
     let rest = 0;
     const walk = (x, d) => {
       for (const k of kidsOf(x).filter(k => sets.keep.has(k.id)).sort(byBucket)) {
-        if (kidsOf(k).some(c => sets.keep.has(c.id))) continue; // has its own card
+        if (crowned(k) || kidsOf(k).some(c => sets.keep.has(c.id))) continue; // has its own card
         if (!live(k)) { rest++; continue; }
         members.push(li(`cli:${k.id}`, rowBtn(k, { dropProject: true, depth: d, ctx: !sets.match.has(k.id) })));
       }
@@ -531,12 +497,10 @@ export function createPanel(app) {
     sync(el, nodes);
     return el;
   }
-  // Quiet teams or projects as one wrapping line of small chips. Team chips select the lead.
+  // Quiet teams as one wrapping line of small chips. A chip selects the lead.
   function quietStrip(key, items) {
     const el = keyed(key, () => h('div', { class: 'quiet' }));
-    const html = `<span class="ql">Quiet</span>${items.map(([id, name, n]) => (id
-      ? `<button class="qchip" type="button" data-act="goto" data-id="${esc(id)}">${esc(name)} <span class="num">· ${n}</span></button>`
-      : `<button class="qchip" type="button" data-act="filterproj" data-project="${esc(name)}">${esc(name)} <span class="num">· ${n}</span></button>`)).join('')}`;
+    const html = `<span class="ql">Quiet</span>${items.map(([id, name, n]) => `<button class="qchip" type="button" data-act="goto" data-id="${esc(id)}">${esc(name)} <span class="num">· ${n}</span></button>`).join('')}`;
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
     return el;
   }
@@ -588,7 +552,7 @@ export function createPanel(app) {
   // folded away, so they only count when the row itself rests or resting rows are expanded.
   let awakeCount = new Map(), allCount = new Map(), wide = false;
   function dupOf(a) {
-    const restingShown = S.query || (S.view === 'status' ? S.restingOpen : S.view === 'table' ? S.table.resting : S.view === 'models' ? S.mv.resting : S.restExpanded?.size);
+    const restingShown = S.query || (S.view === 'models' ? S.mv.resting : S.restExpanded?.size);
     return ((a.bucket === 'resting' || restingShown) ? allCount : awakeCount).get(a.name) > 1 ? shortId(a.id) : '';
   }
   const shortId = id => (id.includes(':sub:') ? id.split(':sub:').pop() : id.slice(id.indexOf(':') + 1)).slice(0, 8);
@@ -609,7 +573,7 @@ export function createPanel(app) {
     chips();
     list.classList.toggle('compact', S.compact);
     list.classList.toggle('full', S.panel === 'full');
-    list.classList.toggle('tableview', S.view === 'table' || S.view === 'models');
+    list.classList.toggle('tableview', S.view === 'models');
     list.classList.toggle('modelsview', S.view === 'models');
     list.classList.toggle('treeview', S.view === 'tree');
     wide = S.panel === 'docked' && !list.hidden && list.clientWidth >= 600;
@@ -629,20 +593,17 @@ export function createPanel(app) {
     } else if (!S.agents.length) {
       nodes = [stateNode('allhidden', `<b>All ${all.length} agents are hidden.</b><span><button class="link" type="button" data-act="showhidden">Show hidden agents</button></span>`)];
     } else {
-      const agents = S.agents.filter(a => !(S.view === 'status') || matches(a));
-      if (S.view === 'table') nodes = table.render();
-      else if (S.view === 'models') nodes = models.render();
-      else if (filtering() && !(S.view === 'status' ? agents : S.agents.filter(matches)).length) {
+      if (S.view === 'models') nodes = models.render();
+      else if (filtering() && !S.agents.filter(matches).length) {
         nodes = [stateNode(`nomatch:${S.query}`, S.query
           ? `<b>No agents match “${esc(S.query)}”.</b><span><button class="link" type="button" data-act="clearsearch">Clear search</button></span>`
           : '<b>No agents match these filters.</b><span><button class="link" type="button" data-act="clearfilters">Clear filters</button></span>')];
-      } else nodes = S.view === 'status' ? statusView(agents) : S.view === 'tree' ? tree.render() : teamView(S.agents);
-      const conv = S.view === 'status' || S.view === 'team' ? convSection() : null;
+      } else nodes = S.view === 'tree' ? tree.render() : teamView(S.agents);
+      const conv = S.view === 'team' ? convSection() : null;
       if (conv) nodes = [...nodes, conv];
     }
     if (!nodes.includes(tree.el)) list.classList.remove('chart');
     sync(list, nodes);
-    if (!hold) shownBucket = new Map(S.agents.map(a => [a.id, a.bucket]));
     if (before) flip(before, wasHeld);
     for (const k of [...cache.keys()]) if (!used.has(k)) cache.delete(k);
     menu.update();
@@ -693,7 +654,6 @@ export function createPanel(app) {
     if (clickedNothing(e)) return app.select(null);
     const ob = e.target.closest('[data-open]');
     if (ob) { e.stopPropagation(); return openAgent(ob.dataset.open, ob); }
-    if (S.view === 'table' && e.currentTarget === list && table.onClick(e)) return;
     if (S.view === 'models' && e.currentTarget === list && models.onClick(e)) return;
     const t = e.target;
     const href = t.closest('.chip[data-href]')?.dataset.href;
@@ -702,7 +662,6 @@ export function createPanel(app) {
     if (act) {
       const id = act.dataset.id;
       switch (act.dataset.act) {
-        case 'resting': S.restingOpen = !S.restingOpen; return app.render();
         case 'chev': setOpen(id, !isOpen(id)); return app.render();
         case 'expandall': for (const x of S.agents) if (kidsOf(x).length) setOpen(x.id, true); return app.render();
         case 'collapseall': {
@@ -720,7 +679,6 @@ export function createPanel(app) {
           const hidden = (S.data?.agents || []).some(x => x.id === id && x.hidden);
           return app.toast(hidden ? 'That agent is hidden. Turn on “Show hidden agents” in Filters to open it.' : "That conversation isn't one of the agents in the list (it was folded into a newer copy or can't be read).");
         }
-        case 'filterproj': S.filters.projects = new Set([act.dataset.project]); S.views.full = 'table'; S.table.resting = true; return app.render();
       }
       return;
     }
@@ -739,7 +697,6 @@ export function createPanel(app) {
   });
   list.addEventListener('keydown', e => {
     if (!['Tab', 'Shift'].includes(e.key)) userAction();
-    if (S.view === 'table' && table.onKey(e)) return;
     if (S.view === 'models' && models.onKey(e)) return;
     const row = e.target.closest?.('.row');
     if (!row || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -769,14 +726,12 @@ export function createPanel(app) {
 
   sheet = createAgentSheet(app, { descendants });
   menu = createMenu(app, { openBlock, termBlock, embedded, terminal, termName, openAgent, hide, sheet });
-  const table = createTable({ S, keyed, sync, matches, byBucket, store, dupOf, chip, render: () => app.render(), app, openHTML: a => (terminal() && !openBlock(a) ? `<button class="openbtn" type="button" data-open="${esc(a.id)}" aria-label="Open ${esc(a.name)} in ${esc(termName())}" title="Open in ${esc(termName())} (O)">↗</button>` : '') });
   const models = createModels({ S, keyed, sync, matches, store, dupOf, render: () => app.render(), app });
   const tree = createTree({ S, app, matches, filtering });
   let lastWide = null;
 
   return {
     render,
-    tableResort: () => table.resort(),
     open: (id, btn, report) => openAgent(id, btn, report),
     termName,
     termBlock: id => { const a = S.byId.get(id); return a ? termBlock(a) : 'Unknown agent'; },
@@ -785,7 +740,6 @@ export function createPanel(app) {
     reveal(id) {
       const a = S.byId.get(id);
       if (!a) return;
-      if (a.bucket === 'resting') S.restingOpen = true;
       if (S.filters.bucket && S.filters.bucket !== a.bucket) S.filters.bucket = null;
       if (!matches(a)) { S.query = ''; document.getElementById('q').value = ''; }
       // Its ancestors (and Solo's caret) open while it stays selected: computeReveal().
@@ -802,14 +756,18 @@ export function createPanel(app) {
     restoreScroll(st) { if (!st) return; list.scrollTop = st.list; list.scrollLeft = st.listLeft; },
     focusSelectedRow() { cache.get(`row:${S.selected}`)?.focus({ preventScroll: false }); },
     firstMatch() { return [...list.querySelectorAll('.row:not(.ctx), .tnode:not(.ctx)')].find(r => r.offsetParent)?.dataset.id; },
+    // J / K: the next or previous agent that needs you, in the order the Team view lists them; a
+    // folded team opens to show it (the selection reveals its ancestors).
     jumpStalled(dir) {
-      const rs = [...list.querySelectorAll('.row.b-stalled')].filter(r => r.offsetParent);
-      if (!rs.length) return;
-      let i = rs.indexOf(document.activeElement);
-      if (i < 0) i = rs.findIndex(r => r.dataset.id === S.selected);
-      const next = rs[(i < 0 ? (dir > 0 ? 0 : rs.length - 1) : (i + dir + rs.length) % rs.length)];
-      app.select(next.dataset.id);
-      next.focus();
+      const order = new Map([...list.querySelectorAll('.row[data-id]')].map((r, i) => [r.dataset.id, i]));
+      const at = a => order.get(a.id) ?? order.get(ancestors(a.id).find(p => order.has(p))) ?? 1e9;
+      const ids = S.agents.filter(a => a.bucket === 'stalled' && matches(a)).sort((x, y) => at(x) - at(y) || byRank(x, y)).map(a => a.id);
+      if (!ids.length) return;
+      const cur = list.contains(document.activeElement) ? document.activeElement.closest?.('[data-id]')?.dataset.id : null;
+      let i = ids.indexOf(cur ?? S.selected);
+      const next = ids[(i < 0 ? (dir > 0 ? 0 : ids.length - 1) : (i + dir + ids.length) % ids.length)];
+      app.select(next, { reveal: true });
+      cache.get(`row:${next}`)?.focus();
     },
   };
 }

@@ -122,7 +122,7 @@ test.describe('desktop', () => {
     await page.locator('body').press('v')
     await expect(page.locator('#view-tree')).toHaveAttribute('aria-pressed', 'true')
     await page.locator('body').press('v')
-    await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.locator('#view-models')).toHaveAttribute('aria-pressed', 'true')
     // every card the chart has is drawn from the first frame, and every connector on screen ends on one
     expect(await clickThenLooseEnds(page, '#view-tree')).toEqual([])
     await expect(card(page, claudeId('leadBuilding'))).toBeVisible()

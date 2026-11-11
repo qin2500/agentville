@@ -13,24 +13,20 @@ test.beforeEach(async ({ page, request }) => {
 })
 
 test('every fixture agent lands in the right bucket with the right reason and role', async ({ page }) => {
-  await page.locator('[data-act="resting"]').click()
+  // Unfold every "+N resting" line, so resting agents have rows too.
+  for (let i = 0; i < 10 && (await page.locator('#list [data-act="more"]').count()); i++) await page.locator('#list [data-act="more"]').first().click()
   for (const [id, want] of Object.entries(EXPECTED)) {
     const r = row(page, id)
     await expect(r, id).toHaveCount(1)
     await expect(r).toHaveClass(new RegExp(`\\bb-${want.bucket}\\b`))
     await expect(r).toHaveClass(new RegExp(`\\b${want.role}\\b`))
     if (want.reason) await expect(r.locator('.l2')).toContainText(want.reason)
-    // The row sits in its bucket's section.
-    expect(await r.evaluate((el) => el.closest('.sec').className)).toContain(want.bucket)
   }
 })
 
-test('top bar counts match the API and the section headers', async ({ page, request }) => {
+test('top bar counts match the API', async ({ page, request }) => {
   const { counts } = await (await request.get('/api/agents')).json()
-  for (const b of ['stalled', 'waiting', 'building']) {
-    await expect(page.locator(`.counter[data-bucket="${b}"] .num`)).toHaveText(String(counts[b]))
-    await expect(page.locator(`.sec.${b} h2 .c`)).toHaveText(String(counts[b]))
-  }
+  for (const b of ['stalled', 'waiting', 'building']) await expect(page.locator(`.counter[data-bucket="${b}"] .num`)).toHaveText(String(counts[b]))
   await expect(page).toHaveTitle(`(${counts.stalled}) Agentville`)
 })
 
@@ -43,8 +39,7 @@ test('the app icon is the favicon and the mark beside the name; stalled agents a
   await expect.poll(() => page.locator('#favicon').getAttribute('href')).toMatch(/^data:image\/png;base64,/)
 })
 
-test('Stalled is the first, filled attention list; Waiting is calm', async ({ page }) => {
-  await expect(page.locator('#list .sec').first()).toHaveClass(/stalled/)
+test('Stalled rows are filled for attention; Waiting is calm', async ({ page }) => {
   const bg = (sel) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).backgroundColor)
   expect(await bg('.counter[data-bucket="stalled"]')).not.toBe('rgba(0, 0, 0, 0)')
   expect(await bg('.counter[data-bucket="waiting"]')).toBe('rgba(0, 0, 0, 0)')
@@ -62,8 +57,16 @@ test('roles are distinguishable without colour (glyph shape + accessible name)',
   await expect(row(page, `${claudeId('leadBuilding')}:sub:worker`)).toHaveAccessibleName(/Subagent.*under API Lead/)
 })
 
-test('Team view nests leads under the boss and subs under their lead', async ({ page }, testInfo) => {
-  await page.locator('#view-team').click()
+test.describe('folded start', () => {
+  test.use({ openTeams: false })
+  test('Team view nests leads under the boss and subs under their lead; crowns come first', async ({ page }, testInfo) => {
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true') // the only list view besides Tree and Models
+  await expect(page.locator('#view-status, #view-table')).toHaveCount(0)
+  // Crowned agents (bosses) are grouped at the top, ahead of the other teams and the solos.
+  await expect(page.locator('#list .tcrowns h2')).toContainText('Crowns')
+  await expect(page.locator(`#list .tcrowns .row[data-id="${claudeId('boss')}"]`)).toHaveCount(1)
+  expect(await page.locator('#list > *').evaluateAll((els) => els.findIndex((e) => e.classList.contains('tcrowns')))).toBeLessThan(
+    await page.locator('#list > *').evaluateAll((els) => els.findIndex((e) => e.classList.contains('tsolo'))))
   const boss = page.locator(`li:has(> .tw .row[data-id="${claudeId('boss')}"])`)
   // Top level only until a caret opens a team, one level at a time (team-docked.spec.mjs has the rest).
   await expect(boss.locator('> ul.kids')).toHaveCount(0)
@@ -77,6 +80,7 @@ test('Team view nests leads under the boss and subs under their lead', async ({ 
   // Sibling leads must line up: a lead with children must not look nested under the one above it.
   const x = (k) => row(page, claudeId(k)).locator('svg.role').evaluate((el) => Math.round(el.getBoundingClientRect().left))
   expect(await x('leadBuilding'), 'API Lead glyph x vs sibling DB Lead').toBe(await x('leadBlocked'))
+  })
 })
 
 test('panel modes via keys and buttons persist across reload', async ({ page }, testInfo) => {
@@ -89,25 +93,20 @@ test('panel modes via keys and buttons persist across reload', async ({ page }, 
   await expect(main).not.toHaveClass(/collapsed|full/)
   await page.locator('body').press('f')
   await expect(main).toHaveClass(/full/)
-  await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true') // full defaults to Table
-  await page.screenshot({ path: `${SHOTS}/desktop-full-table.png` })
-  await page.locator('#view-team').click()
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true') // full defaults to Team
   await page.screenshot({ path: `${SHOTS}/desktop-full-team.png` })
-  await page.locator('body').press('v') // Status → Team → Tree → Table → Models → Status
+  await page.locator('body').press('v') // Team → Tree → Models → Team
   await expect(page.locator('#view-tree')).toHaveAttribute('aria-pressed', 'true')
   await page.locator('body').press('v')
-  await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
-  await page.locator('body').press('v')
   await expect(page.locator('#view-models')).toHaveAttribute('aria-pressed', 'true')
-  await page.locator('body').press('v')
-  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true')
-  await page.screenshot({ path: `${SHOTS}/desktop-full-status.png` })
   await page.reload()
   await expect(main).toHaveClass(/full/)
-  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('#view-models')).toHaveAttribute('aria-pressed', 'true')
+  await page.locator('body').press('v')
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
   await page.locator('body').press('Escape')
   await expect(main).not.toHaveClass(/full/)
-  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true') // docked keeps Status
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true') // docked keeps its own view
 })
 
 test('search filters rows, Enter selects first match, Esc clears then blurs', async ({ page }, testInfo) => {
@@ -115,7 +114,7 @@ test('search filters rows, Enter selects first match, Esc clears then blurs', as
   else await page.locator('#q').click()
   await expect(page.locator('#q')).toBeFocused()
   await page.keyboard.type('ci lead')
-  await expect(page.locator('#list .row')).toHaveCount(1)
+  await expect(page.locator('#list .row:not(.ctx)')).toHaveCount(1) // its boss shows too, dimmed
   await page.keyboard.press('Enter')
   await expect(page).toHaveURL(new RegExp(`#agent=${encodeURIComponent(claudeId('leadCi'))}`))
   await page.locator('#q').fill('docs') // resting agents are searchable
@@ -133,7 +132,7 @@ test('filters: harness and role narrow the list, chips remove them, counts stay 
   await page.locator('#btn-filters').click()
   await page.locator('#pop-filters input[data-f="harness"][value="codex"]').check()
   await page.locator('body').click({ position: { x: 5, y: 60 } }).catch(() => {}) // outside click closes
-  await expect(page.locator('#list .row')).toHaveCount(2)
+  await expect(page.locator('#list .row:not(.ctx)')).toHaveCount(2)
   await expect(page.locator('#btn-filters')).toHaveText(/Filters · 1/)
   await expect(page.locator('.counter[data-bucket="stalled"] .num')).toHaveText(stalled)
   await page.locator('.fchip').click()
@@ -225,7 +224,7 @@ test('list to village: selecting a row frees the name tag and plots stay put acr
   await page.screenshot({ path: `${SHOTS}/desktop-village-selected.png` })
 })
 
-test('stalled is amber, errors are red: a red "N errors" pill filters to them and they sort first', async ({ page, request }) => {
+test('stalled is amber, errors are red: a red "N errors" pill filters to them', async ({ page, request }) => {
   const { counts, agents } = await (await request.get('/api/agents')).json()
   const errorIds = agents.filter((a) => a.severity === 'error' && !a.hidden).map((a) => a.id)
   expect(counts.errors).toBe(errorIds.length)
@@ -236,12 +235,12 @@ test('stalled is amber, errors are red: a red "N errors" pill filters to them an
   await expect(page.locator('.counter.errors')).toHaveText(new RegExp(`^${errorIds.length} Errors?$`))
   await expect(page.locator('.counter.errors')).toHaveAccessibleName(/included in Stalled$/) // a subset, not extra
   expect(await page.locator(`#list .row[data-id="${claudeId('soloError')}"]`).evaluate((el) => getComputedStyle(el).borderLeftColor)).toBe('rgb(255, 114, 98)')
-  // Rows: errors carry a red fill and come first in Stalled; needs-you rows are amber.
+  // Rows: errors carry a red fill; needs-you rows are amber.
   expect(await bg(`#list .row[data-id="${claudeId('soloError')}"]`)).toBe('rgb(58, 26, 24)')
   expect(await bg(`#list .row[data-id="${claudeId('leadBlocked')}"]`)).toBe('rgb(46, 36, 16)')
-  await expect(page.locator('#list .sec.stalled .row').first()).toHaveClass(/sev-error/)
   await page.locator('.counter.errors').click()
-  await expect(page.locator('#list .row')).toHaveCount(errorIds.length)
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true') // the filter applies to Team
+  await expect(page.locator('#list .row:not(.ctx)')).toHaveCount(errorIds.length)
   await expect(page.locator('#fchips')).toContainText('Errors only')
   // The agent menu says "Error", not just red.
   await openMenu(page, claudeId('soloError'))

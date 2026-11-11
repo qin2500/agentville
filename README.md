@@ -6,7 +6,7 @@ glance who's building, who's waiting on something, and who needs you.
 ![Agentville: the village of agents beside the agent list](docs/screenshot-village.png)
 
 Agentville is a small local web app. It reads the session files Claude Code and Codex already write
-to your disk and shows each agent as a villager, with a dark-mode list beside the village. There's
+to your disk and shows each agent as a villager, with a dark-mode list on the left of the village. There's
 nothing to sign up for, and nothing leaves your machine except the usage and update checks described
 under [Privacy & safety](#privacy--safety).
 
@@ -27,17 +27,24 @@ notifications. The exact rules are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.m
 **Hierarchy.** If you run orchestrators, Agentville shows the structure: a **boss** with its
 **leads**, and each lead with its **subagents** and teammates. It works this out from `claude --bg`
 launches in transcripts, background-job records, subagent files and Codex spawn edges. You can
-correct any agent's role, parent or name from its detail view.
+correct any agent's role, parent or name from its menu.
 
 **The village.** Each project is a neighbourhood. Agents live in homes, subagents gather in their
 lead's yard, and pull requests become buildings. Stalled villagers show a "!" bubble. There's day
 and night, an isometric (2.5D) and a top-down view (**I** toggles), and buildings never move around
 between visits. Click a villager to select its row, and the other way round.
 
-**Views.** The panel groups agents five ways (**V** cycles):
+**The agent menu.** Right-click an agent (in the village or the list), long-press it on a phone, or
+use its **⋯** button: a header with its name, status and PRs, then **Open in terminal** (or **Open
+in Ghostty**), **Show in village**, **Copy resume command**, **Fork…**, **Stop…**, **Mark
+important**, **Edit…** (name, role and parent) and **Hide in village**. On the keyboard, the menu
+key or Shift+F10 opens it on the focused row.
 
-- **Status**: Stalled, Waiting, Building and Resting sections, longest-waiting first.
-- **Team**: the boss → lead → sub tree.
+**Views.** The panel groups agents three ways (**V** cycles):
+
+- **Team**: the boss → lead → sub tree. **Crowns** (the bosses and everyone under them) come first,
+  then each project's teams and the solo agents. A project with nothing awake isn't listed (its
+  Important agents keep it there); each team keeps its quiet members behind a "+N resting" line.
 - **Tree**: the same hierarchy as an org chart. Crowned bosses sit at the top with their leads and
   workers below, grouped by project, and solo agents go in one group at the end. Resting teams fold
   into a "+N resting" pill, and each team folds on its own (**Expand all** and **Collapse to live**
@@ -45,12 +52,11 @@ between visits. Click a villager to select its row, and the other way round.
   move between a parent, its reports and their siblings. A search keeps each match's chain of
   command, shown dimmed. Narrow panels and phones get an indented outline instead. Only cards near
   the screen are drawn, so a thousand agents stay smooth.
-- **Table**: everything in sortable columns.
 - **Models**: which model each agent is *really* using (from its latest reply) next to what it was
   told to use, its route, context use and tokens, with flags for mismatches.
 
 The first time you open Agentville, the panel fills the window in Team view. **⤡ Dock** (or **F**)
-puts it beside the village; Agentville remembers your choice.
+puts it on the left of the village; Agentville remembers your choice.
 
 ![The first-run view: the panel expanded, in Team view](docs/screenshot-team.png)
 
@@ -80,7 +86,8 @@ errored agents*. You always confirm a preview that lists every recipient first.
 
 **Open in a terminal.** **Open** resumes an agent in a new terminal window: Ghostty if it's installed,
 else Terminal.app on macOS; `$TERMINAL`, `gnome-terminal` or `x-terminal-emulator` on Linux.
-**Terminal** runs the same command in a terminal inside the page. The server picks the command itself
+**Open in terminal** runs the same command in a terminal inside the page, with the agent list kept on
+the left so one click switches agents. The server picks the command itself
 (`claude attach <job>`, `claude --resume <id>` or `codex resume <id>`); the page can't choose it. A
 session that's already running somewhere else is never resumed a second time. The last few terminals
 you opened stay live, so switching back shows one at once, as you left it. Cmd-C copies a selection,
@@ -223,7 +230,6 @@ Code keeps it: the macOS Keychain (read and written with `security`, never on a 
 
 - **Open** and **Terminal** run the resume command the server chose for that agent.
 - **Fleet** sends messages only after you confirm a preview listing every recipient.
-- **Reply / Message** sends one message to one live Claude session, after you confirm the exact text.
 - **Message agents** sends one message you wrote to the agents you picked (up to 50), after you confirm the exact text and recipients.
 - **New agent**, **Stop job** and **Fork** run `claude --bg`, `claude stop` or
   `claude --resume --fork-session --bg`, after you confirm the exact command (see
@@ -307,24 +313,13 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
 
 ## Acting on one agent
 
-Everything here starts in an agent's inspector (or, for a new agent, the **+ New agent** button in
+Everything here starts in an agent's menu (or, for a new agent, the **+ New agent** button in
 the Team view's header). Each action has a confirm step that shows exactly what will happen: the
 exact text that lands in the session, or the exact command and the folder it runs in. The confirmation
 is good once, for 2 minutes. The page never supplies a command, a flag or a program: the server builds
 it from fixed choices. Each action is logged to `fleet-log.jsonl` (ids and outcomes, never the text or
 prompt), and at most 10 messages and 10 starts, stops or forks a minute are allowed.
 
-- **Reply.** An agent that needs your input shows what it's asking (the job's `needs` line) and a
-  reply box, prefilled with Claude Code's suggested reply when it has one. **Send to <name>…** shows
-  the exact text, then **Send to <name>** delivers it.
-- **Message.** Any live Claude session has a **Message <name>** box in its inspector, collapsed
-  until you open it. Same confirm step.
-  - Delivery is the same as Fleet's: the session's own message socket. The message arrives wrapped
-    in a `<cross-session-message from-name="Agentville">` tag, so the agent reads it as a message
-    from another session, not as you typing.
-  - The result says **Delivered** (the session recorded it), **Sent, no receipt yet** (it reached
-    the socket but wasn't recorded within 10 seconds), or **Failed** with the reason.
-  - Codex threads, subagents and sessions that aren't running say why they can't be messaged.
 - **New agent.** Pick a project (folders your agents have worked in), write a prompt, and optionally
   a name, model, effort, permission mode (bypassing permissions isn't offered) and a new git
   worktree. **Review…** shows the command, e.g. `claude --bg --name=Docs --model=sonnet -- 'Update
@@ -342,15 +337,15 @@ a fake `claude` (`AGENTVILLE_CLAUDE_BIN`) are both set.
 ### Changes and pull requests
 
 - **Changes.** In the Team view, an agent whose folder (its worktree for a job) has changes shows a
-  small chip, e.g. `+412 −37 · 6 files`. The inspector lists the files with their line counts. It
+  small chip, e.g. `+412 −37 · 6 files`. It
   compares against the merge base with the default branch, so a branch's commits count as well as
   uncommitted and untracked files. Only paths and counts are read, never file content.
   - git runs with `--no-optional-locks` (it never takes the lock an agent's own git needs) and a
     timeout. Each folder is read at most once a minute, in the background, and never for resting
     agents.
 - **Pull requests.** PR chips are coloured by state: open, draft, merged or closed. A PR with failing
-  checks is amber (it needs attention). The inspector lists each PR with its checks (failed, pending,
-  passed) and review state. PRs come from a job's own PR list and from the PR links Claude Code
+  checks is amber (it needs attention). The agent's menu shows its PRs; hover one for its checks
+  (failed, pending, passed) and review state. PRs come from a job's own PR list and from the PR links Claude Code
   records in a session's transcript.
 
 ### Notifications and search
@@ -379,15 +374,14 @@ in the Team view's toolbar, and in the **Fleet** menu.
   can't be messaged" with the reason, and aren't counted: Codex threads, subagents, sessions that
   aren't running or have no message socket, and the session Agentville itself runs in (its
   `CLAUDE_CODE_SESSION_ID`, or `AGENTVILLE_SELF_SESSION`).
-- **Write it.** Free text, up to 8000 characters, like the inspector's message.
+- **Write it.** Free text, up to 8000 characters.
 - **Confirm.** **Review…** shows the message exactly as it will arrive (inside the
   `<cross-session-message from-name="Agentville">` wrapper), the exact recipients and the count.
   **Send to N agents** is good once, for 2 minutes, and only for that set and that text: if the
   matching agents change while you look (one stops, another appears), the sheet says so and you
   review again. One broadcast goes to at most 50 agents, and at most 3 broadcasts a minute are
-  allowed (separate from the inspector's 10 messages a minute).
-- **Results.** It sends to 4 sessions at a time over each one's message socket, the inspector's
-  path. Each agent's line shows **Delivered** (the session recorded it), **Sent (no receipt in
+  allowed (separate from the 10 single messages a minute).
+- **Results.** It sends to 4 sessions at a time over each one's message socket. Each agent's line shows **Delivered** (the session recorded it), **Sent (no receipt in
   10 s)**, or **Failed** with the reason, as it happens, and the sheet ends with a summary such as
   "Delivered to 12 of 14".
 
@@ -396,7 +390,7 @@ nothing is sent unless `AGENTVILLE_FLEET_SOCKET_ROOT` points at the test's own s
 
 ## Fleet actions (experimental)
 
-The **Fleet** menu messages your agents in one go. Like a reply from the inspector, it only ever does
+The **Fleet** menu messages your agents in one go. Like Message agents, it only ever does
 so after you confirm a preview of every recipient and message.
 
 - **Prep for internet loss** and **Prep for laptop reboot** go to each live top-level Claude session.
@@ -423,7 +417,7 @@ plus a dismissible notice: "Your Mac restarted — N agents were running. Restor
 ones that matter.
 
 - **Which agents.** Crown agents (role boss, drawn with a crown) and agents you marked **Important**
-  (the star button in the inspector; a star then shows on the row and in the village). The role is
+  (in the agent's menu; a star then shows on the row and in the village). The role is
   the one recorded while the agent was running: after a crash its children are dead too, so it would
   no longer be detected as a boss. The Important mark is an override (`overrides.json`, keyed by
   agent id, which a restart keeps).

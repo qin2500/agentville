@@ -85,18 +85,6 @@ test('docked Team: Important agents stay as rows inside folded teams, "+N restin
   await expect(page.locator('#list .more button[data-id="lead-a"]')).toHaveText('+ 3 resting')
 })
 
-test('docked Status: the Resting toggle stays closed and Important resting agents still show', async ({ page }, ti) => {
-  await open(page, { view: 'status' })
-  const tog = page.locator('#list .resting-toggle')
-  await expect(tog).toHaveAttribute('aria-expanded', 'false')
-  for (const id of PINNED) await expect(row(page, id)).toBeVisible()
-  await expect(row(page, 'rest-solo-0')).toHaveCount(0)
-  await expect(row(page, 'keeper')).toContainText('Stopped · Closed')
-  await shot(page, ti, 'docked-status')
-  await tog.click()
-  await expect(row(page, 'rest-solo-0')).toBeVisible()
-})
-
 test('wide Team: Important agents are rows, never in "+N resting" or the Quiet strip', async ({ page }, ti) => {
   await open(page, { panel: 'full' })
   for (const id of PINNED) await expect(row(page, id)).toBeVisible()
@@ -105,6 +93,9 @@ test('wide Team: Important agents are rows, never in "+N resting" or the Quiet s
   await expect(row(page, 'old-lead')).toBeVisible()
   await expect(page.locator('#list .card:has(.row[data-id="lead-a"]) .restcount')).toHaveText('+3 resting')
   await shot(page, ti, 'wide-team')
+  // No "Quiet projects" section; Keeper Solo (Important) keeps its quiet project on the list.
+  await expect(page.locator('#list .projhead', { hasText: 'Quiet projects' })).toHaveCount(0)
+  await expect(page.locator('#list .projhead', { hasText: 'project-quiet' }).or(page.locator('#list .cardhead', { hasText: 'project-quiet' })).first()).toBeVisible()
 })
 
 test('Tree: Important agents are not behind "+N resting" pills', async ({ page }, ti) => {
@@ -168,14 +159,8 @@ test('an explicit hide still hides an Important agent; unmarking Important resto
   await expect(row(page, 'pinned-job')).toHaveCount(0)
 })
 
-test('Table and Models: "Hide resting" (the default) keeps Important agents', async ({ page }) => {
-  await open(page, { panel: 'full', view: 'table' })
-  const tr = (id) => page.locator(`#list .trow[data-id="${id}"]`)
-  for (const id of PINNED) await expect(tr(id)).toBeVisible()
-  await expect(tr('keeper')).toContainText('Stopped · Closed')
-  await expect(tr('rest-solo-0')).toHaveCount(0)
-  await expect(page.locator('#list [data-act="tresting"]')).toHaveText('Show resting (13)')
-  await page.locator('#view-models').click()
+test('Models: "Hide resting" (the default) keeps Important agents', async ({ page }) => {
+  await open(page, { panel: 'full', view: 'models' })
   const mr = (id) => page.locator(`#list .mrow[data-id="${id}"]`)
   for (const id of PINNED) await expect(mr(id)).toBeVisible()
   await expect(mr('rest-solo-0')).toHaveCount(0)

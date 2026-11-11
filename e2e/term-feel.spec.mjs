@@ -221,7 +221,7 @@ test('switching agents and back is instant: same content and scroll position, no
   await expect(page.locator('#stage .termjump')).toBeVisible()
 
   // To the other agent.
-  await page.evaluate((id) => { location.hash = `#agent=${encodeURIComponent(id)}` }, OTHER) // as a click in the village column does
+  await row(page, OTHER).click()
   await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
   await expect(page.locator('#stage .termjump')).toBeHidden() // CI's own state, not DB's
@@ -245,7 +245,7 @@ test('switching agents and back is instant: same content and scroll position, no
       .observe(document.querySelector('#stage .termstatus'), { childList: true, characterData: true, subtree: true })
   })
   const back = Date.now()
-  await page.evaluate((id) => { location.hash = `#agent=${encodeURIComponent(id)}` }, ID)
+  await row(page, ID).click()
   await expect(page.locator('#stage .tname')).toHaveText('DB Lead')
   const after = await dbg(page)
   expect(after.id).toBe(ID)

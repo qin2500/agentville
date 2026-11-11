@@ -1,5 +1,5 @@
 // The Models view: model cards that filter, the per-agent treegrid with configured model, route,
-// context and flags, the inspector's Models section, and live refresh. Its own fixture home and
+// context and flags, and live refresh. Its own fixture home and
 // server (it appends to transcripts); never the real ~/.claude or ~/.codex.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -116,10 +116,10 @@ test('it refreshes live: a reply on another model shows up without a reload', as
   await expect(solo.locator('.c-changed')).toContainText('Opus 5.5 → Sonnet 5.5')
 })
 
-test('V cycles Status → Team → Tree → Table → Models; keys move through the Models rows', async ({ page }, testInfo) => {
+test('V cycles Team → Tree → Models; keys move through the Models rows', async ({ page }, testInfo) => {
   test.skip(isMobile(testInfo), 'keyboard shortcuts are a desktop path')
   await openModels(page)
-  await page.locator('#view-table').click()
+  await page.locator('#view-tree').click()
   await page.locator('body').press('v')
   await expect(page.locator('#view-models')).toHaveAttribute('aria-pressed', 'true')
   const first = page.locator('#list .mgrid .trow:not(.thead)').first()
@@ -127,5 +127,5 @@ test('V cycles Status → Team → Tree → Table → Models; keys move through 
   await first.press('ArrowDown')
   await expect(page.locator('#list .mgrid .trow:not(.thead)').nth(1)).toBeFocused()
   await page.locator('body').press('v')
-  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
 })

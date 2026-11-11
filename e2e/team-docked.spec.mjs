@@ -12,6 +12,7 @@ const isMobile = (ti) => ti.project.name === 'mobile'
 const row = (page, id) => page.locator(`#list .row[data-id="${id}"]`)
 const caret = (page, id) => page.locator(`#list .chev[data-id="${id}"]`)
 const saved = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('va.teamOpen') || '[]'))
+test.use({ openTeams: false }) // the app's own folded start
 
 // 6 bosses × 3 leads × 5 workers, 2 bossless leads, 30 solos (5 awake). A "needs you" two levels
 // under boss-0 (inside a resting lead) and an error under boss-1.

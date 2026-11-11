@@ -154,6 +154,8 @@ test('unticked agents get nothing; a set that changes after review must be confi
 test('the Fleet menu opens it too; outside Team the toolbar button is hidden', async ({ page }, testInfo) => {
   await page.goto(s.url)
   await expect(page.locator('#conn')).toHaveText(/Live/)
+  await expect(page.locator('#btn-msg')).toBeVisible() // Team is the default view
+  await page.locator('#view-tree').click()
   await expect(page.locator('#btn-msg')).toBeHidden()
   await page.locator('#view-team').click()
   await expect(page.locator('#btn-msg')).toBeVisible()
@@ -162,7 +164,7 @@ test('the Fleet menu opens it too; outside Team the toolbar button is hidden', a
   const b = await page.locator('#btn-msg').boundingBox()
   expect(b.x + b.width).toBeLessThanOrEqual(panel.x + panel.width + 1)
   await page.locator('#panel .phead').screenshot({ path: `${SHOTS}/broadcast-${testInfo.project.name}-toolbar.png` })
-  await page.locator('#view-status').click()
+  await page.locator('#view-tree').click()
   await page.locator('#btn-fleet').click()
   await page.locator('#pop-fleet [data-broadcast="open"]').click()
   await expect(page.locator('#broadcast h2')).toHaveText('Message agents')

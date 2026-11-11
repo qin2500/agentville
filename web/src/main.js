@@ -11,6 +11,7 @@ import { createUpdate } from './update.js';
 import { createLaunch } from './launch.js';
 import { createBroadcast } from './broadcast.js';
 import { transitions } from './notify.js';
+import { viewsFrom, nextView } from './views.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) await import('./dev/mock.js');
@@ -32,8 +33,8 @@ const S = {
   lastOk: 0,
   // First run opens on the expanded Team view; the village is one click away (Dock). Remembered after.
   panel: ['docked', 'collapsed', 'full'].includes(store.get('va.panel')) ? store.get('va.panel') : 'full',
-  // 'va.view' once also held the village's 'iso'/'flat' string; only an object is the panel's views.
-  views: { docked: 'status', full: 'team', ...(typeof store.get('va.view') === 'object' ? store.get('va.view') : {}) },
+  // 'va.view' once also held the village's 'iso'/'flat' string, or the old Status and Table views (now Team).
+  views: viewsFrom(store.get('va.view')),
   panelW: store.get('va.panelW', null), // user-dragged docked width (px); null = the CSS default
   compact: store.get('va.density', 'comfortable') === 'compact',
   sound: store.get('va.sound', false),
@@ -46,11 +47,13 @@ const S = {
   query: '',
   filters: { projects: new Set(), harness: new Set(), roles: new Set(), bucket: null, showHidden: false },
   selected: null,
-  restingOpen: false,
   term: null,            // agent id shown in the terminal view, or null
   get view() { return this.views[this.panel === 'full' ? 'full' : 'docked']; },
   get reduceMotion() { return this.reduceSetting || reducedMotionQuery.matches; },
 };
+// The Status and Table views are gone: save the migrated views and drop the Table's settings.
+if (Object.values(store.get('va.view', {}) || {}).some(v => v === 'status' || v === 'table')) store.set('va.view', S.views);
+try { localStorage.removeItem('va.table'); } catch { /* blocked storage */ }
 
 const app = {
   S,
@@ -151,7 +154,6 @@ app.openTerminal = id => {
     termPrev = {
       focus: f && f !== document.body && !f.closest('#stage') ? { el: f, key: focusKey(f) } : null,
       panel: S.panel, views: { ...S.views }, selected: S.selected, panelW: S.panelW,
-      table: { sort: S.table.sort, dir: S.table.dir, flat: S.table.flat, resting: S.table.resting },
       cam: village.camera(), scroll: panel.scrollState(),
     };
     animateLayout();
@@ -173,7 +175,6 @@ app.closeTerminal = () => {
   animateLayout();
   if (p) {
     Object.assign(S, { panel: p.panel, views: p.views, panelW: p.panelW });
-    Object.assign(S.table, p.table);
     S.selected = p.selected && S.byId.has(p.selected) ? p.selected : null;
     writeHash();
     village.setSelected(S.selected, { pan: false });
@@ -304,7 +305,7 @@ function renderTop(loading, off) {
 ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pressed="${pressed('error')}" aria-label="${errs} ${errs === 1 ? 'Error' : 'Errors'}, included in Stalled" title="${errs} of the ${st} stalled agents ${errs === 1 ? 'hit an error' : 'hit errors'}">${icon('error')}<b class="num">${errs}</b> <span class="lbl">${errs === 1 ? 'Error' : 'Errors'}</span></button>` : ''}${!loading && clicks ? `<button class="counter prompts${S.reduceMotion ? ' still' : ''}" data-bucket="prompt" aria-pressed="${pressed('prompt')}" aria-label="${clicks} need${clicks === 1 ? 's' : ''} a click, included in Stalled" title="${clicks} of the ${st} stalled agents ${clicks === 1 ? 'is' : 'are'} sitting in a permission prompt, a question with options, a plan to approve, or another dialog">${icon('prompt')}<b class="num">${clicks}</b> <span class="lbl">Need${clicks === 1 ? 's' : ''} a click</span></button>` : ''}</span>
      <button class="counter" data-bucket="waiting" aria-pressed="${pressed('waiting')}" aria-label="${n('waiting')} Waiting${loading ? ', loading' : ''}"><span class="w">${icon('waiting')}</span><b class="num">${n('waiting')}</b> <span class="lbl">Waiting</span></button>
      <button class="counter" data-bucket="building" aria-pressed="${pressed('building')}" aria-label="${n('building')} Building${loading ? ', loading' : ''}"><span class="bu">${icon('building')}</span><b class="num">${n('building')}</b> <span class="lbl">Building</span></button>`;
-  $('rail').innerHTML = `<button class="iconbtn" id="btn-expand" aria-label="Open panel (\\)" title="Open panel (\\)">«</button>
+  $('rail').innerHTML = `<button class="iconbtn" id="btn-expand" aria-label="Open panel (\\)" title="Open panel (\\)">»</button>
     ${['stalled', 'waiting', 'building'].map(b => `<button class="iconbtn" data-bucket="${b}" style="color:var(--${b});height:auto;padding:2px 0;display:flex;flex-direction:column;gap:2px" aria-label="${n(b)} ${b}">${icon(b)}<b class="num">${n(b)}</b></button>`).join('')}`;
 
   const conn = $('conn');
@@ -327,10 +328,8 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
 
   document.title = clicks ? `(${clicks} to click) Agentville` : st > 0 ? `(${st}) Agentville` : 'Agentville';
   setFavicon(clicks ? 'prompt' : errs ? 'error' : st > 0 ? 'stalled' : '');
-  $('view-status').setAttribute('aria-pressed', String(S.view === 'status'));
   $('view-team').setAttribute('aria-pressed', String(S.view === 'team'));
   $('view-tree').setAttribute('aria-pressed', String(S.view === 'tree'));
-  $('view-table').setAttribute('aria-pressed', String(S.view === 'table'));
   $('view-models').setAttribute('aria-pressed', String(S.view === 'models'));
   $('btn-new').hidden = S.view !== 'team';
   const full = S.panel === 'full';
@@ -458,8 +457,8 @@ splitter.addEventListener('pointerdown', e => {
 });
 splitter.addEventListener('pointermove', e => {
   if (!dragW) return;
-  const right = $('main').getBoundingClientRect().right;
-  const w = right - e.clientX;
+  const left = $('main').getBoundingClientRect().left; // the panel is on the left: its right edge follows
+  const w = e.clientX - left;
   dragW.snap = w > innerWidth * 0.75;
   splitter.classList.toggle('snap', dragW.snap);
   setPanelW(dragW.snap ? maxW() : w, false);
@@ -476,8 +475,8 @@ splitter.addEventListener('pointerup', () => {
 splitter.addEventListener('dblclick', () => setPanel(S.panel === 'full' ? 'docked' : 'full'));
 splitter.addEventListener('keydown', e => {
   const step = e.shiftKey ? 80 : 16, cur = S.panelW || $('panel').getBoundingClientRect().width;
-  if (e.key === 'ArrowLeft') setPanelW(cur + step);
-  else if (e.key === 'ArrowRight') setPanelW(cur - step);
+  if (e.key === 'ArrowRight') setPanelW(cur + step);
+  else if (e.key === 'ArrowLeft') setPanelW(cur - step);
   else if (e.key === 'Home') setPanelW(MIN_W);
   else if (e.key === 'End') setPanelW(maxW());
   else if (e.key === 'Enter') setPanel(S.panel === 'full' ? 'docked' : 'full');
@@ -647,17 +646,15 @@ document.addEventListener('click', e => {
   if (bucket) {
     S.filters.bucket = S.filters.bucket === bucket ? null : bucket;
     if (S.panel === 'collapsed') setPanel('docked');
-    if (S.filters.bucket) S.views[S.panel === 'full' ? 'full' : 'docked'] = 'status';
+    if (S.filters.bucket && S.view === 'models') S.views[S.panel === 'full' ? 'full' : 'docked'] = 'team';
     render();
     return;
   }
   if (t.closest('#btn-expand')) return setPanel('docked');
   if (t.closest('#btn-collapse')) return setPanel('collapsed');
   if (t.closest('#btn-full')) return setPanel(S.panel === 'full' ? 'docked' : 'full');
-  if (t.closest('#view-status')) return setView('status');
   if (t.closest('#view-team')) return setView('team');
   if (t.closest('#view-tree')) return setView('tree');
-  if (t.closest('#view-table')) return setView('table');
   if (t.closest('#view-models')) return setView('models');
   if (t.closest('#btn-retry')) return poll();
   if (t.closest('#btn-filters')) return togglePop('filters');
@@ -724,12 +721,11 @@ document.addEventListener('keydown', e => {
   if (k === '/') { e.preventDefault(); focusSearch(); }
   else if (k === '\\') setPanel(S.panel === 'collapsed' ? 'docked' : S.panel === 'docked' ? 'collapsed' : 'docked');
   else if (k === 'f' || k === 'F') setPanel(S.panel === 'full' ? 'docked' : 'full');
-  else if ((k === 'r' || k === 'R') && S.view === 'table') panel.tableResort();
   else if (k === 'o' || k === 'O') { // open the focused row's agent, else the selected one, in a terminal
     const id = e.target.closest?.('[data-id]')?.dataset.id || S.selected;
     if (id) panel.open(id);
   }
-  else if (k === 'v' || k === 'V') setView({ status: 'team', team: 'tree', tree: 'table', table: 'models', models: 'status' }[S.view] || 'status');
+  else if (k === 'v' || k === 'V') setView(nextView(S.view));
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
   else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && S.panel !== 'full' && !e.target.closest('.panel')) village.key(k);
 });

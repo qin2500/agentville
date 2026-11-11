@@ -35,11 +35,9 @@ async function enter(page, id = ID, name = 'DB Lead') {
   await expect(screen(page)).toContainText('fake-claude>')
   await expect(page.locator('#main')).not.toHaveClass(/tv-anim/) // the 200 ms layout transition is over
 }
-/** Pick another agent while the terminal is open (as a click in the village column does). */
-const pick = (page, id) => page.evaluate((id) => { location.hash = `#agent=${encodeURIComponent(id)}` }, id)
 const typeLine = async (page, text) => { await page.keyboard.type(text); await page.keyboard.press('Enter') }
 
-test('Terminal takes the centre and the rest of the width; the village compresses to the left; Shift+Esc puts it all back', async ({ page }, testInfo) => {
+test('Terminal takes the centre and the rest of the width; the agents panel stays on the left; Shift+Esc puts it all back', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
   await row(page, ID).click() // selected, as it is put back after
   await openMenu(page, ID)
@@ -47,14 +45,15 @@ test('Terminal takes the centre and the rest of the width; the village compresse
   const before = { village: await box(page, '#village'), panel: await box(page, '#panel'), cam: await page.evaluate(() => window.villageDebug().cam) }
   const vp = page.viewportSize()
   await enter(page)
-  // Centre and large; the village is a narrow column on the left, and nothing is on the right.
-  const st = await box(page, '#stage'), vil = await box(page, '#village')
+  // Centre and large; the agents panel stays on the left, as wide as before, and nothing is on the right.
+  const st = await box(page, '#stage'), pan = await box(page, '#panel')
   expect(st.width).toBeGreaterThan(vp.width * 0.5)
   expect(st.height).toBeGreaterThan(vp.height * 0.85)
-  expect(vil.width).toBeGreaterThan(100)
-  expect(vil.width).toBeLessThan(before.village.width * 0.5)
-  expect(vil.x + vil.width).toBeLessThanOrEqual(st.x + 1)
+  expect(pan.x).toBeLessThan(1)
+  expect(Math.round(pan.width)).toBe(Math.round(before.panel.width))
+  expect(pan.x + pan.width).toBeLessThanOrEqual(st.x + 1)
   expect(st.x + st.width).toBeGreaterThan(vp.width - 4)
+  await expect(row(page, OTHER)).toBeVisible() // the list is right there to switch agents
   await expect(page.locator('#drawer, .detail')).toHaveCount(0)
   await page.locator('#stage .tname').click({ button: 'right' })
   await expect(page.locator('#ctxmenu .cm-name')).toHaveText('DB Lead')
@@ -76,7 +75,7 @@ test('Terminal takes the centre and the rest of the width; the village compresse
   await page.keyboard.press('Enter')
   await expect(page.locator('#stage')).toBeVisible()
   await expect(page.locator('#main')).not.toHaveClass(/\bfull\b/)
-  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
   await expect(screen(page)).toContainText('echo: vf/jko')
   // It fits on resize: a taller window reaches the PTY (the fake prints its size on "size").
   const sizes = async () => (await screen(page).innerText()).match(/size \d+x\d+/g) || []
@@ -143,50 +142,46 @@ test('switching agents: while the terminal is open, clicking another agent opens
   await enter(page)
   await typeLine(page, 'first agent')
   await expect(screen(page)).toContainText('echo: first agent')
-  await pick(page, OTHER) // picking another agent swaps the centre terminal to it
+  await row(page, OTHER).click() // one click in the panel swaps the centre terminal to it
   await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
   await expect(screen(page)).toContainText(`fake claude attach ${IDS.leadCi.slice(0, 8)}`)
   await expect(screen(page)).not.toContainText('echo: first agent')
   expect(await running(page)).toEqual(expect.arrayContaining([ID, OTHER])) // the first only detached
   // A subagent can't be opened: the centre stays put.
-  await pick(page, `${claudeId('leadBuilding')}:sub:worker`)
+  await row(page, `${claudeId('leadBuilding')}:sub:worker`).click()
   await page.waitForTimeout(300)
   await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
   // Back to the first: it re-attaches and replays what was there.
-  await pick(page, ID)
+  await row(page, ID).click()
   await expect(page.locator('#stage .tname')).toHaveText('DB Lead')
   await expect(screen(page)).toContainText('echo: first agent')
   const live = claudeEvents().filter((e) => e.argv.includes(SHORT))
   expect(live.filter((e) => e.event === 'start').length - live.filter((e) => e.event === 'exit').length).toBe(1)
 })
 
-test('Close restores a full-screen Table exactly: view, sort, selection', async ({ page }, testInfo) => {
+test('Close restores the full-screen view exactly: view and selection', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
   await page.keyboard.press('f')
-  await page.locator('#view-table').click()
-  const agentHead = page.locator('[role="columnheader"]:has([data-key="agent"])')
-  await agentHead.locator('button').click()
-  await expect(agentHead).toHaveAttribute('aria-sort', 'ascending')
-  await page.locator(`#list .trow[data-id="${ID}"]`).click()
-  await expect(page.locator(`#list .trow[data-id="${ID}"]`)).toHaveAttribute('aria-selected', 'true')
-  await page.locator(`#list .trow[data-id="${ID}"]`).click({ button: 'right' })
+  await page.locator('#view-tree').click()
+  const node = page.locator(`#list .tnode[data-id="${ID}"]`)
+  await node.click()
+  await expect(node).toHaveAttribute('aria-selected', 'true')
+  await node.click({ button: 'right' })
   await enter(page)
   // From full screen the list is the left column, and the terminal has the rest.
   const st = await box(page, '#stage'), list = await box(page, '#list')
   expect(list.x + list.width).toBeLessThanOrEqual(st.x + 1)
   expect(st.x + st.width).toBeGreaterThan(page.viewportSize().width - 4)
   expect(st.width).toBeGreaterThan(page.viewportSize().width * 0.5)
-  await expect(page.locator('#list .trow').first()).toBeVisible()
-  // Change things while in the terminal view; Close must undo them.
-  await agentHead.locator('button').click()
-  await expect(agentHead).toHaveAttribute('aria-sort', 'descending')
+  // Change the view while in the terminal view; Close must undo it.
+  await page.locator('#view-team').click()
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
   await page.locator('#stage .tclose').click()
   await expect(page.locator('#stage')).toBeHidden()
   await expect(page.locator('#main')).toHaveClass(/\bfull\b/)
-  await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
-  await expect(agentHead).toHaveAttribute('aria-sort', 'ascending')
-  await expect(page.locator(`#list .trow[data-id="${ID}"]`)).toHaveAttribute('aria-selected', 'true')
+  await expect(page.locator('#view-tree')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator(`#list .tnode[data-id="${ID}"]`)).toHaveAttribute('aria-selected', 'true')
 })
 
 test('Pop out ends the embedded attach first, then opens the same command; the view closes', async ({ page }) => {
@@ -382,7 +377,7 @@ test('the terminal keeps the keyboard across data refreshes and re-renders; a cl
   await page.keyboard.type('v') // a global shortcut (switch view) belongs to the terminal here
   await typeLine(page, 'kept')
   await expect(screen(page)).toContainText('echo: vkept')
-  await expect(page.locator('#view-status')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
   // Clicks outside the xterm but inside the terminal area: header text, the hint, the frame.
   for (const [sel, position] of [['#stage .tname'], ['#stage .termhint'], ['#stage', { x: 3, y: 3 }]]) {
     await page.locator('#q').focus()

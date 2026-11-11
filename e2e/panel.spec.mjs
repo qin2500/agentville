@@ -4,7 +4,6 @@ import { test, expect, startDocked } from './fixtures.mjs'
 import { SHOTS, claudeId, row, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, openMenu } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
-const trow = (page, id) => page.locator(`#list .trow[data-id="${id}"]`)
 
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
@@ -63,83 +62,26 @@ test('Expand / Dock is a labelled button that mentions F', async ({ page }) => {
   await b.click()
   await expect(page.locator('#main')).toHaveClass(/full/)
   await expect(b).toHaveText(/Dock/)
-  await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('#view-team')).toHaveAttribute('aria-pressed', 'true')
 })
 
-test('Table view: grouped by project, sortable, collapsible by mouse and keys, resting toggle, flat', async ({ page }, testInfo) => {
-  await page.locator('#btn-full').click()
-  const grid = page.locator('#list .tgrid')
-  await expect(grid).toHaveAttribute('role', 'treegrid')
-  const projectHead = page.locator('[role="columnheader"]:has([data-key="project"])')
-  await expect(projectHead).toHaveCount(0) // grouped: the group header names the project
-  const group = page.locator('#list .tgroup[data-group="demo-app"]')
-  await expect(group).toHaveAttribute('aria-expanded', 'true')
-  // Boss → lead → sub nesting inside the project group.
-  await expect(trow(page, claudeId('boss'))).toHaveAttribute('aria-level', '2')
-  await expect(trow(page, claudeId('leadBuilding'))).toHaveAttribute('aria-level', '3')
-  await expect(trow(page, `${claudeId('leadBuilding')}:sub:worker`)).toHaveAttribute('aria-level', '4')
-  // Resting agents are behind the toggle.
-  await expect(trow(page, claudeId('leadDone'))).toHaveCount(0)
-  const toggle = page.locator('[data-act="tresting"]')
-  await expect(toggle).toHaveText(/Show resting \(\d+\)/)
-  await toggle.click()
-  await expect(trow(page, claudeId('leadDone'))).toHaveCount(1)
-  await expect(toggle).toHaveAttribute('aria-pressed', 'true')
-  await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-full-table.png` })
-  // Sort by Agent: aria-sort flips, siblings reorder.
-  const agentHead = page.locator('[role="columnheader"]:has([data-key="agent"])')
-  await agentHead.locator('button').click()
-  await expect(agentHead).toHaveAttribute('aria-sort', 'ascending')
-  await agentHead.locator('button').click()
-  await expect(agentHead).toHaveAttribute('aria-sort', 'descending')
-  // Collapse the group with the mouse, expand it with →, collapse a lead with ←.
-  await group.click()
-  await expect(group).toHaveAttribute('aria-expanded', 'false')
-  await expect(trow(page, claudeId('boss'))).toHaveCount(0)
-  await group.focus()
-  await page.keyboard.press('ArrowRight')
-  await expect(group).toHaveAttribute('aria-expanded', 'true')
-  const lead = trow(page, claudeId('leadBuilding'))
-  await lead.focus()
-  await page.keyboard.press('ArrowLeft')
-  await expect(lead).toHaveAttribute('aria-expanded', 'false')
-  await expect(trow(page, `${claudeId('leadBuilding')}:sub:worker`)).toHaveCount(0)
-  await expect(lead).toBeFocused()
-  // Enter selects the row; Enter again opens its menu; Esc closes it and gives the row the keyboard back.
-  await page.keyboard.press('Enter')
-  await expect(lead).toHaveAttribute('aria-selected', 'true')
-  await page.keyboard.press('Enter')
-  await expect(page.locator('#ctxmenu .cm-name')).toHaveText('API Lead')
-  await page.keyboard.press('Escape')
-  await expect(page.locator('#ctxmenu')).toBeHidden()
-  await expect(lead).toBeFocused()
-  // Flat list: no groups, a plain grid. Search still applies.
-  await page.locator('[data-act="tlayout"][data-v="flat"]').click()
-  await expect(grid).toHaveAttribute('role', 'grid')
-  await expect(projectHead).toHaveCount(1)
-  await expect(page.locator('#list .tgroup')).toHaveCount(0)
-  await page.locator('#q').fill('lint')
-  await expect(trow(page, claudeId('soloError'))).toHaveCount(1)
-  await expect(trow(page, claudeId('boss'))).toHaveCount(0)
-  // Remembered across reloads.
-  await page.reload()
-  await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.locator('[data-act="tlayout"][data-v="flat"]')).toHaveAttribute('aria-pressed', 'true')
-})
-
-test('full-screen Team groups cards by project with no "+N resting" links', async ({ page }, testInfo) => {
+test('full-screen Team: crowns first, then cards by project, with no "+N resting" links and no "Quiet projects"', async ({ page }, testInfo) => {
   await page.locator('#btn-full').click()
   await page.locator('#view-team').click()
+  // Crowned agents (bosses) are grouped at the top, ahead of the per-project groups.
+  await expect(page.locator('#list .proj').first()).toHaveClass(/crowns/)
+  await expect(page.locator('#list .proj.crowns .projhead')).toContainText('Crowns')
+  await expect(page.locator(`#list .proj.crowns .card .row[data-id="${claudeId('boss')}"]`)).toHaveCount(1)
+  await expect(page.locator(`#list .proj:not(.crowns) .row[data-id="${claudeId('boss')}"]`)).toHaveCount(0)
+  await expect(page.locator('#list .projhead', { hasText: 'Quiet projects' })).toHaveCount(0)
   await expect(page.locator('#list .proj .projhead').first()).toBeVisible()
   await expect(page.locator('#list .masonry .card').first()).toBeVisible()
   await expect(page.locator('#list button[data-act="more"]')).toHaveCount(0)
   await expect(page.locator(`#list .card .row[data-id="${claudeId('leadBuilding')}"]`)).toHaveCount(1)
   await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-full-team-masonry.png` })
-  await page.locator('#view-status').click()
-  await expect(page.locator('#list .cols .psub').first()).toBeVisible()
 })
 
-test('big home at 2560px: Table, Team and Status use the width', async ({ browser }, testInfo) => {
+test('big home at 2560px: Team and Tree use the width', async ({ browser }, testInfo) => {
   test.skip(isMobile(testInfo), 'one wide screenshot set is enough')
   const s = await startServer(prepareBigHome(tmpDir('wide'), 160), nextPort())
   const page = await browser.newPage({ viewport: { width: 2560, height: 1440 } })
@@ -148,12 +90,10 @@ test('big home at 2560px: Table, Team and Status use the width', async ({ browse
     await page.goto(s.url)
     await expect(page.locator('#conn')).toHaveText(/Live/)
     await page.locator('#btn-full').click()
-    await expect(page.locator('#list .trow:not(.thead)').first()).toBeVisible()
-    await page.screenshot({ path: `${SHOTS}/wide-full-table.png` })
-    await page.locator('#view-team').click()
+    await expect(page.locator('#list .card').first()).toBeVisible()
     await page.screenshot({ path: `${SHOTS}/wide-full-team.png` })
-    await page.locator('#view-status').click()
-    await page.screenshot({ path: `${SHOTS}/wide-full-status.png` })
+    await page.locator('#view-tree').click()
+    await page.screenshot({ path: `${SHOTS}/wide-full-tree.png` })
   } finally { await page.close(); await s.stop() }
 })
 
@@ -194,14 +134,14 @@ test('hidden agents are findable: "N hidden" button, list with Unhide, and Show 
 
 test('full screen: clicking empty space clears the selection; rows and drags do not', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
-  await page.locator('#btn-full').click() // Table
-  await page.locator(`#list .trow[data-id="${claudeId('leadCi')}"]`).click()
+  await page.locator('#btn-full').click() // Team cards
+  await page.locator(`#list .row[data-id="${claudeId('leadCi')}"]`).click()
   await expect(page).toHaveURL(/#agent=/)
   const list = await page.locator('#list').boundingBox()
   const empty = { x: list.x + 40, y: list.y + list.height - 30 } // below the last row
   // A row click switches the selection instead of clearing it.
-  await page.locator(`#list .trow[data-id="${claudeId('leadBlocked')}"]`).click()
-  await expect(page.locator(`#list .trow[data-id="${claudeId('leadBlocked')}"]`)).toHaveAttribute('aria-selected', 'true')
+  await page.locator(`#list .row[data-id="${claudeId('leadBlocked')}"]`).click()
+  await expect(page.locator(`#list .row[data-id="${claudeId('leadBlocked')}"]`)).toHaveAttribute('aria-current', 'true')
   // A drag (e.g. selecting text) across empty space does not clear it.
   await page.mouse.move(empty.x, empty.y)
   await page.mouse.down()
@@ -211,5 +151,5 @@ test('full screen: clicking empty space clears the selection; rows and drags do 
   // A plain click on nothing clears #agent=.
   await page.mouse.click(empty.x, empty.y)
   await expect(page).not.toHaveURL(/#agent=/)
-  await expect(page.locator('#list .trow.cur')).toHaveCount(0)
+  await expect(page.locator('#list .row[aria-current="true"]')).toHaveCount(0)
 })

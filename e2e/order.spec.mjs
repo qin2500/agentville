@@ -27,14 +27,14 @@ test.beforeEach(async ({ page }, testInfo) => {
 })
 test.afterEach(async () => { await s?.stop() })
 
-test('a building agent getting busier does not move; a new agent appends to the end of its section', async ({ page }) => {
-  const building = '#list .sec.building .row'
-  const before = await ids(page, building)
+test('an agent getting busier does not move; a new agent appends to the end of its list', async ({ page }) => {
+  const solos = '#list .tsolo .row'
+  const before = await ids(page, solos)
   expect(before.length).toBeGreaterThan(1)
-  // Fresh activity on the API Lead (it used to jump to the top as "most recently active").
-  append(IDS.leadBuilding, [{ type: 'assistant', timestamp: t(), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'z1', name: 'Read', input: { file_path: 'y' } }] } }])
+  // Fresh activity on a solo (it used to jump to the top as "most recently active").
+  append(IDS.soloWaiting, [{ type: 'assistant', timestamp: t(), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'z1', name: 'Read', input: { file_path: 'y' } }] } }])
   await page.waitForTimeout(4500) // two polls
-  expect(await ids(page, building)).toEqual(before)
+  expect(await ids(page, solos)).toEqual(before)
   // A brand-new building agent lands at the end.
   const sid = 'fffffff2-0000-4000-8000-000000000000'
   fs.writeFileSync(path.join(project(), `${sid}.jsonl`),
@@ -42,22 +42,23 @@ test('a building agent getting busier does not move; a new agent appends to the 
     + JSON.stringify({ type: 'assistant', timestamp: t(1), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'c', name: 'Read', input: {} }] } }) + '\n')
   // …and is live (a session file, as the fixture's own live agents have), so it counts as Building.
   fs.writeFileSync(path.join(env.AGENTVILLE_CLAUDE_HOME, 'sessions', `${sid.slice(0, 8)}.json`), JSON.stringify({ pid: 1, sessionId: sid, kind: 'bg' }))
-  await expect(page.locator(`${building}[data-id="claude-code:${sid}"]`)).toHaveCount(1, { timeout: 10_000 })
-  const after = await ids(page, building)
+  await expect(page.locator(`${solos}[data-id="claude-code:${sid}"]`)).toHaveCount(1, { timeout: 10_000 })
+  const after = await ids(page, solos)
   expect(after.at(-1)).toBe(`claude-code:${sid}`)
-  expect(after.slice(0, -1)).toEqual(before)
+  expect(after.filter((id) => id !== `claude-code:${sid}`)).toEqual(before)
 })
 
-test('a status change while the pointer is over the list waits until the pointer leaves', async ({ page }) => {
-  await expect(page.locator(`#list .sec.building .row[data-id="${codexRun}"]`)).toHaveCount(1)
-  await page.locator('#list .sec.waiting h2').hover()
+test('a status change updates the row in place: it turns amber where it is, and nothing moves', async ({ page }) => {
+  const solos = '#list .tsolo .row'
+  await expect(page.locator(`${solos}[data-id="${codexRun}"]`)).toHaveCount(1)
+  const before = await ids(page, solos)
+  await page.locator('#list .tsolo h2').hover()
   finishCodex()
-  // Contents update in place (it turns amber/stalled) but the row stays in the Building section.
   await expect(row(page, codexRun)).toHaveClass(/b-stalled/, { timeout: 10_000 })
-  await expect(page.locator(`#list .sec.building .row[data-id="${codexRun}"]`)).toHaveCount(1)
-  // Pointer leaves the panel: the held move applies.
+  expect(await ids(page, solos)).toEqual(before)
   await page.mouse.move(200, 400)
-  await expect(page.locator(`#list .sec.stalled .row[data-id="${codexRun}"]`)).toHaveCount(1)
+  await page.waitForTimeout(300)
+  expect(await ids(page, solos)).toEqual(before)
 })
 
 test('Team cards keep their order across polls while urgency changes', async ({ page }) => {

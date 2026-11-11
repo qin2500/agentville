@@ -257,9 +257,9 @@ test('quiet projects fold away with a note; the toggle brings them back in the s
   await expect(note).toBeVisible()
   await expect(note).toContainText('2 quiet projects hidden')
   // The list still shows every agent, quiet projects included.
-  await page.locator('#list .resting-toggle').click()
+  await page.locator('#q').fill('old-beta')
   await expect(page.locator('#list .row[data-id="quiet-b-01"]')).toBeVisible()
-  await page.locator('#list .resting-toggle').click()
+  await page.locator('#q').fill('')
   const before = await dbg(page)
 
   // "Show" brings them in, without moving anything already there.
