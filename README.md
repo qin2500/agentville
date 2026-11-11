@@ -94,6 +94,17 @@ you opened stay live, so switching back shows one at once, as you left it. Cmd-C
 Cmd-V pastes, Cmd-F finds, Cmd-K clears the view and Cmd-click opens a link; the wheel goes to the
 program when it tracks the mouse (Claude Code's full-screen mode), as in any terminal.
 
+**Splits.** Drag an agent from the list onto the terminal to put it beside the one there, as in
+Ghostty: the pane under the pointer lights up the half the new terminal will take, and dropping
+splits it. Panes split again without limit. Drag a divider to resize, click a pane to focus it, and
+use **×** on a pane to close it (its session keeps running). Dropping an agent that is already shown
+moves it. With two or more panes, Cmd-Option-arrows move focus, Cmd-[ / Cmd-] go to the previous or
+next pane, Cmd-Ctrl-arrows move the nearest divider, Cmd-Ctrl-= equalizes and Cmd-Shift-W closes the
+focused pane. **Pop out layout to Ghostty** opens one Ghostty window with the same splits, each pane
+running its own command; every pane is checked first (one that can't open refuses the whole layout),
+then the built-in processes end, and only then does the window open. Proportions are approximate.
+Splits need Ghostty; with Terminal.app the button pops out the focused pane alone.
+
 ## Quick start
 
 Agentville is a desktop app. There is no browser version. Build and install it from a clone:

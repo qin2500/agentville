@@ -136,7 +136,19 @@ const peek = createPeek(app, { store, village });
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) compresses to a column on the
 // left. Entering saves the view; leaving puts back exactly that view. The PTY outlives both.
-const termView = createTermView(app, { termName: () => panel.termName(), terminal: () => S.data?.open?.terminal || null, onClose: () => app.closeTerminal() });
+const termView = createTermView(app, {
+  termName: () => panel.termName(), terminal: () => S.data?.open?.terminal || null, onClose: () => app.closeTerminal(),
+  // Splits: the focused pane is the terminal's agent (selected, in the header); a drop is refused for the same reasons as Open.
+  onFocus: id => {
+    if (!S.term || (S.term === id && S.selected === id)) return;
+    S.term = id;
+    S.selected = S.byId.has(id) ? id : S.selected;
+    writeHash();
+    village.setSelected(S.selected, { pan: false });
+    render();
+  },
+  termBlock: id => panel.termBlock(id),
+});
 // The layout moves in 150 ms (styles.css); the terminal is fitted once it has settled, never to a
 // column caught mid-transition.
 let termPrev = null, tvAnim = false, tvTimer = 0;
