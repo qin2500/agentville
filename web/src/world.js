@@ -7,6 +7,7 @@
 import { store } from './ui.js';
 import { isoBuilding, isoExtent } from './iso.js';
 import { pinned, folds, stoppedNote } from './important.js';
+import { createDockArt } from './dock-art.js';
 
 const BASE = `${import.meta.env.BASE_URL}assets/ninja-adventure/`;
 export const T = 16;
@@ -280,7 +281,9 @@ export function layout(P, now = Date.now()) {
   store.set(KEY, S);
   W.parks = Object.keys(B).filter(n => !shown.has(n) && held(n)).map(n => B[n]); // hidden neighbourhoods: their ground waits as park
   buildRoads(W);
+  W.dock = dockSite(W);
   buildLand(W);
+  dockShore(W);
   scatter(W);
   W.waves = [...W.seaDist].filter(([k, d]) => d === 3 && hash(k) % 3 === 0).map(([k]) => unkey(k));
   return W;
@@ -442,6 +445,7 @@ function buildLand(W) {
   const [tx0, ty0, tx1, ty1] = W.town, E = 12, cand = new Set();
   for (let y = ty0 - E; y <= ty1 + E; y++) for (let x = tx0 - E; x <= tx1 + E; x++) {
     const d = Math.hypot(Math.max(tx0 - x, 0, x - tx1), Math.max(ty0 - y, 0, y - ty1));
+    if (W.dock && x >= W.dock.x0 && x <= W.dock.x1 && y >= W.dock.sea) continue; // the dock's cove
     if (d <= 5 + noise(x, y, 6) * 4) cand.add(key(x, y));
   }
   for (const k of W.path) cand.add(k);
@@ -472,6 +476,21 @@ function buildLand(W) {
     if (dv > 12) continue;
     for (const [dx, dy] of N4) { const k = key(x + dx, y + dy); if (!W.seaDist.has(k)) { W.seaDist.set(k, dv + 1); dq.push(k); } }
   }
+}
+// The dock (dock-art.js): a pier in a cove cut into the south shore, under the town square's column, so
+// it sits close to town and never moves unless the town itself grows south. The cove (x0..x1, from row
+// `sea` down) is open water all the way out; the pier starts on the land row `foot` just above it.
+function dockSite(W) {
+  const cx = SQUARE.x + (SQUARE.w >> 1), foot = W.town[3] + 2;
+  return { cx, foot, sea: foot + 1, x0: cx - 5, x1: cx + 6 };
+}
+// A clearing round the cove (no forest in front of the ships) and a footpath from the pier to town.
+function dockShore(W) {
+  const D = W.dock;
+  for (let y = D.foot - 1; y <= D.sea + 12; y++) for (let x = D.x0 - 2; x <= D.x1 + 2; x++) { const k = key(x, y); if (W.land.has(k) && !W.occ.has(k)) W.occ.set(k, 'dock'); }
+  const from = [[D.cx, D.foot], [D.cx + 1, D.foot]];
+  for (const [x, y] of route(W, from, (x, y) => W.path.has(key(x, y)), [D.cx - 14, W.town[1], D.cx + 15, D.foot], [D.cx, W.town[3]], W.inBlock)) W.path.add(key(x, y));
+  for (const [x, y] of from) W.path.add(key(x, y));
 }
 function scatter(W) {
   const at = (r, x, y, extra = {}) => W.props.push({ r, x, y: y - R[r][4], base: y, ...extra });
@@ -684,6 +703,7 @@ function createRenderer(IMG) {
     const out = canvas(64, 16), o = out.getContext('2d'); o.filter = 'brightness(1.45) saturate(1.25)'; o.drawImage(c, 0, 0);
     flags.set(team, out); return out;
   };
+  const dock = createDockArt({ drawLamp, flagSheet });
   // A sprite dyed an accent (multiply, alpha kept, lifted back up), cached.
   const dyes = new Map();
   const dyed = (r, accent) => {
@@ -835,6 +855,8 @@ function createRenderer(IMG) {
     ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
     ctx.imageSmoothingEnabled = false;
     const inView = (x, y, w, h) => x + w > vx && x < vx + bw && y + h > vy && y < vy + bh;
+    dock.frame(f, W); // the pier lies on the water like ground; its ships, porters and sheds join the sort
+    dock.drawGround(ctx);
     for (const p of W.wildIso) { const x = p.x + p.io[0], y = p.y + p.io[1]; if (inView(x, y, R[p.r][3], R[p.r][4])) blit(ctx, p.r, x, y); }
     const list = [];
     // Every drawable gets its ground footprint (fx0, fy0, fx1, fy1: world px; a point for anything
@@ -889,12 +911,14 @@ function createRenderer(IMG) {
       list.push(pt({ an, x, y, flip: !s.right, fr }, s.x + 8, s.y + 14, x, y, x + 16, y + 16));
       walkers.push({ id, kind: an, x, y, facing: s.right ? 'R' : 'L', moving: s.moving && !still, t });
     }
+    for (const d of dock.parts) list.push(d);
     const order = isoSort(list);
     drawOrder = order;
     const pops = [], hits = [], badges = [], resting = new Map();
     for (const v of f.agents.values()) if (folds(v.a) && v.own) resting.set(v.home.id, (resting.get(v.home.id) || 0) + 1);
     for (const d of order) {
       if (d.vd) drawVill(ctx, d.vd, t, f8, f, pops, badges);
+      else if (d.dk) dock.draw(ctx, d, f);
       else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
       else if (d.an) { if (d.flip) { ctx.save(); ctx.translate(d.x + 16, d.y); ctx.scale(-1, 1); ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, 0, 0, 16, 16); ctx.restore(); } else ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, d.x, d.y, 16, 16); }
       else if (d.banner) drawBanner(ctx, d);
@@ -1071,6 +1095,7 @@ function createRenderer(IMG) {
       if (b.door) pools.push([b.ox + b.door[0], b.oy + b.door[1] - 4, 26, 1]);
     }
     for (const v of W.villages) pools.push([...P((v.plaza.x + v.plaza.w / 2) * T, (v.plaza.y + v.plaza.h / 2) * T), 64, 1]);
+    pools.push(...dock.lights);
     pools.push([...P((SQUARE.x + SQUARE.w / 2) * T, (SQUARE.y + SQUARE.h / 2) * T), 96, 1]);
     for (const d of vills) pools.push([d.left + 8, d.feet - 8, 20, 0]);
     const vis = pools.filter(([x, y, r]) => x + r > vx && x - r < vx + bw && y + r > vy && y - r < vy + bh);
@@ -1113,5 +1138,6 @@ function createRenderer(IMG) {
     });
     return out;
   }
-  return { prepare, draw, BADGE, debug: () => ({ walkers, flags: flagsDrawn, hidden: drawOrder.filter(d => d.vd?.hidden).map(d => d.vd.v.a.id) }), flagCheck, depthCheck };
+  return { prepare, draw, BADGE, debug: () => ({ walkers, flags: flagsDrawn, hidden: drawOrder.filter(d => d.vd?.hidden).map(d => d.vd.v.a.id), dock: dock.debug() }), flagCheck, depthCheck,
+    dockHit: (x, y) => dock.hit(x, y), dockTags: () => dock.tags };
 }

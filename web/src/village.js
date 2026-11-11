@@ -6,6 +6,7 @@ import { BUCKET_NAME, ROLE_NAME, store, icon, esc } from './ui.js';
 import { T, ZOOMS, R, ISO, plan, layout, placeAgents, loadSheets, SEA_DEEP, isoP, isoInv, itemBox, agentOffset } from './world.js';
 import { visibleProjects } from './quiet.js';
 import { folds } from './important.js';
+import { dockData, dockDemo, demoDock, dockSig, dockRect, dockGeom } from './dock-art.js';
 
 const FPS = 8;
 
@@ -28,13 +29,17 @@ export function createVillage(app) {
   let userMoved = !!savedCam;
   let W = null, sig = '', placed = { vill: new Map(), crowd: new Map() }, counts = new Map(), shownAgents = [], quiet = [];
   let state = { loading: true, offline: false };
-  let selected = null, hover = null, hoverVil = null, cursor = null, altTags = false;
-  let hits = [], houseHits = [], clusters = [], lastBadges = [];
+  let selected = null, hover = null, hoverVil = null, hoverDock = null, cursor = null, altTags = false;
+  let hits = [], houseHits = [], clusters = [], lastBadges = [], simpleDock = [];
   let timer = 0, raf = 0;
   let renderer = null, artState = 'loading';
   cv.dataset.art = 'loading';
   loadSheets().then(r => { renderer = r; artState = cv.dataset.art = 'ready'; if (W) renderer.prepare(W); invalidate(); })
     .catch(e => { artState = cv.dataset.art = 'failed'; console.warn(`Village art unavailable, using the simple renderer: ${e.message}`); invalidate(); });
+
+  // ?dockdemo=1: fake PRs at the dock for the whole page (the click panel reads S.dock too); the
+  // server's own S.dock is ignored meanwhile.
+  if (dockDemo()) Object.defineProperty(S, 'dock', { configurable: true, enumerable: true, get: () => demoDock(), set() {} });
 
   // ---------- model ----------
   function build() {
@@ -88,7 +93,12 @@ export function createVillage(app) {
   const active = () => !document.hidden && (S.panel !== 'full' || S.peek) && host.clientWidth > 0; // S.peek: peek.js
   // Map (any zoom < 1) is a fit level: the largest of ½, ¼, ⅛ that shows the whole town (every
   // neighbourhood, its streets and the square), centred; the forest ring and the sea fill the rest.
-  const land = () => W.town;
+  // The dock's cove and first berths count as town, so the whole-town view shows them too.
+  const land = () => {
+    if (!W.dock) return W.town;
+    const [a, b, c, d] = W.town, [e, g, h, i] = dockRect(W.dock);
+    return [Math.min(a, e), Math.min(b, g), Math.max(c, h), Math.max(d, i)];
+  };
   // View px: the isometric projection of world px (the simple fallback renderer draws in it too).
   const P = isoP;
   const shift = ([x, y], [ox, oy]) => [x + ox, y + oy];
@@ -142,7 +152,7 @@ export function createVillage(app) {
       for (const it of W.items) if (restingHomes.has(it.id)) { const [x, y, w, h] = itemBox(it); houseHits.push({ ids: restingHomes.get(it.id), x, y, w, h }); }
     }
     const f = { ctx, k: v.k, vx: v.vx, vy: v.vy, bw: v.bw, bh: v.bh, zoom, t, still, night: nightAmount(), agents: placed.vill,
-      selected, cursor, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null };
+      selected, cursor, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null, dock: dockData(S), dockHover: hoverDock };
     if (W && artState === 'ready') hits = renderer.draw(f);
     else if (W && artState === 'failed') hits = drawSimple(f);
     else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = SEA_DEEP; ctx.fillRect(0, 0, cv.width, cv.height); hits = []; }
@@ -166,7 +176,23 @@ export function createVillage(app) {
       ctx.fillRect(x * T, y * T, T + 0.5, T + 0.5);
     }
     for (const v of W.villages) { const b = v.block; ctx.globalAlpha = 0.16; ctx.fillStyle = v.accent; ctx.fillRect(b.x * T, b.y * T, b.w * T, b.h * T); ctx.globalAlpha = 1; }
+    simpleDock = [];
+    let ships = [];
+    if (W.dock) { // the dock: the pier on the water, and a hull at each berth with a PR loading
+      const G = dockGeom(W.dock, f.dock.level);
+      ctx.fillStyle = '#9a6a40'; ctx.fillRect(G.X0, G.Y0, G.X1 - G.X0, G.Y1 - G.Y0);
+      ships = G.berths.slice(0, (f.dock.loading || []).length);
+      const [a] = P(G.X0, G.Y1), [b] = P(G.X1, G.Y0), [, c] = P(G.X0, G.Y0), [, d] = P(G.X1, G.Y1);
+      simpleDock.push({ key: 'dock', x: a, y: c, w: b - a, h: d - c });
+    }
     ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
+    for (const b of ships) {
+      const [x, y] = P(b.x, b.y + 23).map(Math.round);
+      ctx.fillStyle = '#1a1c22'; ctx.fillRect(x - 12, y - 24, 24, 30);
+      ctx.fillStyle = '#6a4630'; ctx.fillRect(x - 11, y - 4, 22, 9);
+      ctx.fillStyle = '#f3ead2'; ctx.fillRect(x - 8, y - 23, 16, 18);
+      simpleDock.push({ key: 'dock', x: x - 12, y: y - 24, w: 24, h: 30 });
+    }
     // Buildings and villagers, back to front.
     const things = [];
     for (const it of W.items) if (it.kind === 'home' || it.kind === 'pr') things.push({ it, d: (it.x + it.w + it.y + it.h) * T });
@@ -231,6 +257,7 @@ export function createVillage(app) {
       if (sv && (folds(sv.a) || sv.crowd)) add(`t:${selected}`, 0, 'tag sel', `${sv.a.name} (${sv.crowd ? 'in the crowd' : 'indoors'})`, ...at(sv.home, sv.door, sv.home.y * T - 4));
       if (W) for (const [homeId, n] of placed.crowd) { const it = W.items.find(i => i.id === homeId); if (it) add(`c:${homeId}`, 6, 'tag', `+${n} more`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 64)); }
       if (zoom >= 3 && W) for (const it of W.items) if (it.kind === 'pr') add(`p:${it.id}`, 5, 'tag prt', `#${it.pr}`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 14));
+      if (zoom >= 3 && renderer && artState === 'ready') for (const g of renderer.dockTags()) add(g.key, 5, 'tag prt', g.text, g.x, g.y); // each ship's PR number
     }
     cands.sort((a, b) => a.pri - b.pri);
     const rects = [], want = new Map(), plates = [];
@@ -301,7 +328,7 @@ export function createVillage(app) {
   // Default view: the whole town on one screen. The largest of 2× and 1× at which every neighbourhood
   // (and the square) fits, centred on it; a town too big for 1× opens at Map, which fits everything.
   function fitZoom() {
-    const [x0, y0, x1, y1] = box(W.town), w = x1 - x0 + 2 * T, h = y1 - y0 + 2 * T + 24; // + room for the signs above
+    const [x0, y0, x1, y1] = box(land()), w = x1 - x0 + 2 * T, h = y1 - y0 + 2 * T + 24; // + room for the signs above
     return [2, 1].find(z => w * z <= host.clientWidth && h * z <= host.clientHeight) ?? 0.5;
   }
   // The app can open with the village hidden (the expanded panel covers it): fitting a 0×0 canvas would
@@ -311,7 +338,7 @@ export function createVillage(app) {
     if (!W) return;
     if (!host.clientWidth) { homeLater = true; return; }
     homeLater = false;
-    const [x0, y0, x1, y1] = box(W.town);
+    const [x0, y0, x1, y1] = box(land());
     zoom = fitZoom();
     panTo((x0 + x1) / 2, (y0 + y1) / 2 - 6, animate);
   }
@@ -337,6 +364,8 @@ export function createVillage(app) {
   function pick(e) {
     const [x, y] = toWorld(e);
     for (let i = hits.length - 1; i >= 0; i--) { const h = hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) return { id: h.id }; }
+    const dk = !W ? null : artState === 'ready' ? renderer.dockHit(x, y) : simpleDock.find(h => x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h);
+    if (dk) return { dock: dk.key };
     for (const h of houseHits) if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) return { id: h.ids[0], house: true };
     if (zoom < 1 && W) { // Map: a click on a village zooms into it
       const [wx, wy] = isoInv(x, y);
@@ -385,8 +414,9 @@ export function createVillage(app) {
       return;
     }
     const p = pick(e), id = p?.id || null;
-    host.classList.toggle('hovering', !!(id || p?.village));
+    host.classList.toggle('hovering', !!(id || p?.village || p?.dock));
     if ((p?.village?.name || null) !== hoverVil) { hoverVil = p?.village?.name || null; invalidate(); }
+    if ((p?.dock || null) !== hoverDock) { hoverDock = p?.dock || null; invalidate(); } // the dock (or one ship) lights up its outline
     if (id !== hover) { hover = p?.house ? null : id; invalidate(); }
   });
   cv.addEventListener('pointerup', e => {
@@ -397,11 +427,13 @@ export function createVillage(app) {
     if (d.moved) { const v = view(); clamp(v.bw, v.bh); remember(); return; }
     const p = pick(e);
     if (p?.village) { zoom = 2; panTo(...P((p.village.cx + 0.5) * T, (p.village.cy + 0.5) * T)); remember(); return; }
+    // The dock or a ship: the PR panel (dock.js) opens on this event; a ship says which PR it is.
+    if (p?.dock) { window.dispatchEvent(new CustomEvent('va:dock', { detail: { href: p.dock.startsWith('ship:') ? p.dock.slice(5) : null } })); return; }
     app.select(p ? p.id : null, { fromVillage: true, pan: false });
   });
   // Double-click a villager: open it in the built-in terminal (or its menu, which says why it can't be).
   cv.addEventListener('dblclick', e => { const p = pick(e); if (p?.id && !p.village) app.activate(p.id, { x: e.clientX, y: e.clientY }); });
-  cv.addEventListener('pointerleave', () => { if (hover) { hover = null; invalidate(); } host.classList.remove('hovering'); });
+  cv.addEventListener('pointerleave', () => { if (hover || hoverDock) { hover = null; hoverDock = null; invalidate(); } host.classList.remove('hovering'); });
   let wheelAcc = 0;
   cv.addEventListener('wheel', e => {
     e.preventDefault();
@@ -464,7 +496,7 @@ export function createVillage(app) {
       if (W && townSig !== lastTown && lastTown && !userMoved && !selected) home(false);
       lastTown = townSig;
       updateAria();
-      sceneSig = JSON.stringify([state, sig, [...placed.vill.values()].map(p => [p.a.id, p.a.bucket, p.a.severity, p.a.prompt, p.a.name, p.x, p.y, p.crowd, p.look])]);
+      sceneSig = JSON.stringify([state, sig, [...placed.vill.values()].map(p => [p.a.id, p.a.bucket, p.a.severity, p.a.prompt, p.a.name, p.x, p.y, p.crowd, p.look]), dockSig(dockData(S))]);
       if (sceneSig !== was || animating()) invalidate();
     },
     setSelected(id, { pan = true } = {}) {
@@ -484,7 +516,7 @@ export function createVillage(app) {
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
     debug: () => ({ zoom, iso: true, cam: { ...cam }, clusters,
       outdoors: [...placed.vill.values()].filter(p => !folds(p.a) && !p.crowd).map(p => p.a.id), homes: W?.items.filter(it => it.kind === 'home').map(it => it.agentId) || [], badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
-      town: W?.town, square: W?.square, quiet, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
+      town: W?.town, square: W?.square, quiet, dock: W?.dock ? { ...W.dock, rect: dockRect(W.dock) } : null, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
       ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), depthCheck: () => (renderer && artState === 'ready' ? renderer.depthCheck() : []),
       // Footprint tiles of each item that aren't land (0 = it stands on the island).
       items: W?.items.map(it => { let wet = 0; for (let j = it.y; j < it.y + it.h; j++) for (let i = it.x; i < it.x + it.w; i++) if (!W.land.has(`${i},${j}`)) wet++; return { id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, village: it.village.name, kind: it.kind, building: it.building, look: it.look, wet }; }) }),
