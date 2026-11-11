@@ -508,6 +508,11 @@ export function createTermView(app, { termName, terminal, onClose }) {
       if (e.type === 'keydown') { e.preventDefault(); close(); }
       return false;
     }
+    // Shift+Enter: a new line, not send. ESC CR is what Claude Code's own terminal setup binds it to.
+    if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.type === 'keydown') { e.preventDefault(); c.term.input('\x1b\r', true); }
+      return false;
+    }
     const mod = MAC ? e.metaKey && !e.ctrlKey && !e.altKey : e.ctrlKey && e.shiftKey && !e.altKey;
     if (!mod) return true;
     const k = e.key.toLowerCase();

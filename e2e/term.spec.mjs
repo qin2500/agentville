@@ -281,6 +281,23 @@ test('keys typed while the terminal is still attaching are sent once it is live;
   await expect(notice(page)).toBeHidden()
 })
 
+test('Shift+Enter types a new line (ESC CR, as Claude Code expects); Enter still sends', async ({ page }) => {
+  const sent = []
+  await page.routeWebSocket(/\/api\/term\/ws/, (ws) => {
+    const server = ws.connectToServer()
+    ws.onMessage((m) => { if (typeof m === 'string') { try { const j = JSON.parse(m); if (j.type === 'input') sent.push(j.data) } catch {} } server.send(m) })
+    server.onMessage((m) => ws.send(m))
+  })
+  await inspect(page, ID)
+  await enter(page)
+  sent.length = 0
+  await page.keyboard.type('one')
+  await page.keyboard.press('Shift+Enter')
+  await page.keyboard.type('two')
+  await page.keyboard.press('Enter')
+  await expect.poll(() => sent.join('')).toBe('one\x1b\rtwo\r')
+})
+
 test('typing while disconnected is not sent, and says so; it works again once reconnected', async ({ page }) => {
   const socks = await proxySockets(page)
   await inspect(page, ID)
