@@ -41,6 +41,7 @@ const DEBUG = params.has('debug');
 // The DOM renderer by default: WebGL mis-measured cells in the desktop app (tiny, widely spaced glyphs).
 // WebGL only on request with ?webgl.
 const WEBGL = params.has('webgl');
+const HOLD_MS = 2000; // keys typed while a terminal is still attaching are held this long, then dropped
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? '⌘' : 'Ctrl+';
 const token = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -242,6 +243,7 @@ export function createTermView(app, { termName, terminal, onClose }) {
           if (c.disposed || c.ws !== ws) return;
           c.live = true;
           waiting(c, false);
+          flushHeld(c);
           fitNow({ repaint: true }); // our real size, and a SIGWINCH so a TUI redraws at it
           if (c === cur) paintJump();
         });
@@ -278,6 +280,7 @@ export function createTermView(app, { termName, terminal, onClose }) {
     ws.onclose = ev => {
       if (c.disposed || c.ws !== ws) return;
       c.ws = null; c.live = false;
+      if (c.held) { c.held = null; if (!c.exited) setNotice(c, 'Reconnecting — what you just typed was not sent. Typing works again in a moment.', { dropped: true }); }
       clearTimeout(c.ping); c.ping = 0;
       if (c.exited) return;
       if (ev.code === 1012) c.restarting = true;
@@ -296,7 +299,7 @@ export function createTermView(app, { termName, terminal, onClose }) {
   /** Forget a socket without waiting for it to close (a dead one can take minutes to say so). */
   function dropSocket(c) {
     clearTimeout(c.ping); c.ping = 0;
-    c.live = false; c.snapshot = false;
+    c.live = false; c.snapshot = false; c.held = null;
     const ws = c.ws;
     if (!ws) return;
     c.ws = null;
@@ -355,6 +358,22 @@ export function createTermView(app, { termName, terminal, onClose }) {
     }
     setNotice(c, 'Reconnecting — what you just typed was not sent. Typing works again in a moment.', { dropped: true });
     if (!c.busy && !c.ws) { c.tries = 0; connect(c, { auto: true }); }
+  }
+
+  /** Keys typed in the moment between the socket opening and the screen arriving: sent once it is live. */
+  function hold(c, d) {
+    if (!c.held) { c.held = { data: '', at: Date.now() }; setTimeout(() => expireHeld(c), HOLD_MS); }
+    if (c.held.data.length < 4096) c.held.data += d;
+  }
+  function expireHeld(c) {
+    if (!c.held || c.disposed) return;
+    c.held = null; // never live within the window: not sent, and said so
+    dropped(c);
+  }
+  function flushHeld(c) {
+    if (c.notice?.dropped) setNotice(c, '');
+    const h = c.held; c.held = null;
+    if (h && Date.now() - h.at <= HOLD_MS && c.ws?.readyState === 1) c.ws.send(JSON.stringify({ type: 'input', data: h.data }));
   }
 
   /** A quiet "Starting…" inside a terminal that has nothing to show yet, after a beat (no flash). */
@@ -457,7 +476,12 @@ export function createTermView(app, { termName, terminal, onClose }) {
     host.append(wait);
     if (WEBGL) loadWebgl(c);
     const send = d => { if (c.live && c.ws?.readyState === 1) { c.ws.send(JSON.stringify({ type: 'input', data: d })); return true; } return false; };
-    term.onData(d => { if (!send(d)) dropped(c); });
+    term.onData(d => {
+      if (send(d)) { if (c.notice?.dropped) setNotice(c, ''); return; }
+      // An open socket that is still attaching (the snapshot is on its way): hold the keys a moment.
+      if (!c.exited && c.ws?.readyState === 1) { hold(c, d); return; }
+      dropped(c);
+    });
     term.onBinary(d => { send(d); }); // mouse reports in the legacy encoding
     term.onScroll(() => { if (c === cur) paintJump(); });
     search.onDidChangeResults?.(({ resultIndex, resultCount }) => {

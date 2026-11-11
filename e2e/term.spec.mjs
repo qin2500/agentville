@@ -259,6 +259,28 @@ test('a socket that drops while the process runs reconnects on its own; typing w
   expect(starts()).toBe(n) // re-attached, never a second `claude attach`
 })
 
+test('keys typed while the terminal is still attaching are sent once it is live; no notice sticks', async ({ page }) => {
+  // Hold the screen snapshot (the first binary frame) back a moment, as a busy server does.
+  await page.routeWebSocket(/\/api\/term\/ws/, (ws) => {
+    const server = ws.connectToServer()
+    let first = true
+    server.onMessage((m) => {
+      if (first && typeof m !== 'string') { first = false; setTimeout(() => ws.send(m), 1200); return }
+      ws.send(m)
+    })
+    ws.onMessage((m) => server.send(m))
+  })
+  await inspect(page, ID)
+  await page.locator('#drawer [data-act="term"]').click()
+  await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
+  await typeLine(page, 'early keys') // before the snapshot has arrived
+  await expect(screen(page)).toContainText('echo: early keys')
+  await expect(notice(page)).toBeHidden()
+  await typeLine(page, 'later keys')
+  await expect(screen(page)).toContainText('echo: later keys')
+  await expect(notice(page)).toBeHidden()
+})
+
 test('typing while disconnected is not sent, and says so; it works again once reconnected', async ({ page }) => {
   const socks = await proxySockets(page)
   await inspect(page, ID)
