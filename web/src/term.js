@@ -962,7 +962,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
       if (open) close();
       layout = null; // it lives in Ghostty now: opening one of them again starts a single pane
     } catch (err) {
-      if (!c.disposed) showErr(c, err instanceof TypeError ? "Couldn't reach the Village server." : err.message);
+      if (!c.disposed) showErr(c, err instanceof TypeError ? "Couldn't reach the Agentville server." : err.message);
     } finally {
       b.disabled = false; b.removeAttribute('aria-busy');
       b.textContent = popLabel();
