@@ -67,12 +67,12 @@ export function createUpdate(app) {
       return;
     }
     if (U.view === 'stuck') {
-      dlg.innerHTML = `${head('Agentville didn’t come back', 'The update is installed, but the server hasn’t restarted. Start it again with <code>npm start</code> or the Desktop launcher.')}
+      dlg.innerHTML = `${head('Agentville didn’t come back', 'The update is installed, but the server hasn’t restarted. Quit and reopen Agentville to start it again.')}
         <footer><button class="primary" type="button" data-upd="close">Close</button></footer>${live}`;
       return;
     }
     if (U.view === 'done') {
-      dlg.innerHTML = `${head('Updated. Restart Agentville to use it.', 'Stop the server (Ctrl-C in its terminal) and run <code>npm start</code> again, or quit and reopen the Desktop launcher.')}
+      dlg.innerHTML = `${head('Updated. Restart Agentville to use it.', 'Quit and reopen Agentville. (A server you started yourself: stop it and start it again.)')}
         <footer><button class="primary" type="button" data-upd="close">Done</button></footer>${live}`;
       return;
     }

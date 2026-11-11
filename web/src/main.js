@@ -547,7 +547,7 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="notify-input" ${S.notifyOn.input ? 'checked' : ''}>…when an agent needs your input</label>
       <label><input type="checkbox" data-set="notify-finished" ${S.notifyOn.finished ? 'checked' : ''}>…when an agent finishes (its turn or its job)</label>
       <label><input type="checkbox" data-set="notify-checks" ${S.notifyOn.checks ? 'checked' : ''}>…when a PR's checks start failing</label>
-      <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked for this page in your browser's site settings.</p>
+      <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked. Allow Agentville under System Settings › Notifications.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
       <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label></div>${update.menuHTML()}`;
     return;

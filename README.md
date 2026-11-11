@@ -5,7 +5,7 @@ glance who's building, who's waiting on something, and who needs you.
 
 ![Agentville: the village of agents beside the agent list](docs/screenshot-village.png)
 
-Agentville is a small local web app. It reads the session files Claude Code and Codex already write
+Agentville is a small desktop app (Electron, macOS first). It reads the session files Claude Code and Codex already write
 to your disk and shows each agent as a villager, with a dark-mode list on the left of the village. There's
 nothing to sign up for, and nothing leaves your machine except the usage and update checks described
 under [Privacy & safety](#privacy--safety).
@@ -21,7 +21,7 @@ under [Privacy & safety](#privacy--safety).
 | **Building** | It's actively working right now. | A live session mid-turn, a background job the scheduler reports active. |
 
 Agents quiet for 24 hours, or that finished cleanly, are **resting**: tucked away by default but
-searchable. The tab title shows how many are stalled, and Settings can turn on desktop
+searchable. The window title shows how many are stalled, and Settings can turn on desktop
 notifications. The exact rules are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#how-agents-are-sorted-into-buckets).
 
 **Hierarchy.** If you run orchestrators, Agentville shows the structure: a **boss** with its
@@ -96,28 +96,29 @@ program when it tracks the mouse (Claude Code's full-screen mode), as in any ter
 
 ## Quick start
 
+Agentville is a desktop app. There is no browser version. Build and install it from a clone:
+
 ```sh
 git clone https://github.com/qin2500/agentville.git
 cd agentville
-./setup.sh      # checks Node, installs dependencies, builds the app; on macOS offers a Desktop launcher
-npm start       # then open http://127.0.0.1:5275/
+./setup.sh                       # checks Node, installs dependencies, builds the web app
+npm run app:build -- --install   # builds Agentville.app and copies it to ~/Applications
 ```
 
-`./setup.sh` is safe to re-run. `--no-launcher` skips the launcher and `--launcher` makes it without
-asking; `npm run setup` does the same. Stop the server with Ctrl-C.
+Then open **Agentville** from `~/Applications`. `./setup.sh` is safe to re-run (`npm run setup` does
+the same).
 
 ## Desktop app
 
-Prefer a window of its own to a browser tab? Agentville can run as a desktop app (Electron). It's a
-thin shell around the same thing: it reuses a server already answering on the port, or runs
-`node server/cli.mjs` from your checkout itself, then shows `http://127.0.0.1:5275/`. The page, its
-keys, settings and data are exactly the browser's.
+The app is a thin Electron shell around a local server: it reuses a server already answering on
+`127.0.0.1:5275`, or runs `node server/cli.mjs` from your checkout itself, then shows its page in the
+window. Quit stops a server it started.
 
 ```sh
-npm run app                      # try it straight from the checkout
-npm run app:build                # build dist-app/…/Agentville.app (macOS; signed ad hoc)
-npm run app:build -- --install   # …and copy it to ~/Applications (or --install <folder>)
+npm run app:build -- --install   # build Agentville.app (macOS; signed ad hoc) into ~/Applications (or --install <folder>)
+npm run app:build                # build dist-app/…/Agentville.app only
 npm run app:build -- --repo DIR  # run the checkout at DIR instead of this one
+npm run app                      # run it straight from the checkout, without building (any OS)
 ```
 
 - **Updates reach it without a rebuild.** The app runs the server and page from your checkout, so
@@ -127,15 +128,13 @@ npm run app:build -- --repo DIR  # run the checkout at DIR instead of this one
   it? Run `npm run app:build -- --install` again, or put `{"repo": "/path/to/agentville"}` in
   `~/Library/Application Support/Agentville/config.json`. `AGENTVILLE_DESKTOP_REPO` overrides both.
 - **Port:** `AGENTVILLE_PORT`, else `"port"` in that `config.json`, else 5275.
-- **Node:** your own Node 22.13+ (found like the launcher does: `~/.local/bin`, volta, fnm, nvm,
-  Homebrew, `/usr/local/bin`, then `PATH`; `AGENTVILLE_DESKTOP_NODE` picks one), so the built-in
-  terminal and updates behave as in browser mode. Without one it falls back to Electron's own Node.
+- **Node:** your own Node 22.13+ (looked for in `~/.local/bin`, volta, fnm, nvm, Homebrew,
+  `/usr/local/bin`, then `PATH`; `AGENTVILLE_DESKTOP_NODE` picks one), so the built-in terminal and
+  updates work. Without one it falls back to Electron's own Node.
 - **Quit** stops a server the app started, never one it found running. Closing the window on macOS
   hides it (notifications keep coming); click the Dock icon to bring it back. Your agents are never touched.
 - **Links** to anything but the local server (pull requests, docs) open in your default browser. The
   page gets no Node access (context isolation, sandbox, no preload); DevTools are under *View*.
-- **Browser storage is the app's own,** so view choices you made in a browser tab (docked or full,
-  village style) start from their defaults once. Settings the server keeps are shared.
 - Logs: `~/Library/Application Support/Agentville/server.log` (a server the app started) and
   `app.log`. Window size and position are remembered there too.
 - **Icon:** drawn in code by `tools/icon` (pixel art, no image assets): `npm run icon` redraws
@@ -157,7 +156,7 @@ your own. Otherwise it says why and shows the commands to run yourself:
 ```sh
 cd agentville
 git pull origin main
-./setup.sh      # then restart Agentville (Ctrl-C and npm start, or reopen the launcher)
+./setup.sh      # then quit and reopen Agentville
 ```
 
 The check needs a `git clone` of Agentville and `git` on your PATH; anywhere else it is quietly off.
@@ -169,16 +168,15 @@ To turn it off, set `AGENTVILLE_UPDATE_CHECK=0`. A fork checks its own `origin`.
   with `brew install node`, or with `nvm install 22`.
 - **Claude Code and/or Codex**, used on this machine. Either one is enough. With neither, Agentville
   still starts and tells you where it looked.
-- **macOS** gets everything. **Linux** runs the server, the village and every view. The Desktop
-  launcher, Keychain-backed accounts and the work-Wi-Fi rule are macOS-only. On Linux, Claude's login
+- **macOS** gets everything. **Linux** runs the app with `npm run app`, the village and every view.
+  Keychain-backed accounts and the work-Wi-Fi rule are macOS-only. On Linux, Claude's login
   is read from `~/.claude/.credentials.json`.
-- Optional: the Xcode command line tools (`xcode-select --install`) to build the Desktop launcher, and
-  [Ghostty](https://ghostty.org) 1.3+ if you'd rather **Open** used it than Terminal.app.
+- Optional: [Ghostty](https://ghostty.org) 1.3+ if you'd rather **Open** used it than Terminal.app.
 
 ## How it works
 
 The server (`server/`, plain Node, no framework) scans `~/.claude` and `~/.codex` every couple of
-seconds while the page is open, reading only bounded pieces of each file. It turns what it finds into
+seconds while the app is open, reading only bounded pieces of each file. It turns what it finds into
 one record per agent, sorts them into buckets and a hierarchy, and serves that to the web app (`web/`,
 vanilla JS and Canvas, built with Vite) on `127.0.0.1:5275`. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 has the details.
@@ -267,19 +265,19 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
 
 ## Troubleshooting
 
-- **"Port 5275 is in use."** Something else, maybe another Agentville, is on that port. Stop it, or
-  run `AGENTVILLE_PORT=5300 npm start`.
+- **"Port 5275 is in use."** Something else is on that port. Stop it, or pick another port with
+  `{"port": 5300}` in `~/Library/Application Support/Agentville/config.json` (or `AGENTVILLE_PORT`).
 - **"Agentville needs Node.js 22.13 or newer."** Install a current Node (see Requirements), open a new
   terminal and run `./setup.sh` again. With nvm, run `nvm use 22` first.
 - **No agents showing.** The list says which folders it looked in and whether they exist. Start a
   Claude Code or Codex session and it appears within a few seconds. If your Claude folder is somewhere
   else, set `CLAUDE_CONFIG_DIR` (or `AGENTVILLE_CLAUDE_HOME`). Resting agents are tucked away: search
   for them, or open the Resting section.
-- **macOS won't open the launcher.** It's built and signed on your own Mac, so Gatekeeper rarely
+- **macOS won't open the app.** It's built and signed on your own Mac, so Gatekeeper rarely
   objects. If it does, right-click **Agentville.app** → **Open** → **Open**, or allow it under System
   Settings → Privacy & Security. Startup errors appear in a dialog, with details in
-  `~/.config/agentville/launcher.log`. The app remembers where this folder is, so run
-  `./setup.sh --launcher` again if you move it.
+  `~/Library/Application Support/Agentville/server.log`. The app remembers where this folder is, so
+  run `npm run app:build -- --install` again if you move it.
 - **Open does nothing, or says it was "denied Automation access".** The first time, macOS asks whether
   your terminal (or node) may control Ghostty or Terminal. Allow it under System Settings → Privacy &
   Security → Automation.
@@ -450,7 +448,7 @@ ones that matter.
 ```sh
 npm test                                     # unit tests (node --test), synthetic fixtures only
 npx playwright install chromium              # once
-npx playwright test                          # end-to-end tests against a fixture home
+npx playwright test                          # the page's UI specs in Chromium against a fixture home
 npm run test:app                             # the desktop app via Playwright's Electron driver (launched hidden)
 node test/fixtures/make-home.mjs /tmp/demo   # write a fake boss/leads/subs + Codex home; prints the env to use
 npm run dev:web                              # Vite dev server (proxies /api to :5275); add ?mock for fake data

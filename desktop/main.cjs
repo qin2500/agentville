@@ -1,6 +1,6 @@
 'use strict'
 /**
- * The desktop app: a thin Electron shell around the same local server and page as browser mode.
+ * The desktop app, the only way to use Agentville: a thin Electron shell around the local server and its page.
  *
  * It finds the checkout (see shell.cjs resolveSettings), reuses a server already answering on the
  * port or starts `node server/cli.mjs` from the checkout itself, then shows http://127.0.0.1:<port>/
@@ -99,7 +99,7 @@ function stopServer(ms = 8000) {
 /** Reuse a running server or start one; resolves true once the page can load. */
 async function ensureServer() {
   let state = await S.probe(settings.port)
-  if (state === 'other') { // maybe the browser launcher is mid-start; give it a moment
+  if (state === 'other') { // maybe another start is mid-way; give it a moment
     for (let i = 0; i < 10 && state === 'other'; i++) { await sleep(500); state = await S.probe(settings.port) }
   }
   if (state === 'ours') { log('reusing the server on port', settings.port); return true }
@@ -198,14 +198,14 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: false,
-      // No preload: the page gets nothing a browser tab wouldn't have.
+      // No preload: the page gets no Node or Electron access.
     },
   })
   if (saved.maximized && !HEADLESS) win.maximize() // maximize() would also show it
   if (!HEADLESS) win.once('ready-to-show', () => win.show())
   for (const ev of ['resize', 'move']) win.on(ev, saveState)
-  // macOS: closing the window hides it, so notifications and chimes carry on, as in a browser tab
-  // left open. The Dock icon brings it back; Quit really quits.
+  // macOS: closing the window hides it, so notifications and chimes carry on. The Dock icon brings
+  // it back; Quit really quits.
   win.on('close', (e) => {
     saveState()
     if (process.platform === 'darwin' && !quitting) { e.preventDefault(); if (win.isFullScreen()) win.setFullScreen(false); win.hide() }
@@ -276,7 +276,6 @@ function buildMenu() {
     {
       label: 'File',
       submenu: [
-        { label: 'Open in Browser', click: () => origin && openExternal(`${origin}/`) },
         { label: 'Show Server Log', click: () => shell.showItemInFolder(LOG_FILE) },
         ...(mac ? [] : [{ label: 'Restart Server', click: () => restartServer() }]),
         { type: 'separator' },

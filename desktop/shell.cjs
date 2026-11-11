@@ -69,7 +69,7 @@ function resolveSettings({ env = process.env, configFile, bakedRepoFile, devRepo
   return { repo, port, sources: { repo: repoFrom, port: portFrom }, problems }
 }
 
-/** The folders a Finder-launched app should also search for node, git, claude and codex (as launch.sh). */
+/** The folders a Finder-launched app should also search for node, git, claude and codex. */
 function extraPath(home = os.homedir()) {
   let nvm = null
   try {
@@ -101,8 +101,8 @@ const nodeOk = (v) => !!v && compareVersions(v, MIN_NODE.join('.')) >= 0
 
 /**
  * The system Node to run the server with: <ENV>_DESKTOP_NODE, else the first `node` on the
- * augmented PATH that is new enough. The same Node the browser launcher uses, so native modules
- * (node-pty) and `npm` next to it work exactly as they do in browser mode. Null when there is none.
+ * augmented PATH that is new enough, so native modules (node-pty) and `npm` next to it work as they do
+ * from a terminal. Null when there is none.
  */
 function findNode({ env = process.env, home = os.homedir(), version = nodeVersion } = {}) {
   const pinned = env[envKey('DESKTOP_NODE')]
@@ -158,7 +158,7 @@ function isExternal(url) {
   try { return ['http:', 'https:', 'mailto:'].includes(new URL(url).protocol) } catch { return false }
 }
 
-/** Permissions the page may use, as in the browser: notifications and writing to the clipboard. */
+/** Permissions the page may use: notifications, writing to the clipboard and full screen. */
 const ALLOWED_PERMISSIONS = new Set(['notifications', 'clipboard-sanitized-write', 'fullscreen'])
 
 /**

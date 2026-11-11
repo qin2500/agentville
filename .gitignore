@@ -15,7 +15,7 @@ playwright-report/
 blob-report/
 coverage/
 
-# macOS launcher build output
+# app bundles
 *.app/
 
 # OS and editor clutter

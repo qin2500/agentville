@@ -51,8 +51,8 @@ compares again from the merge base with `origin/main`. Offline or rate-limited, 
 answer and retries in 30 min or after the reset. `GET /api/update` reports it; `POST
 /api/update/apply` (local, same-origin, like every POST) re-checks the tree, fast-forwards, runs
 `npm ci` if `package-lock.json` changed and `npm run build`, responds, then restarts: from a terminal
-the old process stays as a thin parent (so Ctrl-C still works), from the launcher a detached copy
-takes over the same log. `web/src/update.js` prompts once per latest sha (`va.update.seen`) and
+the old process stays as a thin parent (so Ctrl-C still works), under the desktop app it exits with
+code 75 and the app starts it again, and in the background a detached copy takes over the same log. `web/src/update.js` prompts once per latest sha (`va.update.seen`) and
 reloads when a server with a new `startedAt` answers.
 
 ## How agents are sorted into buckets

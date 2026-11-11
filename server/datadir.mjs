@@ -5,8 +5,7 @@
  *
  * The old folder can hold saved Claude logins and their backups, so the move never deletes anything
  * it hasn't copied, never overwrites, and never prints a file name. Run as a script
- * (`node server/datadir.mjs`), it does just the move; the macOS launcher calls it before it writes
- * its log into the new folder.
+ * (`node server/datadir.mjs`), it does just the move.
  */
 import fs from 'node:fs'
 import os from 'node:os'

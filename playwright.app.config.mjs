@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
 // The desktop app (Electron, desktop/) against throwaway fixture servers: `npm run test:app`.
-// Separate from playwright.config.mjs so browser-mode runs never need the Electron binary.
+// Separate from playwright.config.mjs so the page-level UI specs (e2e/) never need the Electron binary.
 export default defineConfig({
   testDir: 'e2e-app',
   outputDir: 'test-results/app',

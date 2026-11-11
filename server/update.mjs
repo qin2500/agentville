@@ -66,8 +66,8 @@ function defaultNpm() {
  * wrapper); returns false when it can't be done safely, so the page says "restart it yourself".
  *
  * From a terminal (`npm start`), a detached copy would outlive Ctrl-C and the shell, so the old
- * process stays as a thin parent instead: same terminal, Ctrl-C still stops both. From the Desktop
- * launcher (nohup, output to a log) the new copy is detached and writes to the same log. Under the
+ * process stays as a thin parent instead: same terminal, Ctrl-C still stops both. Started in the
+ * background (nohup, output to a log) the new copy is detached and writes to the same log. Under the
  * desktop app it just exits with DESKTOP_RESTART_EXIT and the app starts it again.
  */
 export function canRestartSelf() {
