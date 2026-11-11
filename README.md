@@ -39,8 +39,8 @@ a session that isn't a background job), **Fork…**, **Stop job…**, **Mark imp
 role and parent) and **Hide in village**. On the keyboard, the menu key or Shift+F10 opens it on the
 focused row.
 
-**Colour and marks.** An agent's Claude Code `/color` shows as a bar along its row, card and Tree
-node, in the menu header and on the selection highlight; with no colour set, there's no bar.
+**Colour and marks.** An agent's Claude Code `/color` tints the role icon beside its name (like an avatar),
+the menu header and the selection highlight, so it never competes with the status edge; with no colour set, the icon stays plain.
 **Mark important** keeps an agent from ever being folded or hidden automatically (only **Hide in
 village** removes it) and puts it in [Restore after crash](#restore-after-crash). Agents that have
 been quiet for more than 10 days leave the app altogether (nothing on disk is touched); live and
