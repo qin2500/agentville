@@ -257,7 +257,8 @@ export function createPanel(app) {
   const roots = agents => agents.filter(a => !a.parentId || !S.byId.has(a.parentId));
   // Resting leaves collapse to "+ N resting" unless searching or the group was expanded.
   function splitKids(a, keep) {
-    const ks = kidsOf(a).filter(k => keep.has(k.id)).sort(byBucket);
+    // A crowned agent is listed with the Crowns, never nested under another boss.
+    const ks = kidsOf(a).filter(k => keep.has(k.id) && !crowned(k)).sort(byBucket);
     if (S.query || S.restExpanded?.has(a.id)) return { shown: ks, rest: 0 };
     const shown = ks.filter(k => !folds(k) || kidsOf(k).length); // Important ones never fold
     return { shown, rest: ks.length - shown.length };
@@ -313,7 +314,8 @@ export function createPanel(app) {
     const sets = teamSets(agents);
     if (S.panel === 'full') return fullTeam(agents, sets);
     computeReveal(sets);
-    const top = roots(agents).filter(a => sets.keep.has(a.id)).sort(byWorst);
+    // Roots, plus every crowned agent even when it reports to another boss.
+    const top = agents.filter(a => sets.keep.has(a.id) && (crowned(a) || !a.parentId || !S.byId.has(a.parentId))).sort(byWorst);
     // Crowned agents (bosses) come first, together, ahead of the other teams and the solos.
     const crowns = top.filter(crowned);
     const heads = top.filter(a => !crowned(a) && kidsOf(a).some(k => sets.keep.has(k.id)));
