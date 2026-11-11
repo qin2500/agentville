@@ -37,6 +37,7 @@ const S = {
   // 'va.view' once also held the village's 'iso'/'flat' string, or the old Status and Table views (now Team).
   views: viewsFrom(store.get('va.view')),
   panelW: store.get('va.panelW', null), // user-dragged docked width (px); null = the CSS default
+  termFullW: store.get('va.termFullW', null), // same for the full-screen list beside a terminal; null = .34fr
   compact: store.get('va.density', 'comfortable') === 'compact',
   sound: store.get('va.sound', false),
   notify: store.get('va.notify', false), // desktop notification when an agent starts waiting for a click
@@ -432,27 +433,44 @@ function setPanel(mode) {
   village.setActive();
 }
 // ---------- resizable panel: drag or arrow the splitter; past 75% of the window snaps to full ----------
-const MIN_W = 320;
+// In the terminal view the same splitter resizes the list: docked it shares the docked width; full-screen
+// it has its own (va.termFullW). There the terminal keeps >= 360px (and the village peek its column), and
+// there is no snap to full.
+const MIN_W = 320, MIN_TERM_W = 220, MIN_TERM = 360;
 const splitter = $('splitter');
-const maxW = () => Math.max(MIN_W, $('main').clientWidth - 160);
+const tfull = () => !!S.term && S.panel === 'full'; // full-screen list beside the terminal
+const minW = () => (S.term ? MIN_TERM_W : MIN_W);
+const maxW = () => {
+  const m = $('main').clientWidth;
+  if (!S.term) return Math.max(MIN_W, m - 160);
+  const peek = S.peek ? Math.round($('village').getBoundingClientRect().width) : 0;
+  return Math.max(MIN_TERM_W, m - MIN_TERM - peek);
+};
+const curW = () => (tfull() ? S.termFullW : S.panelW);
 function applyPanelWidth() {
-  const w = S.panelW && Math.min(S.panelW, maxW());
-  if (w) $('main').style.setProperty('--panel-w', `${w}px`); else $('main').style.removeProperty('--panel-w');
-  const now = Math.round($('panel').getBoundingClientRect().width) || w || 400;
-  splitter.setAttribute('aria-valuemin', MIN_W);
+  const m = $('main');
+  const fw = S.termFullW && Math.max(MIN_TERM_W, Math.min(S.termFullW, maxW()));
+  if (S.termFullW) m.style.setProperty('--tfull-w', `${fw}px`); else m.style.removeProperty('--tfull-w');
+  const w = S.panelW && Math.min(S.panelW, Math.max(maxW(), minW()));
+  if (w) m.style.setProperty('--panel-w', `${w}px`); else m.style.removeProperty('--panel-w');
+  const col = tfull() ? $('list') || $('panel') : $('panel');
+  const now = Math.round(col.getBoundingClientRect().width) || (tfull() ? fw : w) || 400;
+  splitter.setAttribute('aria-valuemin', minW());
   splitter.setAttribute('aria-valuemax', maxW());
   splitter.setAttribute('aria-valuenow', now);
   splitter.setAttribute('aria-valuetext', `${now} pixels wide`);
 }
 function setPanelW(w, persist = true) {
-  S.panelW = Math.round(Math.max(MIN_W, Math.min(maxW(), w)));
-  if (persist) store.set('va.panelW', S.panelW);
+  const v = Math.round(Math.max(minW(), Math.min(maxW(), w)));
+  if (tfull()) { S.termFullW = v; if (persist) store.set('va.termFullW', v); }
+  else { S.panelW = v; if (persist) store.set('va.panelW', v); }
   applyPanelWidth();
   panel.resized();
+  if (S.term) termView.fit(); // the ResizeObserver refits too; this covers the repaint
 }
 let dragW = null;
 splitter.addEventListener('pointerdown', e => {
-  if (e.button !== 0 || S.panel !== 'docked') return;
+  if (e.button !== 0 || (S.panel !== 'docked' && !tfull())) return;
   e.preventDefault();
   splitter.setPointerCapture(e.pointerId);
   dragW = { snap: false };
@@ -462,25 +480,29 @@ splitter.addEventListener('pointermove', e => {
   if (!dragW) return;
   const left = $('main').getBoundingClientRect().left; // the panel is on the left: its right edge follows
   const w = e.clientX - left;
-  dragW.snap = w > innerWidth * 0.75;
+  dragW.snap = !S.term && w > innerWidth * 0.75;
   splitter.classList.toggle('snap', dragW.snap);
   setPanelW(dragW.snap ? maxW() : w, false);
 });
-splitter.addEventListener('pointerup', () => {
+const endW = () => {
   if (!dragW) return;
   const snap = dragW.snap;
   dragW = null;
   document.body.classList.remove('resizing');
   splitter.classList.remove('snap');
   if (snap) { S.panelW = store.get('va.panelW', null); applyPanelWidth(); setPanel('full'); }
+  else if (tfull()) store.set('va.termFullW', S.termFullW);
   else store.set('va.panelW', S.panelW);
-});
+  if (S.term) termView.fit();
+};
+splitter.addEventListener('pointerup', endW);
+splitter.addEventListener('pointercancel', endW);
 splitter.addEventListener('dblclick', () => setPanel(S.panel === 'full' ? 'docked' : 'full'));
 splitter.addEventListener('keydown', e => {
-  const step = e.shiftKey ? 80 : 16, cur = S.panelW || $('panel').getBoundingClientRect().width;
+  const step = e.shiftKey ? 80 : 16, cur = curW() || $('panel').getBoundingClientRect().width;
   if (e.key === 'ArrowRight') setPanelW(cur + step);
   else if (e.key === 'ArrowLeft') setPanelW(cur - step);
-  else if (e.key === 'Home') setPanelW(MIN_W);
+  else if (e.key === 'Home') setPanelW(minW());
   else if (e.key === 'End') setPanelW(maxW());
   else if (e.key === 'Enter') setPanel(S.panel === 'full' ? 'docked' : 'full');
   else return;
