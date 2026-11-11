@@ -11,7 +11,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { isLocalRequest } from './local-request.mjs'
 import { defaultDataDir } from './datadir.mjs'
-import { build } from './classify.mjs'
+import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
@@ -95,6 +95,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const runs = [] // starts, stops and forks in the last minute
   let forks = new Map() // server-private: id -> { sid, cwd } a fork would copy
   let titles = [] // server-private: conversation names for search (never prompt text)
+  let quietIds = new Set() // removed by the last scan: quiet for over QUIET_REMOVE_DAYS
   const changes = createChanges()
   const prStatus = createPrStatus(claude.home)
   const projectStore = createProjectStore(dataDir)
@@ -120,10 +121,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const warnings = []
     const sources = { claude: fs.existsSync(claude.home()), codex: fs.existsSync(codex.home()) }
     const results = await Promise.allSettled([sources.claude ? claude.scan(now) : [], sources.codex ? codex.scan(now) : []])
-    const facts = []
+    const scanned = []
     let unreadable = 0
     results.forEach((r, i) => {
-      if (r.status === 'fulfilled') { facts.push(...r.value); unreadable += r.value.unreadable || 0 }
+      if (r.status === 'fulfilled') { scanned.push(...r.value); unreadable += r.value.unreadable || 0 }
       else warnings.push(`${i ? 'Codex' : 'Claude Code'} scan failed: ${r.reason?.message || r.reason}`)
     })
     if (unreadable) warnings.push(`${unreadable} session file${unreadable === 1 ? '' : 's'} couldn't be read (check file permissions).`)
@@ -131,6 +132,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const fleetData = await fleetStore.load()
     const pending = currentPending(fleetData, now)
     const overrides = await store.load()
+    // Quiet for over QUIET_REMOVE_DAYS (not live, not Important): gone from every view, before any work.
+    const { kept: facts, removed } = dropQuiet(scanned, overrides, now)
+    quietIds = removed
     const agents = build(facts, overrides, now, pending)
     const counts = { building: 0, stalled: 0, waiting: 0, resting: 0, errors: 0, prompts: 0, continuable: 0 }
     for (const a of agents) {
@@ -144,7 +148,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     transcriptOf = new Map(facts.map((f) => [f.id, f.transcriptFile || null]))
     modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null }]))
     forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
+    const keptIds = new Set(facts.map((f) => f.id))
     titles = results.flatMap((r) => (r.status === 'fulfilled' && r.value.titles) || [])
+      .filter((t) => keptIds.has(t.id) || (!removed.has(t.id) && now - (t.at || 0) <= QUIET_REMOVE_MS))
     const byId = new Map(agents.map((a) => [a.id, a]))
     const self = selfId()
     const dirs = new Set()
@@ -169,11 +175,11 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     if (sources.claude) {
       await restore.record(agents, now).catch(logSafely)
       const liveIds = new Set(agents.filter((a) => a.live).map((a) => a.id))
-      fleet.restore = await restore.summary({ important: (id) => overrides[id]?.important === true, live: (id) => liveIds.has(id), now }).catch(() => null)
+      fleet.restore = await restore.summary({ important: (id) => overrides[id]?.important === true, live: (id) => liveIds.has(id), removed: (id) => removed.has(id), now }).catch(() => null)
     } else fleet.restore = null
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
-    const projects = await projectStore.update(agents, now)
+    const projects = await projectStore.update(agents, now, removed)
     return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects }
   }
 
@@ -579,7 +585,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const snap = await snapshot()
         const overrides = await store.load()
         const byId = new Map(snap.agents.map((a) => [a.id, a]))
-        const x = await restore.examine({ important: (id) => overrides[id]?.important === true, live: (id) => byId.get(id)?.live === true })
+        const x = await restore.examine({ important: (id) => overrides[id]?.important === true, live: (id) => byId.get(id)?.live === true, removed: (id) => quietIds.has(id) })
         // The name the rest of the app shows for it (never prompt text), when the scan still knows it.
         const named = (e) => ({ ...e, name: byId.get(e.id)?.safeName || e.name })
         const lostJobs = x.jobs.filter((j) => j.verdict === 'lost').map(named)
@@ -592,7 +598,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         json()
         const body = await readBody(req)
         const overrides = await store.load()
-        const { plans, view } = await restore.preview(body?.ids, { important: (id) => overrides[id]?.important === true })
+        const { plans, view } = await restore.preview(body?.ids, { important: (id) => overrides[id]?.important === true, removed: (id) => quietIds.has(id) })
         return send(res, 200, { ...view, blocked: restoreBlocked(), sendBlocked: sendingBlocked(), confirm: token({ kind: 'restore', plans }) })
       }
       if (url.pathname === '/api/restore/run' && req.method === 'POST') {

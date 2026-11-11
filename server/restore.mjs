@@ -264,7 +264,7 @@ export function createRestore({ dataDir, claudeHome }) {
    * 'removed' | 'no-transcript' | 'not-chosen' (neither a crown agent nor Important).
    * `important(id)` is the current mark, so marking a lost agent after the crash still counts.
    */
-  async function examine({ important = () => false, live = () => false, now = Date.now(), boot = bootTime() } = {}) {
+  async function examine({ important = () => false, live = () => false, removed = () => false, now = Date.now(), boot = bootTime() } = {}) {
     const d = await load()
     const prev = d.previous && !sameBoot(d.previous.boot, boot) && now - (d.previous.at || 0) < KEEP_MS ? d.previous : null
     if (!prev) return { boot, crashBoot: null, at: null, dismissed: false, jobs: [], sessions: [], codex: [] }
@@ -273,6 +273,7 @@ export function createRestore({ dataDir, claudeHome }) {
     const sessions = []
     const codex = []
     for (const e of prev.running) {
+      if (removed(e.id) && !live(e.id)) continue // quiet for over QUIET_REMOVE_DAYS: gone from the app
       const chosen = CROWN_ROLES.includes(e.role) || e.important || important(e.id)
       const base = { id: e.id, name: e.name, project: e.project, cwd: e.cwd, role: e.role, crown: CROWN_ROLES.includes(e.role), important: e.important || important(e.id), seen: e.seen }
       if (e.kind === 'codex') {

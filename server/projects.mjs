@@ -27,8 +27,11 @@ export function createProjectStore(dir) {
     return data
   }
 
-  /** Fold this scan's agents into the registry; returns the `projects` payload. */
-  async function update(agents, now = Date.now()) {
+  /**
+   * Fold this scan's agents into the registry; returns the `projects` payload. `removed`: ids dropped
+   * for being quiet too long; they are not counted, and a project left with only those is not listed.
+   */
+  async function update(agents, now = Date.now(), removed = new Set()) {
     const reg = await load()
     let changed = false
     for (const a of agents) {
@@ -63,7 +66,8 @@ export function createProjectStore(dir) {
       if (!byProject.has(name)) byProject.set(name, [])
       byProject.get(name).push(a)
     }
-    return Object.keys(reg).sort().map((name) => {
+    const gone = (name) => !byProject.has(name) && reg[name].agentIds.some((id) => removed.has(id))
+    return Object.keys(reg).sort().filter((name) => !gone(name)).map((name) => {
       const here = byProject.get(name) || []
       const p = reg[name]
       return {
@@ -81,7 +85,7 @@ export function createProjectStore(dir) {
               (a.prs || []).slice(-LIVE_LAST).some((x) => x.href === href)),
           }
         }).sort((x, y) => x.firstSeenAt - y.firstSeenAt || x.href.localeCompare(y.href)),
-        agentsEver: p.agentIds.length,
+        agentsEver: p.agentIds.filter((id) => !removed.has(id)).length,
         transcriptBytes: here.reduce((n, a) => n + (a.sizeBytes || 0), 0),
         firstSeenAt: p.firstSeenAt,
       }

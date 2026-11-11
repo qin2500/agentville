@@ -14,6 +14,24 @@ import { PAUSED, PREP_MS } from './fleet.mjs'
 
 /** Rule 7's "old". One global threshold. */
 export const REST_MS = 24 * 60 * 60 * 1000
+/** Quiet this long (no transcript write, job update or registry status) and the agent is gone from the app. */
+export const QUIET_REMOVE_DAYS = 10
+export const QUIET_REMOVE_MS = QUIET_REMOVE_DAYS * 24 * 60 * 60 * 1000
+
+/**
+ * Drop agents quiet for over QUIET_REMOVE_DAYS before anything else looks at them. Live agents and
+ * ones marked Important stay. Only a filter: nothing on disk is touched. Returns the kept facts and
+ * the removed ids (a kept child whose parent was removed becomes top-level in `build`).
+ */
+export function dropQuiet(facts, overrides = {}, now = Date.now()) {
+  const kept = []
+  const removed = new Set()
+  for (const a of facts) {
+    if (a.live || overrides[a.id]?.important === true || now - (a.lastActivityAt || 0) <= QUIET_REMOVE_MS) kept.push(a)
+    else removed.add(a.id)
+  }
+  return { kept, removed }
+}
 
 export const REASONS = {
   needsUser: 'Needs your input',
