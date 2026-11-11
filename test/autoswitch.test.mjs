@@ -253,3 +253,11 @@ test('network rule (every 10 s): off a quarantine account at once on the work Wi
     assert.equal(t.live(), t.creds.C)
   } finally { delete process.env.AGENTVILLE_NETWORK_ID; await t.done() }
 })
+
+test('decide: prefers the account whose weekly window resets soonest, then the 5-hour one', () => {
+  const usage = new Map([
+    ['B', { fiveHour: w(10, 600e3), weekly: w(10, 7 * 86400e3) }], // 5-hour resets sooner, but its week resets in 7 days
+    ['C', { fiveHour: w(10, 3 * 3600e3), weekly: w(30, 2 * 86400e3) }], // week resets in 2 days: use it first
+  ])
+  assert.deepEqual(decide({ ...base, usage }), { action: 'switch', to: 'C', why: 'five_hour' })
+})

@@ -6,8 +6,8 @@
  * it) and records 5-hour and weekly samples for the projection (projection.mjs).
  *
  * When the active saved account is out (a window at OUT_AT %, or running agents report a usage
- * limit since the last switch), it switches to the available saved account whose 5-hour window
- * resets soonest; if none is available, to the pool. It uses the normal switch (backups, canary,
+ * limit since the last switch), it switches to the available saved account whose weekly window
+ * resets soonest (then the 5-hour one); if none is available, to the pool. It uses the normal switch (backups, canary,
  * rollback, audit log, running jobs only). Guards: a persisted toggle (default on), one automatic
  * switch per COOLDOWN_MS, never during another switch, never from the pool back to an account.
  *
@@ -51,9 +51,11 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   if (!why) return { action: 'none', why: 'not out' }
   const ok = (u) => u && !u.error && u.fiveHour && u.weekly && u.fiveHour.used < AVAILABLE_BELOW && u.weekly.used < AVAILABLE_BELOW
   // Off the work Wi-Fi quarantine accounts rank first; on it they aren't candidates at all.
+  // Then the account whose weekly allowance resets soonest (use it before it expires), then the 5-hour reset.
   const rank = (id) => (onWork ? 0 : quarantine.has(id) ? 0 : 1)
+  const at = (id, k) => usage.get(id)[k].resetsAt ?? Infinity
   const best = saved.filter((id) => id !== active && ok(usage.get(id)) && !(onWork && quarantine.has(id)) && (why !== 'prefer' || quarantine.has(id)))
-    .sort((a, b) => rank(a) - rank(b) || (usage.get(a).fiveHour.resetsAt ?? Infinity) - (usage.get(b).fiveHour.resetsAt ?? Infinity))[0]
+    .sort((a, b) => rank(a) - rank(b) || at(a, 'weekly') - at(b, 'weekly') || at(a, 'fiveHour') - at(b, 'fiveHour'))[0]
   if (best) return { action: 'switch', to: best, why }
   if (why === 'prefer') return { action: 'none', why: 'no quarantine account available' }
   if (why === 'quarantine') { // off a quarantine account no matter what: the regular one that frees up soonest, used up or not
