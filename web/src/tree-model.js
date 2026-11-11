@@ -5,9 +5,11 @@
 // root; a parent loop is broken at its first-ranked member. Roots with reports are grouped by
 // project (crowned bosses first); roots without reports go to one "Solo" group at the end.
 //
-// Resting subtrees (nobody awake in them) fold into a "+N resting" pill on their parent, and resting
+// Resting subtrees (nobody awake in them; an Important agent counts as awake) fold into a "+N resting" pill on their parent, and resting
 // root teams into a pill on their project's heading, until opened. While filtering, every match and
 // its chain of command show (ancestors that don't match are `ctx`: drawn dimmed), with no pills.
+
+import { folds } from './important.js';
 
 const ROLE_ORDER = { boss: 0, lead: 1, sub: 2, solo: 3 };
 export const SOLO_KEY = 'solo';
@@ -59,7 +61,7 @@ export function buildTree(agents, { matches = null, open = new Set(), collapsed 
       for (const k of kidsOf.get(a.id)) st.push([k, false]);
     } }
   for (const a of post) {
-    let n = 1, w = a.bucket !== 'resting';
+    let n = 1, w = !folds(a); // an Important agent keeps its chain out of the pills
     for (const k of kidsOf.get(a.id)) { n += size.get(k.id); w ||= awake.get(k.id); }
     size.set(a.id, n); awake.set(a.id, w);
   }
@@ -135,7 +137,7 @@ export function buildTree(agents, { matches = null, open = new Set(), collapsed 
 
   let solo = null;
   if (solos.length) {
-    const live = filtering ? solos : solos.filter(a => a.bucket !== 'resting');
+    const live = filtering ? solos : solos.filter(a => !folds(a));
     const rest = solos.length - live.length;
     if (rest) pills.push(SOLO_KEY);
     const open2 = rest > 0 && isOpen(SOLO_KEY);

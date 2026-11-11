@@ -6,6 +6,7 @@
 //                   procedural drawing of the same layout if the sheets don't load.
 import { store } from './ui.js';
 import { isoBuilding, isoExtent } from './iso.js';
+import { pinned, folds, stoppedNote } from './important.js';
 
 const BASE = `${import.meta.env.BASE_URL}assets/ninja-adventure/`;
 export const T = 16;
@@ -142,13 +143,14 @@ const saved = () => { const s = store.get(KEY, null); return s && s.blocks && s.
 export function plan(agents, byId, projects) {
   const S = saved();
   const names = [...new Set(agents.map(a => a.project || '—'))];
-  const hasHome = a => a.role === 'boss' || a.role === 'lead' || !a.parentId || !byId.has(a.parentId);
+  // An Important agent always keeps its own house and villager, whatever its rank or status.
+  const hasHome = a => a.role === 'boss' || a.role === 'lead' || !a.parentId || !byId.has(a.parentId) || pinned(a);
   const villages = names.map(name => {
     const here = agents.filter(a => (a.project || '—') === name);
     const meta = (projects || []).find(p => p.name === name) || {};
     const owners = here.filter(hasHome);
-    const awake = owners.filter(a => a.bucket !== 'resting');
-    const resting = owners.filter(a => a.bucket === 'resting').sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)).slice(0, RESTING_HOMES);
+    const awake = owners.filter(a => !folds(a)); // Important resting agents are never capped away
+    const resting = owners.filter(folds).sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)).slice(0, RESTING_HOMES);
     const homes = [...awake, ...resting];
     // PRs: the server's per-project history (outlives agents); else what agents list right now.
     const all = meta.prs?.length ? meta.prs.map(p => ({ id: String(p.id), live: !!p.live }))
@@ -574,7 +576,7 @@ export function placeAgents(W, agents, byId, seenIdx) {
     const v = { a, home, look, own, sub: a.role === 'sub' && !own, phase: rnd(a.id), crowd: false };
     const door = home.x * T + R[home.look][5], base = (home.y + home.h) * T;
     v.door = door; v.base = base;
-    if (a.bucket === 'resting') { vill.set(a.id, v); continue; }
+    if (folds(a)) { vill.set(a.id, v); continue; } // indoors; an Important one stays out on its doorstep
     // Builders on a live PR work its scaffold (up to 4 per site).
     const site = a.bucket === 'building' && (a.prs || []).map(p => prItem.get(`${home.village.name}#${p.id}`) || prItem.get(`${a.project}#${p.id}`)).find(it => it?.building);
     const n = site ? crews.get(site.id) || 0 : 0;
@@ -871,7 +873,7 @@ function createRenderer(IMG) {
       else list.push(p.banner ? { ...p, x: p.x + ox, y: p.y + oy, base: p.base + oy } : { r: p.r, x: p.x + ox, y: p.y + oy, base: p.base + oy });
     }
     const restingIn = new Map();
-    for (const v of f.agents.values()) if (v.a.bucket === 'resting' && v.own) restingIn.set(v.home.id, (restingIn.get(v.home.id) || 0) + 1);
+    for (const v of f.agents.values()) if (folds(v.a) && v.own) restingIn.set(v.home.id, (restingIn.get(v.home.id) || 0) + 1);
     for (const it of W.items) {
       if (it.kind !== 'home' && it.kind !== 'pr') continue;
       it.px = null; it.iso = null; // set when drawn (night lights, smoke and the zZ use them)
@@ -885,7 +887,7 @@ function createRenderer(IMG) {
     }
     const vills = [];
     for (const v of f.agents.values()) {
-      const hidden = v.a.bucket === 'resting' || v.crowd;
+      const hidden = folds(v.a) || v.crowd;
       const ghost = hidden && v.a.id === f.selected;
       if (hidden && !ghost) continue;
       const d = place(v, ghost, still || v.a.id === f.selected, t);
@@ -914,7 +916,7 @@ function createRenderer(IMG) {
     const order = iso ? isoSort(list) : list.sort((a, b) => a.base - b.base);
     drawOrder = iso ? order : [];
     const pops = [], hits = [], badges = [], resting = new Map();
-    for (const v of f.agents.values()) if (v.a.bucket === 'resting' && v.own) resting.set(v.home.id, (resting.get(v.home.id) || 0) + 1);
+    for (const v of f.agents.values()) if (folds(v.a) && v.own) resting.set(v.home.id, (resting.get(v.home.id) || 0) + 1);
     for (const d of order) {
       if (d.vd) drawVill(ctx, d.vd, t, f8, f, pops, badges);
       else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
@@ -971,6 +973,7 @@ function createRenderer(IMG) {
     const v = d.v, a = v.a, sel = a.id === f.selected || a.id === f.cursor;
     let y = d.feet - 16 - d.bob, crop = 16;
     if (d.ghost) ctx.globalAlpha = 0.5;
+    else if (stoppedNote(a)) ctx.globalAlpha = 0.7; // an Important agent that isn't running: faded, not gone
     if (v.pose === 'sit' && !d.ghost) { blit(ctx, 'log', d.left, d.feet - 13); crop = 13; y = d.feet - 22; }
     else { ctx.fillStyle = 'rgba(16, 10, 24, 0.5)'; ctx.beginPath(); ctx.ellipse(d.left + 8, d.feet - 1, 7, 3, 0, 0, 7); ctx.fill(); }
     ctx.drawImage(rimmed(v.look, d.dir, d.row, crop, sel), d.left - 2, y - 2);

@@ -3,6 +3,7 @@
 // content-visibility, so 400+ rows stay smooth without a virtual scroller.
 import { rank, byRank } from './order.js';
 import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, bucketIcon, icon, ago, esc, h } from './ui.js';
+import { folds, stoppedNote } from './important.js';
 
 const COLS = [
   { key: 'agent', label: 'Agent', val: a => a.name.toLowerCase() },
@@ -62,12 +63,12 @@ export function createTable(api) {
     const prs = a.prs || [];
     const dup = api.dupOf(a);
     const t = now - (a.since || 0);
-    const sig = [S.table.flat, api.openHTML(a), a.severity, a.name, dup, a.role, a.roleSource, a.bucket, a.reason, a.project, parent?.name, a.harness, ago(t), a.lastActivityAt ? ago(now - a.lastActivityAt) : '', prs.map(p => p.id).join(), a.hidden, a.live, hasKids, open].join('|');
+    const sig = [S.table.flat, api.openHTML(a), a.severity, a.name, dup, a.role, a.roleSource, a.bucket, a.reason, a.project, parent?.name, a.harness, ago(t), a.lastActivityAt ? ago(now - a.lastActivityAt) : '', prs.map(p => p.id).join(), a.hidden, a.live, a.important, hasKids, open].join('|');
     if (el._sig !== sig) {
       el._sig = sig;
-      el.innerHTML = `<div role="gridcell" class="c-agent">${hasKids ? `<span class="tchev" data-act="tchev" data-id="${esc(a.id)}" aria-hidden="true">${open ? '▾' : '▸'}</span>` : '<span class="tchev"></span>'}<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}${a.roleSource === 'override' ? '<i class="ov"></i>' : ''}</span><span class="tn" title="${esc(a.name)}">${esc(a.name)}</span>${dup ? `<span class="dup">${esc(dup)}</span>` : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}<span class="sr">, ${ROLE_NAME[a.role] || a.role}</span>${api.openHTML(a)}</div>
+      el.innerHTML = `<div role="gridcell" class="c-agent">${hasKids ? `<span class="tchev" data-act="tchev" data-id="${esc(a.id)}" aria-hidden="true">${open ? '▾' : '▸'}</span>` : '<span class="tchev"></span>'}<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}${a.roleSource === 'override' ? '<i class="ov"></i>' : ''}</span><span class="tn" title="${esc(a.name)}">${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${dup ? `<span class="dup">${esc(dup)}</span>` : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}<span class="sr">, ${ROLE_NAME[a.role] || a.role}</span>${api.openHTML(a)}</div>
         <div role="gridcell" class="c-status b-${a.bucket}${isError(a) ? ' sev-error' : ''}">${icon(bucketIcon(a))}<span>${isError(a) ? 'Error' : BUCKET_NAME[a.bucket]}</span></div>
-        <div role="gridcell" class="c-reason" title="${esc(a.reason || '')}">${esc(a.reason || '—')}</div>
+        <div role="gridcell" class="c-reason" title="${esc(stoppedNote(a) || a.reason || '')}">${esc(stoppedNote(a) || a.reason || '—')}</div>
         ${S.table.flat ? `<div role="gridcell" class="c-project" title="${esc(a.project || '')}">${esc(a.project || '—')}</div>` : ''}
         <div role="gridcell" class="c-parent" title="${esc(parent?.name || '')}">${esc(parent?.name || '—')}</div>
         <div role="gridcell" class="c-harness">${esc(HARNESS_NAME[a.harness] || a.harness)}</div>
@@ -95,8 +96,9 @@ export function createTable(api) {
   function render() {
     const T = S.table;
     const all = S.agents;
-    const restingN = all.filter(a => a.bucket === 'resting' && matches(a)).length;
-    const shown = a => matches(a) && (T.resting || a.bucket !== 'resting');
+    // "Hide resting" never takes an Important agent (important.js).
+    const restingN = all.filter(a => folds(a) && matches(a)).length;
+    const shown = a => matches(a) && (T.resting || !folds(a));
     const match = new Set(all.filter(shown).map(a => a.id));
     const keep = new Set(match);
     if (!T.flat) for (const id of match) { // ancestors stay as dimmed context

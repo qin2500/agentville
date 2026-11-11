@@ -6,6 +6,7 @@
 import { rank, byRank } from './order.js';
 import { ROLE_NAME, HARNESS_NAME, icon, ago, clock, esc, h } from './ui.js';
 import { fmt } from './spend.js';
+import { folds } from './important.js';
 
 const COLS = [
   { key: 'agent', label: 'Agent' },
@@ -64,13 +65,13 @@ export function createModels(api) {
     const ch = r && changedText(r, now);
     const p = r ? pct(r) : 0;
     const sig = r ? JSON.stringify([r.now, r.configured, r.route, r.provider, r.context, r.tokens, r.flags, ch?.text, ch?.when]) : '';
-    const s = [a.name, a.role, a.roleSource, a.harness, a.hidden, hasKids, open, sig, api.dupOf(a)].join('|');
+    const s = [a.name, a.role, a.roleSource, a.harness, a.hidden, a.important, hasKids, open, sig, api.dupOf(a)].join('|');
     if (el._sig !== s) {
       el._sig = s;
       const dup = api.dupOf(a);
       const flags = (r?.flags || []).map(f => { const d = FLAG[f]; const l = typeof d.label === 'function' ? d.label(r) : d.label; return `<span class="mflag" title="${esc(d.tip(r))}">${esc(l)}</span>`; }).join('');
       const c = r?.configured;
-      el.innerHTML = `<div role="gridcell" class="c-agent">${hasKids ? `<span class="tchev" data-act="mchev" data-id="${esc(a.id)}" aria-hidden="true">${open ? '▾' : '▸'}</span>` : '<span class="tchev"></span>'}<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}</span><span class="tn" title="${esc(a.name)}">${esc(a.name)}</span>${dup ? `<span class="dup">${esc(dup)}</span>` : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}<span class="sr">, ${ROLE_NAME[a.role] || a.role}</span></div>
+      el.innerHTML = `<div role="gridcell" class="c-agent">${hasKids ? `<span class="tchev" data-act="mchev" data-id="${esc(a.id)}" aria-hidden="true">${open ? '▾' : '▸'}</span>` : '<span class="tchev"></span>'}<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}</span><span class="tn" title="${esc(a.name)}">${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${dup ? `<span class="dup">${esc(dup)}</span>` : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}<span class="sr">, ${ROLE_NAME[a.role] || a.role}</span></div>
         <div role="gridcell" class="c-harness">${esc(HARNESS_NAME[a.harness] || a.harness)}</div>
         <div role="gridcell" class="c-now" title="${esc(r?.now ? `${r.now.id}${r.now.at ? ` · last reply ${clock(r.now.at)}` : ''}` : 'No reply with a model yet')}">${r?.now ? esc(r.now.label) : '<span class="dim">—</span>'}</div>
         <div role="gridcell" class="c-cfg" title="${esc(r ? cfgTitle(r) : '')}">${c ? `${esc(c.label || c.raw)}${c.effort ? `<span class="dim"> · ${esc(c.effort)}</span>` : ''}${c.source === 'settings' ? '<span class="dim"> · default</span>' : ''}` : '<span class="dim">—</span>'}</div>
@@ -132,8 +133,8 @@ export function createModels(api) {
     const card = M.model && data.models.find(c => c.key === M.model);
     const all = S.agents;
     const onModel = a => !M.model || byId.get(a.id)?.card === M.model;
-    const restingN = all.filter(a => a.bucket === 'resting' && matches(a) && onModel(a)).length;
-    const match = new Set(all.filter(a => matches(a) && onModel(a) && (M.resting || a.bucket !== 'resting')).map(a => a.id));
+    const restingN = all.filter(a => folds(a) && matches(a) && onModel(a)).length;
+    const match = new Set(all.filter(a => matches(a) && onModel(a) && (M.resting || !folds(a))).map(a => a.id));
     const keep = new Set(match);
     for (const id of match) for (let p = S.byId.get(id)?.parentId, g = 0; p && S.byId.has(p) && !keep.has(p) && g < 50; p = S.byId.get(p).parentId, g++) keep.add(p);
 

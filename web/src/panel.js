@@ -6,6 +6,7 @@ import { createModels } from './models.js';
 import { createTree } from './tree.js';
 import { rank, byRank, enteredAt, syncNodes } from './order.js';
 import { createInspect, prTone, changesLabel } from './inspect.js';
+import { pinned, folds, stoppedNote } from './important.js';
 
 const LIVE = ['stalled', 'waiting', 'building'];
 const EMPTY_NOTE = { stalled: 'Nobody needs you.', waiting: 'Nothing is waiting.', building: 'Nobody is building right now.' };
@@ -104,7 +105,8 @@ export function createPanel(app) {
     const btn = keyed(`row:${a.id}`, () => h('button', { class: 'row', type: 'button', 'data-id': a.id }));
     const parent = a.parentId && S.byId.get(a.parentId);
     const t = (S.data?.serverTime || Date.now()) - (a.since || 0);
-    const reason = a.reason || BUCKET_NAME[a.bucket];
+    // An Important agent that isn't running says so first (it stays in view; see important.js).
+    const reason = stoppedNote(a) || a.reason || BUCKET_NAME[a.bucket];
     const project = noProject || (dropProject && parent && parent.project === a.project) ? '' : a.project || '';
     const now = S.data?.serverTime || Date.now();
     // A wide panel (≥ 600px) has room for harness and last activity on line 2.
@@ -214,6 +216,8 @@ export function createPanel(app) {
       tg.innerHTML = `${open ? '▾' : '▸'} Resting · <span class="num">${items.length}</span>${S.panel === 'full' && !open ? ' — show' : ''}`;
       nodes.push(tg);
       if (open) nodes.push(ul(`rul:${b}`, items.map(a => li(`sli:${a.id}`, rowBtn(a, { crumb: true })))));
+      // Folded, Important resting agents still show under the toggle (only a hide removes them).
+      else if (items.some(pinned)) nodes.push(ul(`rpin:${b}`, items.filter(pinned).map(a => li(`sli:${a.id}`, rowBtn(a, { crumb: true }))), 'pinned'));
     } else {
       const h2 = keyed(`h2:${S.panel}:${b}`, () => h('h2'));
       h2.innerHTML = `${icon(b)}${BUCKET_NAME[b]} · <span class="c num">${items.length}</span>`;
@@ -318,7 +322,7 @@ export function createPanel(app) {
   function splitKids(a, keep) {
     const ks = kidsOf(a).filter(k => keep.has(k.id)).sort(byBucket);
     if (S.query || S.restExpanded?.has(a.id)) return { shown: ks, rest: 0 };
-    const shown = ks.filter(k => k.bucket !== 'resting' || kidsOf(k).length);
+    const shown = ks.filter(k => !folds(k) || kidsOf(k).length); // Important ones never fold
     return { shown, rest: ks.length - shown.length };
   }
   function moreLine(key, a, rest, tag = 'li') {
@@ -354,6 +358,16 @@ export function createPanel(app) {
       if (rest) items.push(moreLine(`tmore:${a.id}`, a, rest));
       sync(kul, items);
       nodes.push(kul);
+    } else if (hasKids) {
+      // A folded team still shows its Important members, pinned under it with "↳ parent".
+      const pins = descendants(a).filter(d => pinned(d) && sets.keep.has(d.id) && !seen.has(d.id));
+      if (pins.length) {
+        pins.forEach(d => seen.add(d.id));
+        const pul = keyed(`tpins:${a.id}`, () => h('ul', { class: 'kids pinned' }));
+        pul.style.setProperty('--depth', depth);
+        sync(pul, pins.map(d => li(`tli:${d.id}`, rowBtn(d, { crumb: true, dropProject: true, depth: depth + 1, ctx: !sets.match.has(d.id) }))));
+        nodes.push(pul);
+      }
     }
     return li(`tli:${a.id}`, ...nodes);
   }
@@ -365,9 +379,10 @@ export function createPanel(app) {
     const heads = top.filter(a => kidsOf(a).some(k => sets.keep.has(k.id)));
     const solos = top.filter(a => !heads.includes(a));
     // Resting solos fold behind the Solo heading's caret (its tally counts them), not a "+N resting" line.
-    const restSolos = S.query ? 0 : solos.filter(a => a.bucket === 'resting').length;
+    // Important resting solos stay out of the fold.
+    const restSolos = S.query ? 0 : solos.filter(folds).length;
     const soloOpen = !restSolos || isOpen(SOLO);
-    const soloShown = soloOpen ? solos : solos.filter(a => a.bucket !== 'resting');
+    const soloShown = soloOpen ? solos : solos.filter(a => !folds(a));
     const seen = new Set();
     const out = [];
     if (heads.length) {
@@ -405,7 +420,8 @@ export function createPanel(app) {
   // are no holes, and quiet teams (nobody awake) folded into a one-line chip strip at the bottom.
   const awakeAt = new Map();
   function fullTeam(agents, sets) {
-    const live = a => a.bucket !== 'resting' || (S.query && sets.match.has(a.id));
+    // Shown as a row rather than "+N resting" / "Quiet": awake, Important, or a search match.
+    const live = a => !folds(a) || (S.query && sets.match.has(a.id));
     const heads = agents.filter(a => sets.keep.has(a.id) && kidsOf(a).some(k => sets.keep.has(k.id)));
     const placed = new Map(); // project -> { cards: [head], solos: [], quiet: [head] }
     const slot = p => { if (!placed.has(p)) placed.set(p, { cards: [], solos: [], quiet: [], all: [] }); return placed.get(p); };
@@ -581,7 +597,7 @@ export function createPanel(app) {
     const before = slide ? positions() : null;
     awakeCount = new Map(); allCount = new Map();
     const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
-    for (const a of S.agents) if (!a.hidden) { bump(allCount, a.name); if (a.bucket !== 'resting') bump(awakeCount, a.name); }
+    for (const a of S.agents) if (!a.hidden) { bump(allCount, a.name); if (!folds(a)) bump(awakeCount, a.name); }
     const active = document.activeElement;
     const activeKey = active && list.contains(active) ? [...cache].find(([, el]) => el === active)?.[0] : null;
     chips();
@@ -672,6 +688,7 @@ export function createPanel(app) {
       <h3 tabindex="-1">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}<span>${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}</h3>
       <div style="margin-top:8px"><span class="pill b-${isError(a) ? 'error' : a.bucket}">${icon(bucketIcon(a))}${isError(a) ? 'Error' : BUCKET_NAME[a.bucket]} · <span class="num">${ago(now - a.since)}</span></span></div>
       <p style="margin:12px 0 0">${esc(a.reason || BUCKET_NAME[a.bucket])}${a.since ? ` · since ${clock(a.since)}` : ''}</p>
+      ${stoppedNote(a) ? `<p class="stopnote" style="margin:8px 0 0"><b>${esc(stoppedNote(a))}</b>. It isn't running; it stays in view because it's Important. Resume it from the actions below.</p>` : ''}
       ${a.title ? `<p class="ttl${info._more ? '' : ' clamp'}" style="margin:12px 0 0">${esc(a.title)}</p>${a.title.length > 160 ? `<button class="link" type="button" data-act="moretitle">${info._more ? 'less' : 'more'}</button>` : ''}` : ''}
       <dl class="facts" style="margin-top:12px">
         <dt>Project</dt><dd title="${esc(a.project)}">${esc(a.project || '—')}</dd>
@@ -711,7 +728,7 @@ export function createPanel(app) {
           ${a.resume ? `<button class="ghost" type="button" data-act="copyresume" title="${esc(a.resume)}">${/^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command'}</button>` : ''}
           ${canFork ? '<button class="ghost" type="button" data-act="fork" data-ins="fork">Fork…</button>' : ''}
           ${canStop ? `<button class="ghost" type="button" data-act="stop" data-ins="stop">${a.kind === 'job' ? 'Stop job…' : 'Stop…'}</button>` : ''}
-          ${!sub ? `<button class="ghost" type="button" data-act="important" aria-pressed="${!!a.important}" title="Important agents come back with Restore after crash">${a.important ? '★ Important' : '☆ Mark important'}</button>` : ''}
+          ${!sub ? `<button class="ghost" type="button" data-act="important" aria-pressed="${!!a.important}" title="Important agents are never folded away or tidied out of view (only Hide removes them), and come back with Restore after crash">${a.important ? '★ Important' : '☆ Mark important'}</button>` : ''}
           <button class="ghost" type="button" data-act="edit" aria-expanded="${editing}">Edit…</button>
           ${a.hidden ? '' : `<button class="ghost iconbtn trash" type="button" data-act="hide" aria-label="Hide from Agentville" title="Hide from Agentville"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 1.5h4a1 1 0 0 1 1 1V3h3v1.5H2V3h3v-.5a1 1 0 0 1 1-1zM3.2 5.5h9.6l-.7 8.1a1.5 1.5 0 0 1-1.5 1.4H5.4a1.5 1.5 0 0 1-1.5-1.4zm2.8 1.5v6h1.2V7zm2.8 0v6H10V7z"/></svg></button>`}
         </div>

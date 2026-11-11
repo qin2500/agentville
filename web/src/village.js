@@ -5,6 +5,7 @@
 import { BUCKET_NAME, ROLE_NAME, store, icon, esc } from './ui.js';
 import { T, ZOOMS, R, plan, layout, placeAgents, loadSheets, SEA_DEEP, isoP, isoInv, itemBox, agentOffset } from './world.js';
 import { visibleProjects } from './quiet.js';
+import { folds } from './important.js';
 
 const FPS = 8;
 
@@ -142,11 +143,11 @@ export function createVillage(app) {
     houseHits = [];
     if (W) {
       const restingHomes = new Map();
-      for (const p of placed.vill.values()) if (p.a.bucket === 'resting' && p.own) restingHomes.set(p.home.id, [...(restingHomes.get(p.home.id) || []), p.a.id]);
+      for (const p of placed.vill.values()) if (folds(p.a) && p.own) restingHomes.set(p.home.id, [...(restingHomes.get(p.home.id) || []), p.a.id]);
       for (const it of W.items) if (restingHomes.has(it.id)) { const [x, y, w, h] = itemBox(it, isoOn()); houseHits.push({ ids: restingHomes.get(it.id), x, y, w, h }); }
     }
     const f = { ctx, k: v.k, vx: v.vx, vy: v.vy, bw: v.bw, bh: v.bh, zoom, t, still, night: nightAmount(), agents: placed.vill, iso: isoOn(), 
-      selected, cursor, selectedHome: selV && (selV.a.bucket === 'resting' || selV.crowd) ? selV.home.id : null };
+      selected, cursor, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null };
     if (W && artState === 'ready') hits = renderer.draw(f);
     else if (W && artState === 'failed') hits = drawSimple(f);
     else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = SEA_DEEP; ctx.fillRect(0, 0, cv.width, cv.height); hits = []; }
@@ -175,7 +176,7 @@ export function createVillage(app) {
       ctx.fillStyle = '#9a6a3e'; ctx.fillRect(x, y + roof, w, h - roof);
     }
     const out = [];
-    for (const p of [...f.agents.values()].filter(p => p.a.bucket !== 'resting' && !p.crowd).sort((a, b) => a.y - b.y)) {
+    for (const p of [...f.agents.values()].filter(p => !folds(p.a) && !p.crowd).sort((a, b) => a.y - b.y)) {
       const left = Math.round((p.pose === 'carry' ? p.x0 : p.x) - 6), top = p.y - 16;
       ctx.fillStyle = '#1a1c22'; ctx.fillRect(left - 1, top - 1, 14, 18);
       ctx.fillStyle = p.a.role === 'boss' ? '#f2c14e' : p.a.role === 'sub' ? '#7d8290' : '#e8b48a'; ctx.fillRect(left, top, 12, 16);
@@ -224,7 +225,7 @@ export function createVillage(app) {
       }
       const sv = selected && placed.vill.get(selected);
       const at = (it, x, y) => P(x, y); // a spot by a building, in view px
-      if (sv && (sv.a.bucket === 'resting' || sv.crowd)) add(`t:${selected}`, 0, 'tag sel', `${sv.a.name} (${sv.crowd ? 'in the crowd' : 'indoors'})`, ...at(sv.home, sv.door, sv.home.y * T - 4));
+      if (sv && (folds(sv.a) || sv.crowd)) add(`t:${selected}`, 0, 'tag sel', `${sv.a.name} (${sv.crowd ? 'in the crowd' : 'indoors'})`, ...at(sv.home, sv.door, sv.home.y * T - 4));
       if (W) for (const [homeId, n] of placed.crowd) { const it = W.items.find(i => i.id === homeId); if (it) add(`c:${homeId}`, 6, 'tag', `+${n} more`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 64)); }
       if (zoom >= 3 && W) for (const it of W.items) if (it.kind === 'pr') add(`p:${it.id}`, 5, 'tag prt', `#${it.pr}`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 14));
     }
@@ -291,7 +292,7 @@ export function createVillage(app) {
     const p = placed.vill.get(id);
     if (!p) return;
     if (zoom < 1) zoom = 2;
-    const away = p.a.bucket === 'resting' || p.crowd, [x, y] = shift(away ? [p.door, p.base] : [p.x, p.y], agentOffset(p, isoOn()));
+    const away = folds(p.a) || p.crowd, [x, y] = shift(away ? [p.door, p.base] : [p.x, p.y], agentOffset(p, isoOn()));
     panTo(x, y - 16, animate);
   }
   // Default view: the whole town on one screen. The largest of 2× and 1× at which every neighbourhood
@@ -463,7 +464,8 @@ export function createVillage(app) {
     // The terminal view saves the camera on the way in and puts it back on the way out.
     camera: () => (tween ? { x: tween.x1, y: tween.y1, z: zoom } : { x: cam.x, y: cam.y, z: zoom }), // a pan in flight counts as done
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
-    debug: () => ({ zoom, iso: isoOn(), cam: { ...cam }, clusters, badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
+    debug: () => ({ zoom, iso: isoOn(), cam: { ...cam }, clusters,
+      outdoors: [...placed.vill.values()].filter(p => !folds(p.a) && !p.crowd).map(p => p.a.id), homes: W?.items.filter(it => it.kind === 'home').map(it => it.agentId) || [], badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
       town: W?.town, square: W?.square, quiet, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
       ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), depthCheck: () => (renderer && artState === 'ready' ? renderer.depthCheck() : []),
       // Footprint tiles of each item that aren't land (0 = it stands on the island).

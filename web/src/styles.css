@@ -778,3 +778,8 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 
 /* Important (Restore after crash): a small star after the name. */
 .star { color: var(--waiting); margin-left: 4px; font-size: 12px; flex: none; }
+/* Important agents kept in view under a folded team or a closed Resting toggle (important.js). */
+.tree ul.kids.pinned { border-left-style: dashed; }
+.tnode .star { margin-left: 2px; }
+.stopnote { font-size: 13px; color: var(--text-muted); }
+.stopnote b { color: var(--text); font-weight: 600; }

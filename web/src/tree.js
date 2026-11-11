@@ -8,6 +8,7 @@
 import { ROLE_NAME, BUCKET_NAME, isError, isPrompt, bucketIcon, icon, ago, esc, h } from './ui.js';
 import { rank, syncNodes } from './order.js';
 import { buildTree, layout, outline, family, groupKey, SOLO_KEY, DIM } from './tree-model.js';
+import { stoppedNote } from './important.js';
 
 const RH = 48;            // outline row height
 const NARROW = 640;       // below this list width, the outline replaces the chart
@@ -176,11 +177,12 @@ export function createTree({ S, app, matches, filtering }) {
       n.collapsed ? `${n.hidden} reports folded` : '',
       pill && !pill.open ? `${pill.n} resting under it, press Down to show` : '',
       n.ctx ? 'shown for context' : ''].filter(Boolean).join(', ');
-    const sig = [a.name, roleK, tone(a), a.live, t, pill?.n, pill?.open, n.collapsed, n.hidden, hasKids, n.ctx, tail].join('|');
+    const stop = stoppedNote(a);
+    const sig = [a.name, roleK, tone(a), a.live, a.important, stop, t, pill?.n, pill?.open, n.collapsed, n.hidden, hasKids, n.ctx, tail].join('|');
     if (el._sig !== sig) {
       el._sig = sig;
-      el.innerHTML = `<span class="tn1">${icon(roleK, 'px role')}<span class="tnm" title="${esc(a.name)}">${esc(a.name)}</span><i class="live ${a.live ? '' : 'no'}" aria-hidden="true"></i></span>
-        <span class="tn2" title="${esc(a.reason || statusWord(a))}">${icon(bucketIcon(a))}<span class="tst">${esc(statusWord(a))}</span><span class="tago num">· ${esc(t)}</span>${pill ? `<span class="tpill${pill.open ? ' on' : ''}" data-pill="${esc(n.id)}" aria-hidden="true" title="${pill.open ? 'Fold the resting ones back' : `Show ${pill.n} resting`}">${pill.open ? '− resting' : `+${pill.n} resting`}</span>` : ''}</span>
+      el.innerHTML = `<span class="tn1">${icon(roleK, 'px role')}<span class="tnm" title="${esc(a.name)}">${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}<i class="live ${a.live ? '' : 'no'}" aria-hidden="true"></i></span>
+        <span class="tn2" title="${esc(stop || a.reason || statusWord(a))}">${icon(bucketIcon(a))}<span class="tst">${esc(stop || statusWord(a))}</span><span class="tago num">· ${esc(t)}</span>${pill ? `<span class="tpill${pill.open ? ' on' : ''}" data-pill="${esc(n.id)}" aria-hidden="true" title="${pill.open ? 'Fold the resting ones back' : `Show ${pill.n} resting`}">${pill.open ? '− resting' : `+${pill.n} resting`}</span>` : ''}</span>
         ${hasKids ? `<span class="ttog" data-tog="${esc(n.id)}" aria-hidden="true" title="${n.collapsed ? 'Show reports' : 'Fold reports'}">${n.collapsed ? `+${n.hidden}` : '−'}</span>` : ''}
         <span class="sr">, ${esc(statusWord(a))}${tail ? `, ${esc(tail)}` : ''}</span>`;
     }
