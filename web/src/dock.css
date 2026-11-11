@@ -1,0 +1,18 @@
+/* The dock sheet (web/src/dock.js). Builds on the shared dialog.sheet styles and tokens in styles.css. */
+dialog.docksheet { width: min(560px, calc(100vw - 32px)); }
+.dkrow { display: flex; align-items: center; gap: var(--space-2); padding: 6px; border-radius: var(--radius); font-size: 13px; min-width: 0; flex-wrap: wrap; }
+.dkrow:hover { background: var(--surface-2); }
+.dklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.dkpr { background: none; border: 0; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; padding: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 140px; }
+.dkpr:hover { text-decoration: underline; }
+.dkagent { background: none; border: 0; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; padding: 0; }
+.dkagent:hover { color: var(--text); text-decoration: underline; }
+.dkbar { flex: 1 1 100%; display: flex; align-items: center; gap: var(--space-2); font-size: 12px; color: var(--text-muted); }
+.dkbar progress { flex: 1; height: 6px; appearance: none; border: 0; border-radius: var(--radius-pill); background: var(--surface-3); overflow: hidden; }
+.dkbar progress::-webkit-progress-bar { background: var(--surface-3); }
+.dkbar progress::-webkit-progress-value { background: var(--focus); }
+.dkbar progress::-moz-progress-bar { background: var(--focus); }
+.dkrow .pill.bad { color: var(--error); }
+.dkrow .when { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.dkempty { margin: 0; color: var(--text-muted); font-size: 13px; }
+.dkpr:focus-visible, .dkagent:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
