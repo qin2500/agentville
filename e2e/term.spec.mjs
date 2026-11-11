@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
-import { HOME, IDS, claudeId, row, clearOverrides, inspect, prepareHome, startServer, nextPort, tmpDir } from './helpers.mjs'
+import { HOME, IDS, claudeId, row, clearOverrides, openMenu, prepareHome, startServer, nextPort, tmpDir, teamView } from './helpers.mjs'
 
 const ID = claudeId('leadBlocked') // "DB Lead", a background job → `claude attach <short>`
 const OTHER = claudeId('leadCi') // "CI Lead", also a job
@@ -27,33 +27,39 @@ test.afterEach(async ({ request, baseURL }) => {
 })
 
 async function enter(page, id = ID, name = 'DB Lead') {
-  const btn = page.locator('#drawer [data-act="term"]')
-  await btn.click()
+  if (!(await page.locator('#ctxmenu').isVisible())) await openMenu(page, id)
+  await page.locator('#ctxmenu [data-cm="term"]').click()
   await expect(page.locator('#stage')).toBeVisible()
   await expect(page.locator('#stage .tname')).toHaveText(name)
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
   await expect(screen(page)).toContainText('fake-claude>')
   await expect(page.locator('#main')).not.toHaveClass(/tv-anim/) // the 200 ms layout transition is over
 }
+/** Pick another agent while the terminal is open (as a click in the village column does). */
+const pick = (page, id) => page.evaluate((id) => { location.hash = `#agent=${encodeURIComponent(id)}` }, id)
 const typeLine = async (page, text) => { await page.keyboard.type(text); await page.keyboard.press('Enter') }
 
-test('Terminal takes the centre; the village and inspector compress to the sides; Shift+Esc puts it all back', async ({ page }, testInfo) => {
+test('Terminal takes the centre and the rest of the width; the village compresses to the left; Shift+Esc puts it all back', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await page.waitForTimeout(700) // selecting pans the village; let that finish
   const before = { village: await box(page, '#village'), panel: await box(page, '#panel'), cam: await page.evaluate(() => window.villageDebug().cam) }
   const vp = page.viewportSize()
   await enter(page)
-  // Centre and large; the village is a narrow column on the left, the inspector a column on the right.
-  const st = await box(page, '#stage'), vil = await box(page, '#village'), pan = await box(page, '#panel')
+  // Centre and large; the village is a narrow column on the left, and nothing is on the right.
+  const st = await box(page, '#stage'), vil = await box(page, '#village')
   expect(st.width).toBeGreaterThan(vp.width * 0.5)
   expect(st.height).toBeGreaterThan(vp.height * 0.85)
   expect(vil.width).toBeGreaterThan(100)
   expect(vil.width).toBeLessThan(before.village.width * 0.5)
   expect(vil.x + vil.width).toBeLessThanOrEqual(st.x + 1)
-  expect(pan.x).toBeGreaterThanOrEqual(st.x + st.width - 1)
-  await expect(page.locator('#drawer h3')).toContainText('DB Lead')
-  await expect(page.locator('#drawer [data-act="term"]')).toHaveText('In the terminal')
+  expect(st.x + st.width).toBeGreaterThan(vp.width - 4)
+  await expect(page.locator('#drawer, .detail')).toHaveCount(0)
+  await page.locator('#stage .tname').click({ button: 'right' })
+  await expect(page.locator('#ctxmenu .cm-name')).toHaveText('DB Lead')
+  await expect(page.locator('#ctxmenu [data-cm="term"]')).toHaveText(/In the terminal/)
+  await page.keyboard.press('Escape')
+  await page.locator('#stage .termhost:not([hidden]) .xterm-screen').click()
   // Header: role glyph, name, bucket badge, and the three actions.
   await expect(page.locator('#stage .tglyph svg')).toHaveCount(1)
   await expect(page.locator('#stage .tbadge')).toHaveText('Stalled')
@@ -87,29 +93,32 @@ test('Terminal takes the centre; the village and inspector compress to the sides
   expect(cols1).toBeGreaterThan(cols0)
   await page.setViewportSize(vp)
 
-  // Shift+Esc closes the view: the layout, the detail and the camera are exactly as before.
+  // Shift+Esc closes the view: the layout, the selection and the camera are exactly as before.
   await page.keyboard.press('Shift+Escape')
   await expect(page.locator('#stage')).toBeHidden()
   await expect(page.locator('#main')).not.toHaveClass(/termview|tv-anim/)
   expect(await box(page, '#village')).toEqual(before.village)
   expect(await box(page, '#panel')).toEqual(before.panel)
   await expect.poll(() => page.evaluate(() => window.villageDebug().cam)).toEqual(before.cam)
-  await expect(page.locator('#drawer h3')).toContainText('DB Lead')
-  await expect(page.locator('#drawer [data-act="term"]')).toBeFocused()
-  await expect(page.locator('#drawer [data-act="term"]')).toHaveText('Terminal · running') // only detached
-  expect(await running(page)).toContain(ID)
+  await expect(row(page, ID)).toHaveAttribute('aria-current', 'true')
+  await expect(row(page, ID)).toBeFocused()
+  expect(await running(page)).toContain(ID) // only detached
+  await openMenu(page, ID)
+  await expect(page.locator('#ctxmenu [data-cm="term"]')).toHaveText('In the terminal')
 })
 
-test('double-clicking an agent opens it in the built-in terminal; one that can\'t be opened shows its inspector', async ({ page }, testInfo) => {
+test('double-clicking an agent opens it in the built-in terminal; one that can\'t be opened shows its menu, which says why', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
   await row(page, ID).dblclick()
   await expect(page.locator('#stage')).toBeVisible()
   await expect.poll(() => running(page)).toContain(ID)
   await page.locator('#stage .tclose').click()
   await expect(page.locator('#stage')).toBeHidden()
-  await row(page, `${claudeId('leadBuilding')}:sub:worker`).dblclick()
+  await teamView(page)
+  const sub = `${claudeId('leadBuilding')}:sub:worker`
+  await row(page, sub).dblclick()
   await expect(page.locator('#stage')).toBeHidden()
-  await expect(page.locator('#openwhy')).toHaveText('Open its lead instead')
+  await expect(page.locator('#ctxmenu [data-cm="term"] .cm-note')).toHaveText('Open its lead instead')
 })
 
 test('double-clicking a villager opens it in the built-in terminal', async ({ page }, testInfo) => {
@@ -129,28 +138,22 @@ test('double-clicking a villager opens it in the built-in terminal', async ({ pa
 
 test('switching agents: while the terminal is open, clicking another agent opens it in the terminal', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'first agent')
   await expect(screen(page)).toContainText('echo: first agent')
-  await page.locator('#drawer [data-act="back"]').click()
-  await row(page, OTHER).click() // one click swaps the centre terminal to it
+  await pick(page, OTHER) // picking another agent swaps the centre terminal to it
   await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
-  await expect(page.locator('#drawer h3')).toContainText('CI Lead')
   await expect(screen(page)).toContainText(`fake claude attach ${IDS.leadCi.slice(0, 8)}`)
   await expect(screen(page)).not.toContainText('echo: first agent')
   expect(await running(page)).toEqual(expect.arrayContaining([ID, OTHER])) // the first only detached
-  // A subagent can't be opened: its inspector shows why, and the centre stays put.
-  const sub = `${claudeId('leadBuilding')}:sub:worker`
-  await page.locator('#drawer [data-act="back"]').click()
-  if (await row(page, sub).count()) {
-    await row(page, sub).click()
-    await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
-  }
+  // A subagent can't be opened: the centre stays put.
+  await pick(page, `${claudeId('leadBuilding')}:sub:worker`)
+  await page.waitForTimeout(300)
+  await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
   // Back to the first: it re-attaches and replays what was there.
-  await page.locator('#drawer [data-act="back"]').click()
-  await row(page, ID).click()
+  await pick(page, ID)
   await expect(page.locator('#stage .tname')).toHaveText('DB Lead')
   await expect(screen(page)).toContainText('echo: first agent')
   const live = claudeEvents().filter((e) => e.argv.includes(SHORT))
@@ -165,12 +168,13 @@ test('Close restores a full-screen Table exactly: view, sort, selection', async 
   await agentHead.locator('button').click()
   await expect(agentHead).toHaveAttribute('aria-sort', 'ascending')
   await page.locator(`#list .trow[data-id="${ID}"]`).click()
-  await expect(page.locator('#drawer h3')).toContainText('DB Lead')
+  await expect(page.locator(`#list .trow[data-id="${ID}"]`)).toHaveAttribute('aria-selected', 'true')
+  await page.locator(`#list .trow[data-id="${ID}"]`).click({ button: 'right' })
   await enter(page)
-  // From full screen the list is the left column and the inspector the right one.
-  const st = await box(page, '#stage'), list = await box(page, '#list'), dr = await box(page, '#drawer')
+  // From full screen the list is the left column, and the terminal has the rest.
+  const st = await box(page, '#stage'), list = await box(page, '#list')
   expect(list.x + list.width).toBeLessThanOrEqual(st.x + 1)
-  expect(dr.x).toBeGreaterThanOrEqual(st.x + st.width - 1)
+  expect(st.x + st.width).toBeGreaterThan(page.viewportSize().width - 4)
   expect(st.width).toBeGreaterThan(page.viewportSize().width * 0.5)
   await expect(page.locator('#list .trow').first()).toBeVisible()
   // Change things while in the terminal view; Close must undo them.
@@ -182,11 +186,10 @@ test('Close restores a full-screen Table exactly: view, sort, selection', async 
   await expect(page.locator('#view-table')).toHaveAttribute('aria-pressed', 'true')
   await expect(agentHead).toHaveAttribute('aria-sort', 'ascending')
   await expect(page.locator(`#list .trow[data-id="${ID}"]`)).toHaveAttribute('aria-selected', 'true')
-  await expect(page.locator('#drawer h3')).toContainText('DB Lead')
 })
 
 test('Pop out ends the embedded attach first, then opens the same command; the view closes', async ({ page }) => {
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   const before = windows().length
   await page.locator('#stage [data-tact="popout"]').click()
@@ -197,12 +200,13 @@ test('Pop out ends the embedded attach first, then opens the same command; the v
   expect(opened[0].argv.slice(-2)).toEqual(['attach', SHORT])
   expect(claudeEvents().filter((e) => e.event === 'exit' && e.argv.includes(SHORT)).at(-1).why).toBe('sighup')
   expect(await running(page)).not.toContain(ID)
-  await expect(page.locator('#drawer [data-act="term"]')).toHaveText('Terminal')
+  await openMenu(page, ID)
+  await expect(page.locator('#ctxmenu [data-cm="term"]')).toHaveText('Open in terminal')
 })
 
 test('on a phone the terminal is full screen, and Back restores the previous view', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'phone layout')
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   const st = await box(page, '#stage')
   const vp = page.viewportSize()
@@ -213,18 +217,20 @@ test('on a phone the terminal is full screen, and Back restores the previous vie
   await expect(page.locator('#stage .tclose')).toBeHidden()
   await page.locator('#stage .tback').click()
   await expect(page.locator('#stage')).toBeHidden()
-  await expect(page.locator('#drawer h3')).toContainText('DB Lead')
+  await expect(row(page, ID)).toHaveAttribute('aria-current', 'true')
   expect(await running(page)).toContain(ID)
 })
 
 test('refusals: a live session and a subagent have no Terminal', async ({ page }) => {
-  await inspect(page, claudeId('soloTurn'))
-  await expect(page.locator('#drawer [data-act="term"]')).toBeDisabled()
-  await expect(page.locator('#openwhy')).toHaveText('Already running in another terminal')
-  await page.locator('[data-act="back"]').click()
-  await inspect(page, `${claudeId('leadBuilding')}:sub:worker`)
-  await expect(page.locator('#drawer [data-act="term"]')).toBeDisabled()
-  await expect(page.locator('#openwhy')).toHaveText('Open its lead instead')
+  await openMenu(page, claudeId('soloTurn'))
+  await expect(page.locator('#ctxmenu [data-cm="term"]')).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.locator('#ctxmenu [data-cm="term"] .cm-note')).toHaveText('Already running in another terminal')
+  await page.keyboard.press('Escape')
+  await teamView(page)
+  const sub = `${claudeId('leadBuilding')}:sub:worker`
+  await openMenu(page, sub)
+  await expect(page.locator('#ctxmenu [data-cm="term"]')).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.locator('#ctxmenu [data-cm="term"] .cm-note')).toHaveText('Open its lead instead')
 })
 
 // ---------- dropped sockets, server restarts, focus ----------
@@ -242,7 +248,7 @@ const termFocused = (page) => page.evaluate(() => !!document.activeElement?.clos
 
 test('a socket that drops while the process runs reconnects on its own; typing works again without switching agents', async ({ page }) => {
   const socks = await proxySockets(page)
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'before the drop')
   await expect(screen(page)).toContainText('echo: before the drop')
@@ -270,8 +276,8 @@ test('keys typed while the terminal is still attaching are sent once it is live;
     })
     ws.onMessage((m) => server.send(m))
   })
-  await inspect(page, ID)
-  await page.locator('#drawer [data-act="term"]').click()
+  await openMenu(page, ID)
+  await page.locator('#ctxmenu [data-cm="term"]').click()
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
   await typeLine(page, 'early keys') // before the snapshot has arrived
   await expect(screen(page)).toContainText('echo: early keys')
@@ -300,7 +306,7 @@ test('Shift+Enter types a new line (ESC CR, as Claude Code expects); Enter still
 
 test('typing while disconnected is not sent, and says so; it works again once reconnected', async ({ page }) => {
   const socks = await proxySockets(page)
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   // Hold every reconnect off until the test lets go.
   let hold = true
@@ -321,7 +327,7 @@ test('typing while disconnected is not sent, and says so; it works again once re
 })
 
 test('a process that exits shows Start again and is never restarted on its own', async ({ page }) => {
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   const n = starts()
   await typeLine(page, 'exit')
@@ -345,7 +351,7 @@ test('a process that exits shows Start again and is never restarted on its own',
 
 test('a session that ended while the page was disconnected stays ended (Start again), like an idle end', async ({ page, baseURL }) => {
   const socks = await proxySockets(page)
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   const n = starts()
   let hold = true
@@ -363,10 +369,10 @@ test('a session that ended while the page was disconnected stays ended (Start ag
 
 test('the terminal keeps the keyboard across data refreshes and re-renders; a click anywhere in it takes it back', async ({ page, request, baseURL }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout (the hint is hidden on a phone)')
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   expect(await termFocused(page)).toBe(true)
-  // A rename re-renders the header and the inspector; then let a few 2 s polls go by.
+  // A rename re-renders the header; then let a few 2 s polls go by.
   await request.patch(`/api/overrides/${encodeURIComponent(ID)}`, { headers: { origin: baseURL, 'content-type': 'application/json' }, data: { name: 'DB Lead Two' } })
   await expect(page.locator('#stage .tname')).toHaveText('DB Lead Two')
   await page.waitForTimeout(4500)
@@ -396,7 +402,7 @@ test('a server restart: the page says so, reconnects by itself, and typing reach
   try {
     await page.goto(`${s.url}/?debug`)
     await expect(page.locator('#conn')).toHaveText(/Live/)
-    await inspect(page, ID)
+    await openMenu(page, ID)
     await enter(page)
     await typeLine(page, 'before restart')
     await expect(screen(page)).toContainText('echo: before restart')

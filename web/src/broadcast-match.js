@@ -28,7 +28,7 @@ export function matches(a, f = {}) {
     && any(f.projects, a.project || 'unknown');
 }
 
-/** '' when it can be messaged; otherwise the reason (the server's, so it matches the inspector). */
+/** '' when it can be messaged; otherwise the reason (the server's, so it matches the agent menu). */
 export const whyNot = a => (a.self ? SELF_WHY : a.messageWhy || '');
 
 export const isFiltered = f => !!(String(f.name || '').trim() || f.ranks?.length || f.statuses?.length || f.projects?.length);

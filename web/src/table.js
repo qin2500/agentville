@@ -195,7 +195,7 @@ export function createTable(api) {
     if (e.target.closest('.chip[data-href]')) return false;
     if (r.dataset.group) { toggle(`p:${r.dataset.group}`); return true; }
     T.focus = r.dataset.id;
-    app().openDetail(r.dataset.id);
+    if (e.detail !== 2) app().select(S.selected === r.dataset.id && !S.term ? null : r.dataset.id);
     return true;
   }
   const app = () => api.app;
@@ -232,7 +232,7 @@ export function createTable(api) {
         break;
       }
       case 'Enter':
-        if (r.dataset.group) toggle(key); else { S.table.focus = r.dataset.id; app().openDetail(r.dataset.id); }
+        if (r.dataset.group) toggle(key); else { S.table.focus = r.dataset.id; if (S.selected === r.dataset.id) app().menu(r.dataset.id, { el: r }); else app().select(r.dataset.id); }
         break;
       case ' ': if (r.dataset.id) app().select(r.dataset.id, { pan: false }); break;
       case 'r': case 'R': resort(); break;
@@ -240,7 +240,7 @@ export function createTable(api) {
     }
     e.preventDefault();
     // A collapse/expand re-render keeps the same row element, so put focus back on it.
-    if (document.activeElement !== r && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Enter') && r.isConnected && !S.detail) r.focus();
+    if (document.activeElement !== r && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Enter') && r.isConnected && !app().menuOpen?.()) r.focus();
     return true;
   }
 

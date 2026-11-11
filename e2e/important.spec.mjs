@@ -141,20 +141,20 @@ test('village: Important agents keep their own house and villager, quiet project
 
 test('an explicit hide still hides an Important agent; unmarking Important restores the folding', async ({ page }, ti) => {
   const st = await open(page, { panel: 'full' })
-  // Unmark Pinned Job from its inspector: it folds back into its lead's "+N resting".
-  await row(page, 'pinned-job').click()
-  const imp = page.locator('#drawer [data-act="important"]')
-  await expect(imp).toHaveText('★ Important')
-  await expect(page.locator('#drawer .stopnote')).toContainText('Stopped · Closed')
+  // Unmark Pinned Job from its menu: it folds back into its lead's "+N resting".
+  const cm = page.locator('#ctxmenu')
+  await row(page, 'pinned-job').click({ button: 'right' })
+  const imp = cm.locator('[data-cm="important"]')
+  await expect(imp).toHaveText('Unmark important')
+  await expect(cm.locator('.cm-stop')).toContainText('Stopped · Closed')
   await imp.click()
-  await expect(imp).toHaveText('☆ Mark important')
+  await expect(cm).toBeHidden()
   await expect.poll(() => st.important.has('pinned-job')).toBe(false)
-  await page.keyboard.press('Escape')
   await expect(row(page, 'pinned-job')).toHaveCount(0)
   await expect(page.locator('#list .card:has(.row[data-id="lead-a"]) .restcount')).toHaveText('+4 resting')
   // Hide Keeper Solo (still Important): it is gone from every view.
-  await row(page, 'keeper').click()
-  await page.locator('#drawer [data-act="hide"]').click()
+  await row(page, 'keeper').click({ button: 'right' })
+  await cm.locator('[data-cm="hide"]').click()
   await expect.poll(() => st.hidden.has('keeper')).toBe(true)
   await expect(row(page, 'keeper')).toHaveCount(0)
   await expect(page.locator('#btn-hidden')).toHaveText('1 hidden')

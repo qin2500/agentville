@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
-import { HOME, IDS, claudeId, row, clearOverrides, inspect } from './helpers.mjs'
+import { HOME, IDS, claudeId, row, clearOverrides, openMenu } from './helpers.mjs'
 
 const ID = claudeId('leadBlocked') // "DB Lead", a background job → `claude attach <short>`
 const OTHER = claudeId('leadCi') // "CI Lead", also a job
@@ -34,7 +34,7 @@ test.afterEach(async ({ request, baseURL }) => {
 })
 
 async function enter(page, name = 'DB Lead') {
-  await page.locator('#drawer [data-act="term"]').click()
+  await page.locator('#ctxmenu [data-cm="term"]').click()
   await expect(page.locator('#stage')).toBeVisible()
   await expect(page.locator('#stage .tname')).toHaveText(name)
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
@@ -45,10 +45,10 @@ async function close(page) {
   await page.keyboard.press('Shift+Escape')
   await expect(page.locator('#stage')).toBeHidden()
 }
-/** Open the agent's terminal from its inspector, closing whatever is open first. */
+/** Open the agent's terminal from its menu, closing whatever is open first. */
 async function reopen(page, id = ID, name = 'DB Lead') {
   if (await page.locator('#stage').isVisible()) await close(page)
-  await inspect(page, id)
+  await openMenu(page, id)
   await enter(page, name)
 }
 const fullscreenLine = (page) => screen(page).locator('div').first()
@@ -75,7 +75,7 @@ test('no size below the minimum, and none while hidden, ever reaches the PTY', a
   const cdp = await page.context().newCDPSession(page)
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 6 })
   const t0 = Date.now()
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'fullscreen')
   await expect(screen(page)).toContainText('FULLSCREEN')
@@ -108,7 +108,7 @@ test('no size below the minimum, and none while hidden, ever reaches the PTY', a
 })
 
 test('the server never passes a size below the minimum to the PTY, whoever sends it', async ({ page, baseURL }) => {
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   const sz = await termSize(page)
   await page.waitForTimeout(500) // the opening repaint is done
@@ -128,7 +128,7 @@ test('the server never passes a size below the minimum to the PTY, whoever sends
 })
 
 test('re-attaching and re-showing force a repaint at the real size; the frame is never garbage', async ({ page }) => {
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'fullscreen')
   await expect(screen(page)).toContainText('FULLSCREEN')
@@ -160,7 +160,7 @@ test('re-attaching and re-showing force a repaint at the real size; the frame is
 })
 
 test('wheel scrolling works after leaving and coming back: scrollback, and an app with mouse tracking', async ({ page }) => {
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'flood 150')
   await expect(screen(page)).toContainText('line 150 of 150')
@@ -209,7 +209,7 @@ test('wheel scrolling works after leaving and coming back: scrollback, and an ap
 })
 
 test('switching agents and back is instant: same content and scroll position, no reconnect, no resize while hidden', async ({ page }) => {
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'flood 300')
   await expect(screen(page)).toContainText('line 300 of 300')
@@ -221,8 +221,7 @@ test('switching agents and back is instant: same content and scroll position, no
   await expect(page.locator('#stage .termjump')).toBeVisible()
 
   // To the other agent.
-  await page.locator('#drawer [data-act="back"]').click()
-  await row(page, OTHER).click()
+  await page.evaluate((id) => { location.hash = `#agent=${encodeURIComponent(id)}` }, OTHER) // as a click in the village column does
   await expect(page.locator('#stage .tname')).toHaveText('CI Lead')
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
   await expect(page.locator('#stage .termjump')).toBeHidden() // CI's own state, not DB's
@@ -246,8 +245,7 @@ test('switching agents and back is instant: same content and scroll position, no
       .observe(document.querySelector('#stage .termstatus'), { childList: true, characterData: true, subtree: true })
   })
   const back = Date.now()
-  await page.locator('#drawer [data-act="back"]').click()
-  await row(page, ID).click()
+  await page.evaluate((id) => { location.hash = `#agent=${encodeURIComponent(id)}` }, ID)
   await expect(page.locator('#stage .tname')).toHaveText('DB Lead')
   const after = await dbg(page)
   expect(after.id).toBe(ID)
@@ -267,7 +265,7 @@ test('switching agents and back is instant: same content and scroll position, no
 })
 
 test('closing gives the keyboard back exactly where it was; reopening restores the terminal as it was', async ({ page }) => {
-  // Opened by double-clicking its row: on close the row has the keyboard again, not the inspector.
+  // Opened by double-clicking its row: on close the row has the keyboard again.
   await row(page, ID).dblclick()
   await expect(page.locator('#stage')).toBeVisible()
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
@@ -280,10 +278,10 @@ test('closing gives the keyboard back exactly where it was; reopening restores t
   const before = await dbg(page)
   await close(page)
   await expect.poll(() => page.evaluate(() => document.activeElement?.closest('[data-id]')?.dataset.id)).toBe(ID)
-  // Opened from the inspector's button: back to that button.
-  await inspect(page, ID)
-  const btn = page.locator('#drawer [data-act="term"]')
-  await btn.focus()
+  // Opened from the agent menu with the keyboard: the menu is gone, so back to its row.
+  await row(page, ID).focus()
+  await page.keyboard.press('Shift+F10')
+  await expect(page.locator('#ctxmenu [data-cm="term"]')).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(page.locator('#stage')).toBeVisible()
   const again = await dbg(page)
@@ -292,12 +290,12 @@ test('closing gives the keyboard back exactly where it was; reopening restores t
   await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest('#stage .xterm'))).toBe(true)
   await page.keyboard.press('Shift+Escape')
   await expect(page.locator('#stage')).toBeHidden()
-  await expect(btn).toBeFocused()
+  await expect(row(page, ID)).toBeFocused()
 })
 
 test('copy a selection, paste (bracketed), find, clear the view and the jump to the latest output', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'copytoken')
   await expect(screen(page)).toContainText('echo: copytoken')
@@ -353,7 +351,7 @@ test('links: Cmd-click opens them outside the app; a plain click does not', asyn
   await page.addInitScript(() => { window.__opened = []; window.open = (...a) => { window.__opened.push(a); return null } })
   await page.reload()
   await expect(page.locator('#conn')).toHaveText(/Live/)
-  await inspect(page, ID)
+  await openMenu(page, ID)
   await enter(page)
   await typeLine(page, 'https://example.com/docs?x=1')
   await expect(screen(page)).toContainText('echo: https://example.com/docs?x=1')
@@ -372,8 +370,8 @@ test('links: Cmd-click opens them outside the app; a plain click does not', asyn
 test('the WebGL renderer (when the page has WebGL) draws the same terminal and takes keys', async ({ page }) => {
   await page.goto('/?debug&webgl')
   await expect(page.locator('#conn')).toHaveText(/Live/)
-  await inspect(page, ID)
-  await page.locator('#drawer [data-act="term"]').click()
+  await openMenu(page, ID)
+  await page.locator('#ctxmenu [data-cm="term"]').click()
   await expect(page.locator('#stage .termstatus')).toHaveText('Attached')
   await expect.poll(async () => (await dbg(page)).renderer).toMatch(/webgl|dom/)
   await typeLine(page, 'via webgl')

@@ -164,20 +164,21 @@ test.describe('desktop', () => {
     await shot(page, 'desktop-expanded')
   })
 
-  test('click opens the inspector; double-click activates like elsewhere', async ({ page }) => {
+  test('click selects; right-click opens the agent menu; double-click activates like elsewhere', async ({ page }) => {
     await open(page)
     const lead = card(page, claudeId('leadBlocked'))
     await lead.click()
-    await expect(page.locator('#drawer .detail h3')).toContainText('DB Lead')
     await expect(lead).toHaveClass(/cur/)
     await expect(lead).toHaveAttribute('aria-selected', 'true')
-    // the chart stays usable beside the inspector
-    await card(page, claudeId('boss')).click()
-    await expect(page.locator('#drawer .detail h3')).toContainText('Big Boss')
-    // a subagent can't be opened in a terminal: a double-click shows its inspector, which says why
+    await expect(page.locator('#ctxmenu')).toBeHidden()
+    await card(page, claudeId('boss')).click({ button: 'right' })
+    await expect(page.locator('#ctxmenu .cm-name')).toHaveText('Big Boss')
+    await page.keyboard.press('Escape')
+    // a subagent can't be opened in a terminal: a double-click shows its menu, which says why
     await named(page, 'test-engineer').dblclick()
-    await expect(page.locator('#drawer .detail h3')).toContainText('test-engineer')
-    await shot(page, 'desktop-inspector')
+    await expect(page.locator('#ctxmenu .cm-name')).toHaveText('test-engineer')
+    await expect(page.locator('#ctxmenu .cm-item[data-cm="term"]')).toHaveAttribute('aria-disabled', 'true')
+    await shot(page, 'desktop-menu')
   })
 
   test('keyboard: Up to the parent, Down to the first report, Left/Right to siblings, Enter opens', async ({ page }) => {
@@ -208,9 +209,16 @@ test.describe('desktop', () => {
     await expect(boss).toHaveAttribute('aria-expanded', 'false')
     await page.keyboard.press('Space')
     await expect(boss).toHaveAttribute('aria-expanded', 'true')
+    // Enter selects; Enter again (or Shift+F10) opens its menu
     await named(page, 'test-engineer').focus()
     await page.keyboard.press('Enter')
-    await expect(page.locator('#drawer .detail h3')).toContainText('test-engineer')
+    await expect(named(page, 'test-engineer')).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('#ctxmenu .cm-name')).toHaveText('test-engineer')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('#ctxmenu')).toBeHidden()
+    await page.keyboard.press('Shift+F10')
+    await expect(page.locator('#ctxmenu .cm-name')).toHaveText('test-engineer')
   })
 
   test('a poll keeps pills, folds, the camera, the focused card and the card elements themselves', async ({ page }) => {
@@ -316,8 +324,8 @@ test.describe('mobile', () => {
     await page.keyboard.press('ArrowRight') // unfold
     await expect(boss).toHaveAttribute('aria-expanded', 'true')
     await kid.tap()
-    await expect(page.locator('#drawer .detail h3')).toContainText('test-engineer')
-    await shot(page, 'mobile-inspector')
+    await expect(kid).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('#ctxmenu')).toBeHidden()
   })
 
   test('the big fleet stays an outline with only nearby rows in the DOM', async ({ page }) => {

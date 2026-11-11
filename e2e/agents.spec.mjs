@@ -9,19 +9,12 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import AxeBuilder from '@axe-core/playwright'
 import { test, expect } from './fixtures.mjs'
-import { SHOTS, IDS, claudeId, prepareHome, startServer, tmpDir, nextPort, inspect } from './helpers.mjs'
-import { ASK } from '../test/fixtures/make-home.mjs'
+import { SHOTS, IDS, claudeId, prepareHome, startServer, tmpDir, nextPort, openMenu, menuItem } from './helpers.mjs'
 
 const STUB = fileURLToPath(new URL('../test/fixtures/bin/claude-bg', import.meta.url))
 let s, env, sockRoot, peers, frames, cwd
 const isMobile = (ti) => ti.project.name === 'mobile'
 const shot = (page, ti, name) => page.screenshot({ path: `${SHOTS}/${ti.project.name}-${name}.png` })
-/** Leave the open inspector (docked, it replaces the list), then open another agent's. */
-async function reinspect(page, id) {
-  const back = page.locator('#drawer [data-act="back"]')
-  if (await back.isVisible()) await back.click()
-  await inspect(page, id)
-}
 const runs = () => { const f = path.join(env.dir, 'claude-bg.log'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [] }
 
 function peer(key) {
@@ -94,78 +87,22 @@ test.afterEach(async () => {
 
 test.describe('expanded Team view', () => {
   test.use({ firstRun: true })
-  test('cards carry change and PR-state chips; failing checks are amber, not red', async ({ page }, ti) => {
+  test('cards carry the change chip; PR state is in the agent menu, never beside the name; failing checks are amber, not red', async ({ page }, ti) => {
     test.skip(isMobile(ti), 'desktop layout')
     await page.goto(s.url)
     const lead = page.locator(`#list .row[data-id="${claudeId('leadBuilding')}"]`)
     await expect(lead.locator('.chip.chg')).toHaveText('Changes: +188 −12 · 4 files', { timeout: 15_000 })
-    const pr = lead.locator('.chip[data-href$="/pull/101"]')
+    await expect(lead.locator('.chip:not(.chg)')).toHaveCount(0)
+    await lead.click({ button: 'right' })
+    const pr = page.locator('#ctxmenu .cm-prs a.chip[href$="/pull/101"]')
     await expect(pr).toHaveClass(/pr-open/)
     await expect(pr).toHaveClass(/pr-failing/)
     await expect(pr).toHaveAttribute('title', 'Open PR #101 (Open, 1 check failing, Review required) in a new tab')
     expect(await pr.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(242, 184, 75)') // --stalled amber
+    await page.keyboard.press('Escape')
     await expect(page.locator('#btn-new')).toBeVisible()
     await shot(page, ti, 'agents-team-chips')
   })
-})
-
-test('reply: the question, the prefilled suggested reply, the exact text, then Delivered', async ({ page }, ti) => {
-  await page.goto(s.url)
-  await inspect(page, claudeId('leadBlocked'))
-  const d = page.locator('#drawer')
-  await expect(d.locator('.ask h4')).toHaveText('DB Lead is asking')
-  await expect(d.locator('.ask .needs')).toHaveText(ASK.needs)
-  await expect(d.locator('#msg-box')).toHaveValue(ASK.suggestedReply)
-  await expect(d.locator('.ask .helper').last()).toContainText('cross-session-message')
-  // House rule: an empty box explains instead of disabling the button.
-  await d.locator('#msg-box').fill('   ')
-  await d.locator('[data-ins="msgpreview"]').click()
-  await expect(d.locator('#msg-err')).toHaveText('Write a message first.')
-  await d.locator('#msg-box').fill('Use knex. Keep the old migrations.')
-  await d.locator('[data-ins="msgpreview"]').click()
-  await expect(d.locator('#msg-preview')).toHaveText('<cross-session-message from-name="Agentville">\nUse knex. Keep the old migrations.\n</cross-session-message>')
-  expect(frames.leadBlocked).toHaveLength(0)
-  if (!isMobile(ti)) {
-    const axe = await new AxeBuilder({ page }).include('#drawer').analyze()
-    expect(axe.violations.filter((v) => ['serious', 'critical'].includes(v.impact)).map((v) => v.id)).toEqual([])
-  }
-  await shot(page, ti, 'agents-reply-preview')
-  await d.locator('[data-ins="msgsend"]').click()
-  await expect(d.locator('.msgstat')).toContainText('Delivered')
-  expect(frames.leadBlocked.map((f) => f.message.content)).toEqual(['<cross-session-message from-name="Agentville">\nUse knex. Keep the old migrations.\n</cross-session-message>'])
-})
-
-test('message: collapsed by default for a live session; Codex says why', async ({ page }) => {
-  await page.goto(s.url)
-  await inspect(page, claudeId('soloTurn'))
-  const d = page.locator('#drawer')
-  const toggle = d.locator('[data-ins="msgtoggle"]')
-  await expect(toggle).toHaveText('Message Explain the build')
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  await expect(d.locator('#msg-box')).toHaveCount(0)
-  await toggle.click()
-  await expect(d.locator('#msg-box')).toBeFocused()
-  await d.locator('#msg-box').fill('Also update the docs')
-  await d.locator('#msg-box').press('Control+Enter') // goes to the preview, never straight to sending
-  await expect(d.locator('#msg-preview')).toContainText('Also update the docs')
-  await d.locator('[data-ins="msgsend"]').click()
-  await expect(d.locator('.msgstat')).toContainText('Delivered')
-  await reinspect(page, `codex:${IDS.codexTurn}`)
-  await expect(d.locator('.facts')).toContainText('Codex')
-  await d.locator('[data-ins="msgtoggle"]').click()
-  await expect(d.locator('.composebox')).toContainText("Codex threads can't be messaged from here. Reply in Codex.")
-})
-
-test('inspector: changed files (paths and counts only) and each PR with checks and review', async ({ page }, ti) => {
-  await page.goto(s.url)
-  await inspect(page, claudeId('leadBuilding'))
-  const d = page.locator('#drawer')
-  await expect(d.locator('#chg-h')).toHaveText('Changes +188 −12 · 4 files', { timeout: 15_000 })
-  await expect(d.locator('.chg .helper')).toHaveText('Against main · on api-v2 · paths and line counts only')
-  await expect(d.locator('.chg .files li')).toHaveText([/^README\.md\s*\+4\s*−2$/, /^src\/api\.js\s*\+120\s*−10$/, /^src\/api\.test\.js\s*new, untracked$/, /^src\/routes\.js\s*\+64\s*−0$/])
-  await expect(d.locator('.chg')).not.toContainText('v2 0') // never file content
-  await expect(d.locator('.prs li')).toHaveText([/^#101\s*Open\s*Checks: 1 failed, 2 pending, 7 passed\s*Review required$/])
-  await shot(page, ti, 'agents-inspector-changes')
 })
 
 test('new agent: the sheet shows the exact command, starts once, and the agent appears', async ({ page }, ti) => {
@@ -198,33 +135,37 @@ test('new agent: the sheet shows the exact command, starts once, and the agent a
   await expect(sh.locator('[data-na="show"]')).toBeVisible({ timeout: 10_000 })
   expect(runs().map((r) => r.argv)).toEqual([['--bg', '--name=Release notes', '--model=sonnet', '--effort=high', '--permission-mode=acceptEdits', '--worktree', '--', 'Write the release notes for v2']])
   await sh.locator('[data-na="show"]').click()
-  await expect(page.locator('#drawer h3')).toHaveText('Release notes')
+  await expect(sh).toBeHidden()
+  await expect(page.locator('#list .row[aria-current="true"] .nm > span').first()).toHaveText('Release notes')
 })
 
 test('stop job and fork: confirm shows the command; interactive sessions are refused with the reason', async ({ page }) => {
   await page.goto(s.url)
-  await inspect(page, claudeId('leadCi'))
-  const d = page.locator('#drawer')
-  await d.locator('[data-act="stop"]').click()
-  await expect(d.locator('#act-cmd')).toHaveText(`claude stop ${IDS.leadCi.slice(0, 8)}`)
-  await expect(d.locator('.actbox')).toContainText(`claude attach ${IDS.leadCi.slice(0, 8)} opens it again`)
+  const sh = page.locator('#agentsheet')
+  await openMenu(page, claudeId('leadCi'))
+  await menuItem(page, 'stop').click()
+  await expect(sh.locator('#act-cmd')).toHaveText(`claude stop ${IDS.leadCi.slice(0, 8)}`)
+  await expect(sh).toContainText(`claude attach ${IDS.leadCi.slice(0, 8)} opens it again`)
   expect(runs()).toHaveLength(0)
-  await d.locator('[data-ins="actrun"]').click()
-  await expect(d.locator('.msgstat')).toContainText('Stopped')
+  await sh.locator('[data-as="run"]').click()
+  await expect(sh.locator('.msgstat')).toContainText('Stopped')
   expect(runs().map((r) => r.argv)).toEqual([['stop', IDS.leadCi.slice(0, 8)]])
+  await sh.locator('[data-as="close"]').click()
 
-  await reinspect(page, claudeId('soloTurn'))
-  await expect(d.locator('h3')).toHaveText('Explain the build')
-  await d.locator('[data-act="stop"]').click()
-  await expect(d.locator('.actbox .err')).toContainText('This is an interactive session, not a background job.')
-  await d.locator('[data-act="fork"]').click()
-  await d.locator('#fork-name').fill('Explain, take two')
-  await d.locator('[data-ins="actreview"]').click()
-  await expect(d.locator('#act-cmd')).toHaveText(`claude --resume ${IDS.soloTurn} --fork-session --bg '--name=Explain, take two'`)
-  await d.locator('[data-ins="actrun"]').click()
-  await expect(d.locator('.msgstat')).toContainText('Forked')
+  await openMenu(page, claudeId('soloTurn'))
+  await expect(page.locator('#ctxmenu .cm-name')).toHaveText('Explain the build')
+  await menuItem(page, 'stop').click()
+  await expect(sh.locator('.err')).toContainText('This is an interactive session, not a background job.')
+  await sh.locator('[data-as="close"]').click()
+  await openMenu(page, claudeId('soloTurn'))
+  await menuItem(page, 'fork').click()
+  await sh.locator('#fork-name').fill('Explain, take two')
+  await sh.locator('[data-as="review"]').click()
+  await expect(sh.locator('#act-cmd')).toHaveText(`claude --resume ${IDS.soloTurn} --fork-session --bg '--name=Explain, take two'`)
+  await sh.locator('[data-as="run"]').click()
+  await expect(sh.locator('.msgstat')).toContainText('Forked')
   expect(runs().at(-1).argv).toEqual(['--resume', IDS.soloTurn, '--fork-session', '--bg', '--name=Explain, take two'])
-  await expect(d.locator('[data-ins="actgoto"]')).toBeVisible({ timeout: 10_000 })
+  await expect(sh.locator('[data-as="goto"]')).toBeVisible({ timeout: 10_000 })
 })
 
 test('search: conversation names, resting ones included, open the agent; settings offer the notifications', async ({ page }) => {
@@ -235,7 +176,8 @@ test('search: conversation names, resting ones included, open the agent; setting
   await expect(res.locator('.convrow .cn')).toHaveText('invoice-bot')
   await expect(res.locator('.convrow .cm')).toHaveText('demo-app · 3d ago · now “Old prompt”')
   await res.locator('.convrow').click()
-  await expect(page.locator('#drawer h3')).toHaveText('Old prompt')
+  await expect(page).toHaveURL(/#agent=/) // selected and revealed
+  await expect(page.locator('#list .row[aria-current="true"] .nm > span').first()).toHaveText('Old prompt')
   await page.locator('#btn-settings').click()
   for (const k of ['input', 'finished', 'checks']) await expect(page.locator(`#pop-settings [data-set="notify-${k}"]`)).not.toBeChecked()
 })

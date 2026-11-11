@@ -1,21 +1,21 @@
-// The agent panel: Status and Team views, detail view. Rows are cached by id and patched in
+// The agent panel: Status, Team, Tree, Table and Models views. Rows are cached by id and patched in
 // place; containers are keyed too, so a poll moves at most a few nodes and never rebuilds the list.
 import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, bucketIcon, icon, ago, agoLong, clock, esc, safeHref, h, store } from './ui.js';
 import { createTable } from './table.js';
 import { createModels } from './models.js';
 import { createTree } from './tree.js';
 import { rank, byRank, enteredAt, syncNodes } from './order.js';
-import { createInspect, prTone, changesLabel } from './inspect.js';
+import { prTone, changesLabel } from './prs.js';
+import { createMenu } from './ctxmenu.js';
+import { createAgentSheet } from './agentsheet.js';
 import { pinned, folds, stoppedNote } from './important.js';
 
 const LIVE = ['stalled', 'waiting', 'building'];
 const EMPTY_NOTE = { stalled: 'Nobody needs you.', waiting: 'Nothing is waiting.', building: 'Nobody is building right now.' };
-const NONE_PARENT = ''; // "None" in the parent picker: an explicit "no parent" override
 
 export function createPanel(app) {
   const { S } = app;
   const list = document.getElementById('list');
-  const drawer = document.getElementById('drawer');
   const fchips = document.getElementById('fchips');
 
   // ---------- keyed node cache ----------
@@ -33,11 +33,12 @@ export function createPanel(app) {
   const sync = (parent, nodes) => syncNodes(parent, nodes, hold);
 
   // ---------- engagement: hold the order while the user is reading or pointing at the list ----------
-  // Pointer over the list or detail, keyboard focus in the panel, a scroll in the last 3 s, or the
-  // detail view open. When engagement ends, the held moves apply (with a short slide).
+  // Pointer over the list, keyboard focus in the panel, a scroll in the last 3 s, or the agent menu
+  // open. When engagement ends, the held moves apply (with a short slide).
   const pbody = list.parentElement;
   let pointerIn = false, kbFocus = false, scrolledAt = 0, lastInput = 'mouse', releaseTimer = 0;
-  const engaged = () => pointerIn || kbFocus || Date.now() - scrolledAt < 3000 || !!S.detail;
+  let menu = null, sheet = null;
+  const engaged = () => pointerIn || kbFocus || Date.now() - scrolledAt < 3000 || !!menu?.isOpen();
   const maybeRelease = () => { clearTimeout(releaseTimer); releaseTimer = setTimeout(() => { if (hold && !engaged()) app.render(); }, 50); };
   addEventListener('keydown', () => { lastInput = 'kb'; }, true);
   addEventListener('pointerdown', () => { lastInput = 'mouse'; }, true);
@@ -112,7 +113,6 @@ export function createPanel(app) {
     // A wide panel (≥ 600px) has room for harness and last activity on line 2.
     const extra = wide ? [HARNESS_NAME[a.harness] || a.harness, a.lastActivityAt ? `active ${ago(now - a.lastActivityAt)} ago` : ''] : [];
     const l2 = [reason, project, crumb && parent && a.role !== 'boss' ? `↳ ${parent.name}` : '', ...extra].filter(Boolean).join(' · ');
-    const prs = a.prs || [];
     const dup = dupOf(a);
     // The accessible name comes from the visible row text (WCAG 2.5.3: speech users say what they see),
     // with role, bucket and duration spelled out in a screen-reader-only tail.
@@ -120,10 +120,10 @@ export function createPanel(app) {
       a.live ? '' : 'not running'].filter(Boolean).join(', ');
     // Changed files in its folder: a small chip where there is room (expanded, or a wide panel).
     const chg = a.changes && (S.panel === 'full' || wide) ? changesLabel(a.changes) : '';
-    const sig = [a.name, a.important, dup, a.role, a.roleSource, a.bucket, a.severity, a.prompt, a.live, a.hidden, l2, prs.map(p => `${p.id}:${p.state}:${p.checks?.failed}:${p.checks?.pending}`).join(), chg, t > 30 * 60e3, tail, sum].join('|');
+    const sig = [a.name, a.important, dup, a.role, a.roleSource, a.bucket, a.severity, a.prompt, a.live, a.hidden, l2, chg, t > 30 * 60e3, tail, sum].join('|');
     if (btn._sig !== sig) {
       btn.innerHTML = `<span class="rg">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}${a.roleSource === 'override' ? '<i class="ov"></i>' : ''}</span>
-        <span class="nm"><span>${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${dup ? `<span class="dup">${esc(dup)}</span>` : ''}<span class="nmx">${a.hidden ? '<span class="htag">Hidden</span>' : ''}${prs.slice(0, 2).map(p => chip(p)).join('')}${prs.length > 2 ? `<span class="chip">+${prs.length - 2}</span>` : ''}${chg ? `<span class="chip chg" title="Changed in its folder: ${esc(chg)}"><span class="sr">Changes: </span>${esc(chg)}</span>` : ''}</span></span>
+        <span class="nm"><span>${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${dup ? `<span class="dup">${esc(dup)}</span>` : ''}<span class="nmx">${a.hidden ? '<span class="htag">Hidden</span>' : ''}${chg ? `<span class="chip chg" title="Changed in its folder: ${esc(chg)}"><span class="sr">Changes: </span>${esc(chg)}</span>` : ''}</span></span>
         <span class="meta"><i class="live ${a.live ? '' : 'no'}" aria-hidden="true"></i><span class="num ${a.bucket === 'stalled' && t > 30 * 60e3 ? 'old' : ''}">${ago(t)}</span></span>
         <span class="l2">${icon(bucketIcon(a))}<span>${esc(l2)}</span></span>${sum}<span class="sr">, ${esc(tail)}</span>`;
       btn.querySelector('.nm > span').title = a.name;
@@ -142,14 +142,21 @@ export function createPanel(app) {
     const words = t.words ? ` (${t.words})` : '';
     return `<span class="chip${t.cls}"${href ? ` data-href="${esc(href)}" title="Open PR #${esc(p.id)}${esc(words)} in a new tab"` : t.words ? ` title="PR #${esc(p.id)}${esc(words)}"` : ''}>#${esc(p.id)}</span>`;
   };
-  // A row's <li> also carries the compact "open in terminal" button (shown on hover/focus).
+  // A row's <li> also carries the compact "open in terminal" button (shown on hover/focus) and the
+  // "⋯" that opens its menu (always shown on touch screens).
   const li = (key, ...kids) => {
     const el = keyed(key, () => h('li'));
     const a = kids[0]?.classList?.contains('row') && S.byId.get(kids[0].dataset.id);
     const ob = a && openBtn(a);
-    sync(el, ob ? [...kids, ob] : kids);
+    sync(el, a ? [...kids, ...(ob ? [ob] : []), menuBtn(a)] : kids);
     return el;
   };
+  function menuBtn(a) {
+    const b = keyed(`mb:${a.id}`, () => h('button', { class: 'menubtn', type: 'button', 'data-menu': a.id, 'aria-haspopup': 'menu', html: '<span aria-hidden="true">⋯</span>' }));
+    const label = `Actions for ${a.name}`;
+    if (b.getAttribute('aria-label') !== label) { b.setAttribute('aria-label', label); b.title = `${label} (right-click, or Shift+F10)`; }
+    return b;
+  }
 
   // ---------- open in terminal (Ghostty / Terminal.app / a Linux terminal; the server picks) ----------
   // The server runs the agent's own resume command in a new terminal window. We only predict whether
@@ -165,7 +172,7 @@ export function createPanel(app) {
     if (a.harness === 'claude-code' && (a.kind === 'session' || a.reopened) && a.live) return 'Already running in another terminal';
     return null;
   }
-  // The built-in terminal (term.js): same command and refusals as Open, in a pane in the detail.
+  // The built-in terminal (term.js): same command and refusals as Open.
   const embedded = id => (S.data?.term?.running || []).includes(id);
   const termBlock = a => (embedded(a.id) ? null : openBlock(a));
 
@@ -186,7 +193,6 @@ export function createPanel(app) {
     opening = true;
     const label = btn?.textContent;
     if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); if (btn.classList.contains('primary')) btn.textContent = 'Opening…'; }
-    showActErr('');
     try {
       const res = await fetch(`/api/open/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
       const body = await res.json().catch(() => ({}));
@@ -194,11 +200,10 @@ export function createPanel(app) {
       store.set('va.opened', true);
       app.toast(`Opened ${a.name} in ${TERM_NAME[body.terminal] || termName()}`);
       report?.('');
-      drawer.querySelector('.opennote')?.remove();
     } catch (e) {
       // Never retry: a window may already be open. The server's message is written for people.
       const msg = e instanceof TypeError ? "Couldn't open: the Agentville server isn't reachable." : e.message;
-      if (report) report(msg); else if (S.detail && S.selected === id) showActErr(msg); else app.toast(msg);
+      if (report) report(msg); else app.toast(msg);
     } finally {
       opening = false;
       if (btn?.isConnected) { btn.disabled = false; btn.removeAttribute('aria-busy'); if (label != null) btn.textContent = label; }
@@ -348,6 +353,7 @@ export function createPanel(app) {
     wrapKids.push(row);
     const ob = openBtn(a);
     if (ob) wrapKids.push(ob);
+    wrapKids.push(menuBtn(a));
     const tw = keyed(`tw:${a.id}`, () => h('div', { class: 'tw' }));
     sync(tw, wrapKids);
     const nodes = [tw];
@@ -525,7 +531,7 @@ export function createPanel(app) {
     sync(el, nodes);
     return el;
   }
-  // Quiet teams or projects as one wrapping line of small chips. Team chips open the lead's detail.
+  // Quiet teams or projects as one wrapping line of small chips. Team chips select the lead.
   function quietStrip(key, items) {
     const el = keyed(key, () => h('div', { class: 'quiet' }));
     const html = `<span class="ql">Quiet</span>${items.map(([id, name, n]) => (id
@@ -577,7 +583,7 @@ export function createPanel(app) {
   }
 
   // ---------- render ----------
-  let pendingScroll = null, listScroll = 0;
+  let pendingScroll = null;
   // Names that collide among rows on screen get a short id after them. Resting rows are usually
   // folded away, so they only count when the row itself rests or resting rows are expanded.
   let awakeCount = new Map(), allCount = new Map(), wide = false;
@@ -634,26 +640,13 @@ export function createPanel(app) {
       const conv = S.view === 'status' || S.view === 'team' ? convSection() : null;
       if (conv) nodes = [...nodes, conv];
     }
-    // Detail replaces the list when docked; it's a drawer over the list in full-screen.
-    const detailOpen = S.detail && S.selected && S.byId.has(S.selected);
-    const listHidden = detailOpen && S.panel !== 'full';
-    if (listHidden && !list.hidden) listScroll = list.scrollTop;
-    list.hidden = listHidden;
     if (!nodes.includes(tree.el)) list.classList.remove('chart');
     sync(list, nodes);
     if (!hold) shownBucket = new Map(S.agents.map(a => [a.id, a.bucket]));
     if (before) flip(before, wasHeld);
-    if (!listHidden && list._wasHidden) list.scrollTop = listScroll;
-    list._wasHidden = listHidden;
     for (const k of [...cache.keys()]) if (!used.has(k)) cache.delete(k);
-    renderDetail(detailOpen ? S.byId.get(S.selected) : null);
-    // Full screen: the inspector takes its own column; once the list has reflowed, keep the
-    // selected row in view.
-    const inspecting = !!detailOpen && S.panel === 'full';
-    if (inspecting !== pbody.classList.contains('inspecting')) {
-      pbody.classList.toggle('inspecting', inspecting);
-      if (inspecting) setTimeout(() => list.querySelector(`[data-id="${CSS.escape(S.selected)}"]`)?.scrollIntoView({ block: 'nearest' }), S.reduceMotion ? 0 : 170);
-    }
+    menu.update();
+    sheet.update();
 
     if (activeKey && document.activeElement !== active) {
       const el = cache.get(activeKey);
@@ -667,119 +660,7 @@ export function createPanel(app) {
     }
   }
 
-  // ---------- detail ----------
-  let detailFor = null, editing = false;
-  function renderDetail(a) {
-    drawer.hidden = !a;
-    if (!a) { detailFor = null; editing = false; return; }
-    if (detailFor !== a.id) {
-      detailFor = a.id; editing = false;
-      // "← All agents" when the inspector replaces the list (docked); beside the list (expanded, or
-      // the terminal view) it is a pane, and "Close" collapses it.
-      drawer.innerHTML = `<div class="detail"><div class="dhead"><button class="ghost back" type="button" data-act="back">← All agents</button><button class="iconbtn dclose" type="button" data-act="closedetail" aria-label="Close inspector (Esc)" title="Close inspector (Esc)">✕</button></div><div class="info"></div><div class="reply"></div><div class="acts"></div><div class="extra"></div></div>`;
-      drawer.scrollTop = 0;
-    }
-    const now = S.data?.serverTime || Date.now();
-    const parent = a.parentId && S.byId.get(a.parentId);
-    const kids = kidsOf(a).slice().sort(byBucket);
-    const harness = HARNESS_NAME[a.harness] || a.harness;
-    const info = drawer.querySelector('.info');
-    const infoHtml = `
-      <h3 tabindex="-1">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}<span>${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}</h3>
-      <div style="margin-top:8px"><span class="pill b-${isError(a) ? 'error' : a.bucket}">${icon(bucketIcon(a))}${isError(a) ? 'Error' : BUCKET_NAME[a.bucket]} · <span class="num">${ago(now - a.since)}</span></span></div>
-      <p style="margin:12px 0 0">${esc(a.reason || BUCKET_NAME[a.bucket])}${a.since ? ` · since ${clock(a.since)}` : ''}</p>
-      ${stoppedNote(a) ? `<p class="stopnote" style="margin:8px 0 0"><b>${esc(stoppedNote(a))}</b>. It isn't running; it stays in view because it's Important. Resume it from the actions below.</p>` : ''}
-      ${a.title ? `<p class="ttl${info._more ? '' : ' clamp'}" style="margin:12px 0 0">${esc(a.title)}</p>${a.title.length > 160 ? `<button class="link" type="button" data-act="moretitle">${info._more ? 'less' : 'more'}</button>` : ''}` : ''}
-      <dl class="facts" style="margin-top:12px">
-        <dt>Project</dt><dd title="${esc(a.project)}">${esc(a.project || '—')}</dd>
-        <dt>Harness</dt><dd>${esc(harness)}</dd>
-        <dt>Role</dt><dd>${ROLE_NAME[a.role] || esc(a.role)}${a.roleSource === 'override' ? ' · set manually' : ''}</dd>
-        <dt>Parent</dt><dd>${parent ? `<button class="link" type="button" data-act="goto" data-id="${esc(parent.id)}">${icon(bucketIcon(parent))}${esc(parent.name)}</button>` : '—'}</dd>
-        <dt>Children</dt><dd class="wrap">${kids.length ? kids.slice(0, 20).map(k => `<button class="link" type="button" data-act="goto" data-id="${esc(k.id)}" aria-label="${esc(k.name)}, ${isError(k) ? 'Error' : BUCKET_NAME[k.bucket]}">${icon(bucketIcon(k))}${esc(k.name)}</button>`).join(', ') + (kids.length > 20 ? ` and ${kids.length - 20} more` : '') : '—'}</dd>
-        <dt>Live</dt><dd>${a.live ? 'Yes' : 'No'}</dd>
-        <dt>Last activity</dt><dd>${a.lastActivityAt ? `${ago(now - a.lastActivityAt)} ago · ${clock(a.lastActivityAt)}` : '—'}</dd>
-        <dt>Working dir</dt><dd class="mono ltr" title="${esc(a.cwd || '')}"><bdi>${esc(a.cwd || '—')}</bdi></dd>
-        <dt>Id</dt><dd class="mono" title="${esc(a.id)}">${esc(a.id)}</dd>
-      </dl>
-      ${S.view === 'models' ? models.detailHtml(a) : ''}`;
-    if (info._html !== infoHtml) {
-      const focusedAct = info.contains(document.activeElement) ? document.activeElement.dataset.id || document.activeElement.dataset.act : null;
-      info.innerHTML = infoHtml;
-      info._html = infoHtml;
-      if (focusedAct) info.querySelector(`[data-id="${CSS.escape(focusedAct)}"],[data-act="${CSS.escape(focusedAct)}"]`)?.focus();
-    }
-    const acts = drawer.querySelector('.acts');
-    const term = terminal(), block = term && openBlock(a);
-    const builtIn = !!S.data?.term?.available, tblock = builtIn && termBlock(a), inView = S.term === a.id;
-    // Built-in terminal first; "Open in <terminal>" is then the secondary way to the same session.
-    const why = tblock || block;
-    // Stop job (background jobs) and Fork (Claude conversations): each shows its command and asks first.
-    const sub = ['subagent', 'teammate', 'thread'].includes(a.kind);
-    const canStop = !sub && (a.bucket !== 'resting' || a.live), canFork = a.harness === 'claude-code' && !sub && !a.neverStarted;
-    const actsSig = [a.id, !!a.resume, !!a.hidden, !!a.important, editing, term, block, builtIn, tblock, inView, embedded(a.id), canStop, canFork, a.kind].join('|');
-    if (acts._sig !== actsSig) {
-      acts._sig = actsSig;
-      const hadFocus = acts.contains(document.activeElement) && document.activeElement.dataset.act;
-      acts.innerHTML = `<div class="actions" style="margin-top:4px">
-          ${a.hidden ? '<button class="primary" type="button" data-act="unhide">Unhide</button>' : ''}
-          ${builtIn ? `<button class="${a.hidden ? 'ghost' : 'primary'}" type="button" data-act="term" aria-pressed="${inView}" ${tblock ? 'disabled aria-describedby="openwhy"' : ''}>${inView ? 'In the terminal' : embedded(a.id) ? 'Terminal · running' : 'Terminal'}</button>` : ''}
-          ${term && !builtIn ? `<button class="${a.hidden ? 'ghost' : 'primary'}" type="button" data-act="open" ${block ? 'disabled aria-describedby="openwhy"' : ''}>Open in ${esc(termName())}</button>` : ''}
-          <button class="ghost" type="button" data-act="showvillage">Show in village</button>
-          ${a.resume ? `<button class="ghost" type="button" data-act="copyresume" title="${esc(a.resume)}">${/^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command'}</button>` : ''}
-          ${canFork ? '<button class="ghost" type="button" data-act="fork" data-ins="fork">Fork…</button>' : ''}
-          ${canStop ? `<button class="ghost" type="button" data-act="stop" data-ins="stop">${a.kind === 'job' ? 'Stop job…' : 'Stop…'}</button>` : ''}
-          ${!sub ? `<button class="ghost" type="button" data-act="important" aria-pressed="${!!a.important}" title="Important agents are never folded away or tidied out of view (only Hide removes them), and come back with Restore after crash">${a.important ? '★ Important' : '☆ Mark important'}</button>` : ''}
-          <button class="ghost" type="button" data-act="edit" aria-expanded="${editing}">Edit…</button>
-          ${a.hidden ? '' : `<button class="ghost iconbtn trash" type="button" data-act="hide" aria-label="Hide from Agentville" title="Hide from Agentville"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M6 1.5h4a1 1 0 0 1 1 1V3h3v1.5H2V3h3v-.5a1 1 0 0 1 1-1zM3.2 5.5h9.6l-.7 8.1a1.5 1.5 0 0 1-1.5 1.4H5.4a1.5 1.5 0 0 1-1.5-1.4zm2.8 1.5v6h1.2V7zm2.8 0v6H10V7z"/></svg></button>`}
-        </div>
-        ${why ? `<p class="helper" id="openwhy" style="margin:4px 0 0">${esc(why)}</p>` : ''}
-        ${term && !builtIn && !block && ['ghostty', 'terminal'].includes(term) && !store.get('va.opened', false) ? `<p class="helper opennote" style="margin:4px 0 0">macOS may ask to let Agentville control ${esc(termName())}.</p>` : ''}
-        ${a.resume ? '' : '<p class="helper" style="margin:4px 0 0">No resume command for this session</p>'}
-        <p class="helper act-err" role="alert" style="margin:4px 0 0;color:var(--error)" hidden></p>
-        ${editing ? editForm(a) : ''}`;
-      if (hadFocus) acts.querySelector(`[data-act="${CSS.escape(hadFocus)}"]`)?.focus(); // a re-render keeps the keyboard in place
-    }
-    inspect.render(a, { reply: drawer.querySelector('.reply'), extra: drawer.querySelector('.extra') });
-  }
-  function editForm(a) {
-    const o = a.overrides || {};
-    const has = k => Object.prototype.hasOwnProperty.call(o, k) && o[k] !== null;
-    const roleVal = has('role') ? o.role : '';
-    const parentVal = has('parentId') ? (o.parentId || NONE_PARENT) : '__auto';
-    const banned = new Set([a.id, ...descendants(a).map(d => d.id)]);
-    const options = S.agents.filter(x => x.bucket !== 'resting' && !banned.has(x.id)).sort((x, y) => x.name.localeCompare(y.name));
-    if (has('parentId') && o.parentId && !options.some(x => x.id === o.parentId)) {
-      const cur = S.byId.get(o.parentId);
-      options.unshift(cur || { id: o.parentId, name: o.parentId, project: '' });
-    }
-    return `<form class="edit" data-form="edit" style="margin-top:12px" novalidate>
-      <label>Name<input name="name" value="${esc(has('name') ? o.name : '')}" placeholder="${esc(a.name)} (auto)" maxlength="120"></label>
-      <label>Role<select name="role">${[['', 'Auto (detected)'], ['boss', 'Boss'], ['lead', 'Lead'], ['sub', 'Sub'], ['solo', 'Solo']].map(([v, l]) => `<option value="${v}" ${v === roleVal ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label>Parent<select name="parent">
-        <option value="__auto" ${parentVal === '__auto' ? 'selected' : ''}>Auto (detected)</option>
-        <option value="${NONE_PARENT}" ${parentVal === NONE_PARENT ? 'selected' : ''}>None</option>
-        ${options.map(x => `<option value="${esc(x.id)}" ${x.id === parentVal ? 'selected' : ''}>${esc(x.name)}${x.project ? ` — ${esc(x.project)}` : ''}</option>`).join('')}
-      </select></label>
-      <p class="err" role="alert" hidden></p>
-      <div class="actions"><button class="primary" type="submit">Save</button><button class="ghost" type="button" data-act="canceledit">Cancel</button></div>
-    </form>`;
-  }
-
   // ---------- events ----------
-  async function copy(text, btn) {
-    const label = btn.textContent;
-    try {
-      await navigator.clipboard.writeText(text);
-      btn.textContent = 'Copied';
-    } catch {
-      btn.textContent = 'Couldn\'t copy';
-    }
-    setTimeout(() => { if (btn.isConnected) btn.textContent = label; }, 1500);
-  }
-  function showActErr(msg) {
-    const p = drawer.querySelector('.act-err');
-    if (p) { p.textContent = msg; p.hidden = !msg; }
-  }
   async function hide(a, hidden) {
     try {
       await app.patch(a.id, { hidden: hidden ? true : null });
@@ -787,27 +668,25 @@ export function createPanel(app) {
         if (S.selected === a.id && !S.filters.showHidden) app.select(null);
         const n = (S.data?.agents || []).filter(x => x.hidden).length;
         app.toast(`${a.name} hidden. Find it under “${n} hidden” at the top of the list.`, { label: 'Undo', run: () => app.patch(a.id, { hidden: null }).catch(e => app.toast(`Couldn't unhide — ${e.message}`)) }, 8000);
-      }
+      } else app.say(`${a.name} is shown again`);
     } catch (e) {
-      showActErr(saveError(e));
+      app.toast(saveError(e));
     }
   }
   const saveError = e => (e instanceof TypeError ? 'Couldn\'t save — server not reachable.' : `Couldn't save — ${e.message}`);
 
   const userAction = () => { userAct = true; setTimeout(() => { userAct = false; }); }; // only for renders this event causes
   // Clicking nothing in the list area (whitespace, gaps, column backgrounds, a header's empty part)
-  // closes the inspector and clears the selection. Not on a drag or text selection, not for a
-  // gesture that began in the inspector, and never on anything interactive.
+  // clears the selection. Not on a drag or text selection, and never on anything interactive.
   let down = null;
   list.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
-  drawer.addEventListener('pointerdown', () => { down = { inDrawer: true }; });
-  const INTERACTIVE = 'button, a, input, select, textarea, label, summary, details, .row, .trow, .card, .chip, .qchip, [data-act], [data-open], [role="columnheader"]';
+  const INTERACTIVE = 'button, a, input, select, textarea, label, summary, details, .row, .trow, .card, .chip, .qchip, [data-act], [data-open], [data-menu], [role="columnheader"]';
   function clickedNothing(e) {
     if (e.currentTarget !== list || e.target.closest(INTERACTIVE)) return false;
     const d = down; down = null;
-    if (!d || d.inDrawer || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return false;
+    if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return false;
     if (String(getSelection?.() || '').length) return false;
-    return !!(S.selected || S.detail);
+    return !!S.selected;
   }
   function onClick(e) {
     userAction(); // also releases the order hold for the render this click causes
@@ -816,14 +695,12 @@ export function createPanel(app) {
     if (ob) { e.stopPropagation(); return openAgent(ob.dataset.open, ob); }
     if (S.view === 'table' && e.currentTarget === list && table.onClick(e)) return;
     if (S.view === 'models' && e.currentTarget === list && models.onClick(e)) return;
-    if (e.currentTarget === drawer && inspect.onClick(e)) return;
     const t = e.target;
     const href = t.closest('.chip[data-href]')?.dataset.href;
     if (href) { e.stopPropagation(); window.open(href, '_blank', 'noopener'); return; }
     const act = t.closest('[data-act]');
     if (act) {
       const id = act.dataset.id;
-      const a = S.byId.get(S.selected);
       switch (act.dataset.act) {
         case 'resting': S.restingOpen = !S.restingOpen; return app.render();
         case 'chev': setOpen(id, !isOpen(id)); return app.render();
@@ -837,61 +714,28 @@ export function createPanel(app) {
         case 'clearsearch': S.query = ''; document.getElementById('q').value = ''; return app.render();
         case 'clearfilters': Object.assign(S.filters, { projects: new Set(), harness: new Set(), roles: new Set(), bucket: null }); return app.render();
         case 'showhidden': return app.setShowHidden(true);
-        case 'back': case 'closedetail': return app.closeDetail();
-        case 'goto': return app.openDetail(id);
+        case 'goto': return app.select(id, { reveal: true });
         case 'convopen': {
-          if (S.byId.has(id)) { app.select(id, { reveal: true, pan: S.panel !== 'full' }); return app.openDetail(id); }
+          if (S.byId.has(id)) return app.select(id, { reveal: true, pan: S.panel !== 'full' });
           const hidden = (S.data?.agents || []).some(x => x.id === id && x.hidden);
           return app.toast(hidden ? 'That agent is hidden. Turn on “Show hidden agents” in Filters to open it.' : "That conversation isn't one of the agents in the list (it was folded into a newer copy or can't be read).");
         }
         case 'filterproj': S.filters.projects = new Set([act.dataset.project]); S.views.full = 'table'; S.table.resting = true; return app.render();
-        case 'moretitle': { const info = drawer.querySelector('.info'); info._more = !info._more; info._html = ''; return app.render(); }
-        case 'copyresume': return a?.resume && copy(a.resume, act);
-        case 'open': return a && openAgent(a.id, act);
-        case 'term': if (a && !termBlock(a)) app.openTerminal(a.id); return;
-        case 'showvillage': return a && app.showInVillage(a.id);
-        case 'edit': editing = !editing; app.render(); drawer.querySelector('[data-form] input')?.focus(); return;
-        case 'canceledit': editing = false; app.render(); drawer.querySelector('[data-act="edit"]')?.focus(); return;
-        case 'important': return a && app.patch(a.id, { important: a.important ? null : true }).catch(ex => showActErr(saveError(ex)));
-        case 'hide': return a && hide(a, true);
-        case 'unhide': return a && hide(a, false);
       }
       return;
     }
     const row = t.closest('.row');
     if (!row) return;
     const id = row.dataset.id;
-    if (S.panel === 'full' || app.narrow() || S.term) return app.openDetail(id);
-    if (e.detail === 2) return; // second click of a double-click: dblclick opens detail
-    app.select(S.selected === id ? null : id);
+    if (e.detail === 2) return; // second click of a double-click: dblclick opens the terminal
+    // In the terminal view a click switches the terminal to it; elsewhere a second click deselects.
+    app.select(S.selected === id && !S.term ? null : id);
   }
   list.addEventListener('click', onClick);
-  drawer.addEventListener('click', onClick);
-  drawer.addEventListener('input', e => inspect.onInput(e));
-  drawer.addEventListener('keydown', e => inspect.onKey(e));
   list.addEventListener('dblclick', e => {
     const row = e.target.closest('.row, .trow[data-id]');
     const inner = e.target.closest('button, .chip[data-href]'); // a row's own buttons (the row itself is one)
     if (row && (!inner || inner === row)) app.activate(row.dataset.id);
-  });
-  drawer.addEventListener('submit', async e => {
-    e.preventDefault();
-    const form = e.target, a = S.byId.get(S.selected);
-    if (!a) return;
-    const err = form.querySelector('.err'), btn = form.querySelector('[type="submit"]');
-    const name = form.name.value.trim();
-    const parent = form.parent.value;
-    const body = { name: name || null, role: form.role.value || null, parentId: parent === '__auto' ? null : parent };
-    btn.disabled = true; btn.textContent = 'Saving…'; err.hidden = true;
-    try {
-      await app.patch(a.id, body);
-      editing = false;
-      app.render();
-      drawer.querySelector('[data-act="edit"]')?.focus();
-    } catch (ex) {
-      err.textContent = saveError(ex); err.hidden = false;
-      btn.disabled = false; btn.textContent = 'Save';
-    }
   });
   list.addEventListener('keydown', e => {
     if (!['Tab', 'Shift'].includes(e.key)) userAction();
@@ -905,7 +749,8 @@ export function createPanel(app) {
     switch (e.key) {
       case 'Enter':
         e.preventDefault();
-        if (S.panel === 'full' || app.narrow() || S.term || S.selected === id) app.openDetail(id); else app.select(id);
+        // Enter selects; on the selected row it opens its menu.
+        if (S.selected === id) menu.open(id, { el: row }); else app.select(id);
         break;
       case ' ': e.preventDefault(); app.select(id, { pan: false }); break;
       case 'ArrowDown': e.preventDefault(); move(rows().indexOf(row) + 1); break;
@@ -922,7 +767,8 @@ export function createPanel(app) {
     }
   });
 
-  const inspect = createInspect(app);
+  sheet = createAgentSheet(app, { descendants });
+  menu = createMenu(app, { openBlock, termBlock, embedded, terminal, termName, openAgent, hide, sheet });
   const table = createTable({ S, keyed, sync, matches, byBucket, store, dupOf, chip, render: () => app.render(), app, openHTML: a => (terminal() && !openBlock(a) ? `<button class="openbtn" type="button" data-open="${esc(a.id)}" aria-label="Open ${esc(a.name)} in ${esc(termName())}" title="Open in ${esc(termName())} (O)">↗</button>` : '') });
   const models = createModels({ S, keyed, sync, matches, store, dupOf, render: () => app.render(), app });
   const tree = createTree({ S, app, matches, filtering });
@@ -947,11 +793,13 @@ export function createPanel(app) {
       pendingScroll = id;
       if (S.view === 'tree') tree.reveal(id);
     },
-    focusDetail() { drawer.querySelector('h3')?.focus(); },
-    focusTermButton() { drawer.querySelector('[data-act="term"]')?.focus(); },
-    // The terminal view saves where the list and detail were scrolled, and puts them back after.
-    scrollState: () => ({ list: list.hidden ? listScroll : list.scrollTop, listLeft: list.scrollLeft, drawer: drawer.scrollTop }),
-    restoreScroll(st) { if (!st) return; listScroll = st.list; if (!list.hidden) { list.scrollTop = st.list; list.scrollLeft = st.listLeft; } drawer.scrollTop = st.drawer; },
+    /** The agent menu: at { x, y } (a pointer) or { el } (under a row or button). */
+    menu: (id, at) => menu.open(id, at),
+    closeMenu: opts => menu.close(opts),
+    menuOpen: () => menu.isOpen(),
+    // The terminal view saves where the list was scrolled, and puts it back after.
+    scrollState: () => ({ list: list.scrollTop, listLeft: list.scrollLeft }),
+    restoreScroll(st) { if (!st) return; list.scrollTop = st.list; list.scrollLeft = st.listLeft; },
     focusSelectedRow() { cache.get(`row:${S.selected}`)?.focus({ preventScroll: false }); },
     firstMatch() { return [...list.querySelectorAll('.row:not(.ctx), .tnode:not(.ctx)')].find(r => r.offsetParent)?.dataset.id; },
     jumpStalled(dir) {

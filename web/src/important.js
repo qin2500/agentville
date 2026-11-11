@@ -1,4 +1,4 @@
-// Important agents (the inspector's "Mark important"): never hidden or folded away automatically.
+// Important agents ("Mark important" in the agent menu): never hidden or folded away automatically.
 // Resting buckets, "+N resting" lines, folded teams, quiet projects and the village's resting-home
 // cap all leave them out; only the user's own hide (`hidden`) or their own search and filters can.
 // Pure, so node tests and the village layout can import it.

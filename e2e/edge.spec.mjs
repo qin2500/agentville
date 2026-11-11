@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
-import { EDGE, IDS, tmpDir, nextPort, spawnServer, SHOTS, prepareEdgeHome, startServer, clearOverrides, row, claudeId, inspect } from './helpers.mjs'
+import { EDGE, IDS, tmpDir, nextPort, spawnServer, SHOTS, prepareEdgeHome, startServer, clearOverrides, row, claudeId, openMenu } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 const tmp = tmpDir
@@ -28,8 +28,11 @@ test.describe('edge-case home', () => {
     expect(overflow).toBe(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-edge-names.png` })
-    await inspect(page, ids.unbroken)
-    expect(await page.locator('#drawer').evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true)
+    // The menu wraps an unbroken name instead of widening past the screen.
+    await openMenu(page, ids.unbroken)
+    expect(await page.locator('#ctxmenu').evaluate((d) => d.scrollWidth <= d.clientWidth + 1)).toBe(true)
+    const b = await page.locator('#ctxmenu').boundingBox()
+    expect(b.x + b.width).toBeLessThanOrEqual(page.viewportSize().width + 0.5)
   })
 
   test('a truncated name or title says so with an ellipsis instead of cutting mid-word', async ({ request }) => {
@@ -102,23 +105,24 @@ test('keyboard only: find an agent, open it, rename and re-role it, save', async
   await expect(row(page, id)).toHaveAttribute('aria-current', 'true')
   for (let i = 0; i < 40 && !(await row(page, id).evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('Tab')
   await expect(row(page, id)).toBeFocused()
-  await page.keyboard.press('Enter') // already selected: opens detail
-  await expect(page.locator('#drawer h3')).toBeFocused()
-  const edit = page.locator('#drawer [data-act="edit"]')
-  for (let i = 0; i < 20 && !(await edit.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('Tab')
-  await expect(edit).toBeFocused()
+  await page.keyboard.press('Enter') // already selected: opens its menu
+  await expect(page.locator('#ctxmenu')).toBeVisible()
+  await page.keyboard.press('e') // type-ahead to Edit…
+  await expect(page.locator('#ctxmenu [data-cm="edit"]')).toBeFocused()
   await page.keyboard.press('Enter')
-  await expect(page.locator('#drawer input[name="name"]')).toBeFocused()
+  const sh = page.locator('#agentsheet')
+  await expect(sh.locator('input[name="name"]')).toBeFocused()
   await page.keyboard.type('Keyboard Hero')
   await page.keyboard.press('Tab')
-  await expect(page.locator('#drawer select[name="role"]')).toBeFocused()
+  await expect(sh.locator('select[name="role"]')).toBeFocused()
   await page.keyboard.type('Lead') // type-ahead on a focused <select>
-  await expect(page.locator('#drawer select[name="role"]')).toHaveValue('lead')
+  await expect(sh.locator('select[name="role"]')).toHaveValue('lead')
   await page.keyboard.press('Enter') // submits the form
-  await expect(page.locator('#drawer h3')).toContainText('Keyboard Hero')
+  await expect(sh).toBeHidden()
+  await expect(row(page, id)).toContainText('Keyboard Hero')
   const { agents } = await (await request.get('/api/agents')).json()
   expect(agents.find((a) => a.id === id).overrides).toEqual({ name: 'Keyboard Hero', role: 'lead' })
-  await expect(page.locator('#drawer [data-act="edit"]')).toBeFocused() // focus returns somewhere sensible
+  await expect(row(page, id)).toBeFocused() // focus returns to the row it came from
   await clearOverrides(request)
 })
 

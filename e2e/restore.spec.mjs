@@ -8,7 +8,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import AxeBuilder from '@axe-core/playwright'
 import { test, expect } from './fixtures.mjs'
-import { SHOTS, IDS, claudeId, prepareHome, startServer, tmpDir, nextPort, inspect, row } from './helpers.mjs'
+import { SHOTS, IDS, claudeId, prepareHome, startServer, tmpDir, nextPort, openMenu, menuItem, row } from './helpers.mjs'
 
 const STUB = fileURLToPath(new URL('../test/fixtures/bin/claude-bg', import.meta.url))
 const BOOT1 = Date.now() - 2 * 3600e3 // the boot that crashed
@@ -132,26 +132,22 @@ test('sheet: lost crown and Important jobs checked, terminals to copy; confirm s
   await expect(page.locator('#nudge')).not.toContainText('Your Mac restarted — 4', { timeout: 15_000 })
 })
 
-test('Important: a toggle in the inspector, a star on its row, kept on disk', async ({ page }) => {
+test('Important: a toggle in the agent menu, a star on its row, kept on disk', async ({ page }) => {
   await page.goto(s.url)
-  await inspect(page, claudeId('leadBlocked'))
-  const btn = page.locator('#drawer [data-act="important"]')
-  await expect(btn).toHaveText('★ Important')
-  await expect(btn).toHaveAttribute('aria-pressed', 'true')
-  const back = page.locator('#drawer [data-act="back"]')
-  if (await back.isVisible()) await back.click()
-  await inspect(page, claudeId('leadBuilding'))
-  const b2 = page.locator('#drawer [data-act="important"]')
-  await expect(b2).toHaveText('☆ Mark important')
-  await b2.click()
-  await expect(b2).toHaveText('★ Important')
-  await expect(page.locator('#drawer h3 .star')).toBeVisible()
+  await openMenu(page, claudeId('leadBlocked'))
+  await expect(menuItem(page, 'important')).toHaveText('Unmark important')
+  await openMenu(page, claudeId('leadBuilding'))
+  await expect(menuItem(page, 'important')).toHaveText('Mark important')
+  await menuItem(page, 'important').click()
+  await expect(row(page, claudeId('leadBuilding')).locator('.star')).toBeVisible()
+  await openMenu(page, claudeId('leadBuilding'))
+  await expect(page.locator('#ctxmenu .cm-title .star')).toBeVisible()
+  await expect(menuItem(page, 'important')).toHaveText('Unmark important')
   const saved = JSON.parse(fs.readFileSync(path.join(env.AGENTVILLE_DATA_DIR, 'overrides.json'), 'utf8'))
   expect(saved[claudeId('leadBuilding')]).toEqual({ important: true })
   expect(saved[claudeId('leadBlocked')]).toEqual({ important: true }) // the others are untouched
-  await b2.click()
-  await expect(b2).toHaveText('☆ Mark important')
+  await menuItem(page, 'important').click()
+  await expect(row(page, claudeId('leadBuilding')).locator('.star')).toHaveCount(0)
   expect(JSON.parse(fs.readFileSync(path.join(env.AGENTVILLE_DATA_DIR, 'overrides.json'), 'utf8'))[claudeId('leadBuilding')]).toBeUndefined()
-  if (await back.isVisible()) await back.click()
   await expect(row(page, claudeId('leadBlocked')).locator('.star')).toBeVisible()
 })

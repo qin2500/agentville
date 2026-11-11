@@ -1,5 +1,5 @@
 // The terminal view: the agent's terminal takes the centre of the app (#stage) while the village or
-// list and the inspector compress to the sides (main.js owns the layout and the saved view). The
+// list compresses to a column on the left (main.js owns the layout and the saved view). The
 // server runs the agent's own command in a PTY (it chooses the command; we only name the agent) and
 // streams it over a one-ticket WebSocket.
 //
@@ -55,7 +55,7 @@ export function createTermView(app, { termName, terminal, onClose }) {
 
   stage.innerHTML = `<header class="termhead">
       <button class="ghost tback" type="button" data-tact="close" aria-label="Back (Shift+Esc)">← Back</button>
-      <span class="tglyph"></span><h2 class="tname"></h2><span class="tbadge"></span>
+      <span class="tglyph"></span><h2 class="tname" tabindex="0" title="Right-click (or Shift+F10) for its actions"></h2><span class="tbadge"></span>
       <span class="termstatus" role="status" aria-live="polite"></span>
       <span class="spacer"></span>
       <button class="ghost" type="button" data-tact="popout"></button>

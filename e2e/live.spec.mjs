@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
 import AxeBuilder from '@axe-core/playwright'
-import { HOME, IDS, SECRET, SHOTS, prepareHome, prepareBigHome, startServer, tmpDir, nextPort, clearOverrides, row, claudeId, inspect } from './helpers.mjs'
+import { HOME, IDS, SECRET, SHOTS, prepareHome, prepareBigHome, startServer, tmpDir, nextPort, clearOverrides, row, claudeId, openMenu, menuItem } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 const tmp = tmpDir
@@ -18,19 +18,20 @@ test.beforeEach(async ({ page, request }) => {
 test('overrides: rename, role and hide/undo from the UI persist across reload', async ({ page }, testInfo) => {
   const id = claudeId('soloTurn')
   await page.goto(`/#agent=${encodeURIComponent(id)}`)
-  await inspect(page, id)
-  const d = page.locator('#drawer')
-  await d.locator('[data-act="edit"]').click()
+  await openMenu(page, id)
+  const d = page.locator('#agentsheet')
+  await menuItem(page, 'edit').click()
   await d.locator('input[name="name"]').fill('Renamed Solo')
   await d.locator('select[name="role"]').selectOption('lead')
   await d.locator('[type="submit"]').click()
-  await expect(d.locator('h3')).toContainText('Renamed Solo')
-  await expect(d.locator('.facts')).toContainText('set manually')
+  await expect(d).toBeHidden()
+  await expect(row(page, id)).toContainText('Renamed Solo')
   await page.reload()
   await expect(row(page, id)).toContainText('Renamed Solo')
   await expect(row(page, id).locator('.ov')).toHaveCount(1) // override dot
-  await inspect(page, id)
-  await d.locator('[data-act="hide"]').click()
+  await openMenu(page, id)
+  await expect(page.locator('#ctxmenu .cm-meta')).toContainText('Lead')
+  await menuItem(page, 'hide').click()
   await expect(page.locator('#toast')).toContainText('hidden')
   await expect(row(page, id)).toHaveCount(0)
   await page.locator('#toast button', { hasText: 'Undo' }).click()
@@ -41,13 +42,12 @@ test('overrides: rename, role and hide/undo from the UI persist across reload', 
 test('overrides: reparent to a lead and force top level', async ({ page }) => {
   const id = claudeId('soloWaiting')
   await page.goto(`/#agent=${encodeURIComponent(id)}`)
-  await inspect(page, id)
-  const d = page.locator('#drawer')
-  await d.locator('[data-act="edit"]').click()
+  await openMenu(page, id)
+  const d = page.locator('#agentsheet')
+  await menuItem(page, 'edit').click()
   await d.locator('select[name="parent"]').selectOption(claudeId('leadCi'))
   await d.locator('[type="submit"]').click()
-  await expect(d.locator('.facts')).toContainText('CI Lead')
-  await d.locator('[data-act="back"]').click()
+  await expect(d).toBeHidden()
   await page.locator('#view-team').click()
   await expect(page.locator(`li:has(> .tw .row[data-id="${claudeId('leadCi')}"]) .row[data-id="${id}"]`)).toHaveCount(1)
 })
@@ -60,7 +60,7 @@ test('an override name is rendered as text, never as HTML', async ({ page, reque
   expect(res.status()).toBe(200)
   await page.goto(`/#agent=${encodeURIComponent(id)}`)
   await expect(row(page, id)).toContainText('<img src=x')
-  await inspect(page, id)
+  await openMenu(page, id)
   expect(await page.evaluate(() => window.__xss)).toBeUndefined()
 })
 
@@ -70,7 +70,7 @@ test('security: no transcript/tool content or secret reaches the API or the DOM'
   expect(api).not.toContain('ANTHROPIC_API_KEY')
   expect(api).not.toContain('npm test') // a tool command in the worker transcript
   await expect(page.locator('#conn')).toHaveText(/Live/)
-  await inspect(page, claudeId('leadBuilding'))
+  await openMenu(page, claudeId('leadBuilding'))
   const html = await page.content()
   expect(html).not.toContain(SECRET)
   expect(html).not.toContain('ANTHROPIC_API_KEY')
@@ -230,24 +230,21 @@ test('150+ agents: renders, scrolls, and idles cheaply', async ({ page }, testIn
   await s.stop()
 })
 
-test('a done job reopened in a terminal leaves Resting, and its inspector says where it is open', async ({ page }) => {
+test('a done job reopened in a terminal leaves Resting, and its menu says why it can\'t be opened again', async ({ page }) => {
   const id = claudeId('leadDone')
   const reg = path.join(HOME, 'claude', 'sessions', 'reopened.json')
   const now = Date.now()
   fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', status: 'busy', startedAt: now - 60_000, statusUpdatedAt: now }))
   try {
     await page.goto(`/#agent=${encodeURIComponent(id)}`)
-    await inspect(page, id)
-    const d = page.locator('#drawer')
-    await expect(d.locator('.reopened')).toContainText('Reopened in a terminal')
+    await openMenu(page, id)
     // Open (and the built-in terminal) would attach a second process to it: not offered.
-    await expect(d.locator('[data-act="term"]')).toBeDisabled()
-    await expect(page.locator('#openwhy')).toHaveText('Already running in another terminal')
+    await expect(menuItem(page, 'term')).toHaveAttribute('aria-disabled', 'true')
+    await expect(menuItem(page, 'term').locator('.cm-note')).toHaveText('Already running in another terminal')
     await expect(page.locator(`[data-open="${id}"]`)).toHaveCount(0)
   } finally { fs.rmSync(reg, { force: true }) }
   await page.reload()
-  await inspect(page, id)
-  await expect(page.locator('#drawer .reopened')).toHaveCount(0)
-  await expect(page.locator('#drawer [data-act="term"]')).toBeEnabled()
-  await expect(page.locator('#openwhy')).toHaveCount(0)
+  await openMenu(page, id)
+  await expect(menuItem(page, 'term')).not.toHaveAttribute('aria-disabled', 'true')
+  await expect(menuItem(page, 'term').locator('.cm-note')).toHaveCount(0)
 })

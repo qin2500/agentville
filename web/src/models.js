@@ -192,37 +192,6 @@ export function createModels(api) {
     return [wrap];
   }
 
-  // ---------- inspector section ----------
-  function detailHtml(a) {
-    const r = rowsById().get(a.id);
-    if (!S.models) return '<section class="dmodels"><h4>Models</h4><p class="helper">Reading model data…</p></section>';
-    if (!r) return '';
-    const now = S.data?.serverTime || Date.now();
-    const c = r.configured;
-    const t = r.byModel || [];
-    const tot = k => t.reduce((n, m) => n + m[k], 0);
-    const table = t.length ? `<table class="mtable"><caption>Tokens by model, last 24 hours</caption>
-      <thead><tr><th scope="col">Model</th><th scope="col">Input</th><th scope="col">Output</th><th scope="col">Cache write</th><th scope="col">Cache read</th></tr></thead>
-      <tbody>${t.map(m => `<tr><th scope="row">${esc(m.label)}${m.pool ? ' <span class="dim">(pool)</span>' : ''}</th><td>${fmt(m.input)}</td><td>${fmt(m.output)}</td><td>${fmt(m.cacheWrite)}</td><td>${fmt(m.cacheRead)}</td></tr>`).join('')}
-      ${t.length > 1 ? `<tr class="tot"><th scope="row">All</th><td>${fmt(tot('input'))}</td><td>${fmt(tot('output'))}</td><td>${fmt(tot('cacheWrite'))}</td><td>${fmt(tot('cacheRead'))}</td></tr>` : ''}</tbody></table>`
-      : '<p class="helper">No tokens in the last 24 hours.</p>';
-    const hist = r.history?.length
-      ? `<ol class="mhist">${r.history.map(x => `<li>${esc(x.fromLabel)} → ${esc(x.toLabel)} <span class="dim num">· ${ago(now - x.at)} ago, ${clock(x.at)}</span></li>`).join('')}</ol>`
-      : '<p class="helper">Its model hasn\'t changed in this transcript.</p>';
-    const flags = r.flags.map(f => { const d = FLAG[f]; return `<li><span class="mflag">${esc(typeof d.label === 'function' ? d.label(r) : d.label)}</span> ${esc(d.tip(r))}</li>`; }).join('');
-    return `<section class="dmodels" aria-labelledby="dm-h"><h4 id="dm-h">Models</h4>
-      ${flags ? `<ul class="mflags">${flags}</ul>` : ''}
-      <dl class="facts">
-        <dt>Model now</dt><dd title="${esc(r.now?.id || '')}">${r.now ? `${esc(r.now.label)} <span class="dim mono">${esc(r.now.id)}</span>` : '—'}</dd>
-        <dt>Configured</dt><dd class="wrap">${c ? `${esc(c.label || c.raw)}${c.effort ? ` · effort ${esc(c.effort)}` : ''}<br><span class="dim">${esc(cfgTitle(r))}</span>` : '—'}</dd>
-        <dt>Route</dt><dd>${esc(routeText(r))}</dd>
-        <dt>Context</dt><dd>${r.context ? `${fmt(r.context.used)}${r.context.window ? ` of ${win(r.context.window)} (${pct(r)}%)` : ''}` : '—'}</dd>
-        <dt>Tokens</dt><dd>${fmt(r.tokens.hour)} last hour · ${fmt(r.tokens.day)} last 24 h</dd>
-      </dl>
-      ${table}
-      <h5>Model changes</h5>${hist}</section>`;
-  }
-
   // ---------- events (delegated from the list) ----------
   function toggle(key) {
     const c = S.mv.collapsed;
@@ -243,7 +212,7 @@ export function createModels(api) {
     if (!r || r.classList.contains('thead')) return !!e.target.closest('.mcards, .ttools');
     if (r.dataset.group) { toggle(`p:${r.dataset.group}`); return true; }
     S.mv.focus = r.dataset.id;
-    api.app.openDetail(r.dataset.id);
+    if (e.detail !== 2) api.app.select(S.selected === r.dataset.id && !S.term ? null : r.dataset.id);
     return true;
   }
   function onKey(e) {
@@ -274,17 +243,17 @@ export function createModels(api) {
         break;
       }
       case 'Enter':
-        if (r.dataset.group) toggle(key); else { S.mv.focus = r.dataset.id; api.app.openDetail(r.dataset.id); }
+        if (r.dataset.group) toggle(key); else { S.mv.focus = r.dataset.id; if (S.selected === r.dataset.id) api.app.menu(r.dataset.id, { el: r }); else api.app.select(r.dataset.id); }
         break;
       case ' ': if (r.dataset.id) api.app.select(r.dataset.id, { pan: false }); break;
       default: return false;
     }
     e.preventDefault();
-    if (document.activeElement !== r && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Enter') && r.isConnected && !S.detail) r.focus();
+    if (document.activeElement !== r && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Enter') && r.isConnected && !api.app.menuOpen?.()) r.focus();
     return true;
   }
 
-  return { render, onClick, onKey, detailHtml };
+  return { render, onClick, onKey };
 }
 
 /** GET /api/models into S.models (and S.modelsById). A failure keeps the last good data. */

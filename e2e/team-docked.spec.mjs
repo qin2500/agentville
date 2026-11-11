@@ -184,14 +184,8 @@ test('selecting a nested agent reveals it; a click on a folded parent selects it
   await expect(row(page, 'boss-4-lead-0-w1')).toHaveAttribute('aria-current', 'true')
   expect(await saved(page)).toEqual([])
   // the row is only revealed: picking something else folds it back
-  if (!isMobile(ti)) {
-    await row(page, 'boss-2').click()
-    await expect(row(page, 'boss-2')).toHaveAttribute('aria-current', 'true')
-  } else {
-    await row(page, 'boss-2').click()
-    await expect(page.locator('#drawer .detail h3')).toContainText('Boss 2')
-    await page.locator('#drawer [data-act="back"]').click()
-  }
+  await row(page, 'boss-2').click()
+  await expect(row(page, 'boss-2')).toHaveAttribute('aria-current', 'true')
   await expect(row(page, 'boss-4-lead-0-w1')).toHaveCount(0)
   await expect(row(page, 'boss-2-lead-0')).toHaveCount(0) // selecting a folded parent doesn't open it
   await expect(caret(page, 'boss-2')).toHaveAttribute('aria-expanded', 'false')

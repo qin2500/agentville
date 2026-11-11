@@ -342,12 +342,38 @@ export function createVillage(app) {
     }
     return null;
   }
-  let drag = null;
+  let drag = null, press = 0;
   cv.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
     drag = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false };
     cv.setPointerCapture(e.pointerId);
+    // A long press on a villager or a house (touch or pen) opens its menu, like a right-click.
+    clearTimeout(press);
+    if (e.pointerType !== 'mouse') {
+      const at = { clientX: e.clientX, clientY: e.clientY };
+      press = setTimeout(() => {
+        if (!drag || drag.moved) return;
+        const p = pick(at);
+        if (!p?.id) return;
+        drag = null; host.classList.remove('dragging');
+        app.menu(p.id, { x: at.clientX, y: at.clientY });
+      }, 500);
+    }
   });
+  // Right-click a villager or a house: its menu.
+  cv.addEventListener('contextmenu', e => {
+    const p = pick(e);
+    if (!p?.id) return;
+    e.preventDefault();
+    const kb = e.clientX === 0 && e.clientY === 0;
+    app.menu(p.id, kb ? screenAt(p.id) : { x: e.clientX, y: e.clientY });
+  });
+  /** Where an agent stands on screen (for a menu opened from the keyboard). */
+  function screenAt(id) {
+    const r = cv.getBoundingClientRect(), v = view(), s = v.k * v.px, hit = hits.find(x => x.id === id);
+    if (!hit) return { el: cv };
+    return { x: r.left + (hit.x + hit.w / 2 - v.vx) * s, y: r.top + (hit.y + hit.h - v.vy) * s };
+  }
   cv.addEventListener('pointermove', e => {
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -361,6 +387,7 @@ export function createVillage(app) {
     if (id !== hover) { hover = p?.house ? null : id; invalidate(); }
   });
   cv.addEventListener('pointerup', e => {
+    clearTimeout(press);
     const d = drag; drag = null;
     host.classList.remove('dragging');
     if (!d) return;
@@ -369,8 +396,8 @@ export function createVillage(app) {
     if (p?.village) { zoom = 2; panTo(...P((p.village.cx + 0.5) * T, (p.village.cy + 0.5) * T)); remember(); return; }
     app.select(p ? p.id : null, { fromVillage: true, pan: false });
   });
-  // Double-click a villager: open it in the built-in terminal (or its inspector when it can't be).
-  cv.addEventListener('dblclick', e => { const p = pick(e); if (p?.id && !p.village) app.activate(p.id); });
+  // Double-click a villager: open it in the built-in terminal (or its menu, which says why it can't be).
+  cv.addEventListener('dblclick', e => { const p = pick(e); if (p?.id && !p.village) app.activate(p.id, { x: e.clientX, y: e.clientY }); });
   cv.addEventListener('pointerleave', () => { if (hover) { hover = null; invalidate(); } host.classList.remove('hovering'); });
   let wheelAcc = 0;
   cv.addEventListener('wheel', e => {
@@ -393,6 +420,7 @@ export function createVillage(app) {
       centerOn(cursor);
       updateAria();
     } else if (e.key === 'Enter' && cursor) { e.preventDefault(); app.select(cursor, { fromVillage: true }); }
+    else if ((e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) && (cursor || selected)) { e.preventDefault(); app.menu(cursor || selected, screenAt(cursor || selected)); }
   });
   cv.addEventListener('blur', () => { if (cursor) { cursor = null; invalidate(); updateAria(); } });
   document.getElementById('zoom-in').addEventListener('click', () => zoomStep(1));

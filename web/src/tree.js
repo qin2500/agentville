@@ -358,8 +358,7 @@ export function createTree({ S, app, matches, filtering }) {
     if (it.classList.contains('thd')) { const g = model.groups.find(x => x.key === id); if (g?.pill) togglePill(id); else { cull(); it.focus({ preventScroll: true }); } return; }
     if (e.detail === 2) return; // the dblclick handler opens it
     it.focus({ preventScroll: true });
-    if (S.panel === 'full' || app.narrow() || S.term) app.openDetail(id);
-    else app.select(S.selected === id ? null : id);
+    app.select(S.selected === id && !S.term ? null : id);
   });
   root.addEventListener('dblclick', e => {
     const it = e.target.closest('.tnode');
@@ -409,7 +408,7 @@ export function createTree({ S, app, matches, filtering }) {
     if (!done) {
       if (k === 'Home') focusItem(model.groups[0]?.key);
       else if (k === 'End') focusItem(mode === 'outline' ? items[items.length - 1] : model.groups[model.groups.length - 1]?.key);
-      else if (k === 'Enter') { if (n) app.openDetail(id); else if (g?.pill) togglePill(id); }
+      else if (k === 'Enter') { if (n) { if (S.selected === id) app.menu(id, { el: it }); else app.select(id); } else if (g?.pill) togglePill(id); }
       else if (k === ' ') {
         if (n && (n.kids.length || n.collapsed)) { toggleFold(id); after(() => focusItem(id)); }
         else if (n?.pill || g?.pill) { togglePill(id); after(() => focusItem(id)); }

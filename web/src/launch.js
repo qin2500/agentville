@@ -62,7 +62,7 @@ export function createLaunch(app) {
       sheet.innerHTML = `${head('Start this agent?', 'Agentville runs exactly this command, once, in this folder:')}
         <div class="body"><section><h3>Folder</h3><p class="mono">${esc(p.cwd)}</p></section>
         <section><h3>Command</h3><pre class="cmd" id="na-cmd">${esc(p.command)}</pre>
-        <p class="helper">It starts in the background, like <code>claude --bg</code> in a terminal. <code>claude attach</code> opens it; Stop job in its inspector stops it.</p></section>
+        <p class="helper">It starts in the background, like <code>claude --bg</code> in a terminal. <code>claude attach</code> opens it; Stop job… in its menu (right-click it) stops it.</p></section>
         ${p.blocked ? `<p class="warnline">${esc(p.blocked)}.</p>` : ''}</div>
         <footer><p class="err" id="na-err" role="alert" ${L.err ? '' : 'hidden'}>${esc(L.err)}</p><span class="spacer"></span>
           <button class="ghost" type="button" data-na="back">Back</button>
@@ -136,7 +136,7 @@ export function createLaunch(app) {
       case 'review': return review();
       case 'back': L.view = 'form'; L.err = ''; render(); return sheet.querySelector('[name="prompt"]')?.focus();
       case 'start': return start();
-      case 'show': sheet.close(); return app.openDetail(t.dataset.id);
+      case 'show': sheet.close(); return app.select(t.dataset.id, { reveal: true });
     }
   });
   sheet.addEventListener('submit', e => { e.preventDefault(); review(); });

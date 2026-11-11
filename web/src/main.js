@@ -46,7 +46,6 @@ const S = {
   query: '',
   filters: { projects: new Set(), harness: new Set(), roles: new Set(), bucket: null, showHidden: false },
   selected: null,
-  detail: false,
   restingOpen: false,
   term: null,            // agent id shown in the terminal view, or null
   get view() { return this.views[this.panel === 'full' ? 'full' : 'docked']; },
@@ -56,12 +55,10 @@ const S = {
 const app = {
   S,
   render,
-  // Below 900px the docked panel covers the village, so rows open the detail instead of panning a
-  // village nobody can see; "Show in village" collapses the panel and pans there.
+  // Below 900px the docked panel covers the village; "Show in village" collapses the panel and pans there.
   narrow: () => narrowQuery.matches,
   select(id, { pan = true, fromVillage = false, reveal = fromVillage } = {}) {
     S.selected = id && S.byId.has(id) ? id : null;
-    if (!S.selected) S.detail = false;
     writeHash();
     if (reveal && S.selected) {
       if (fromVillage && S.panel === 'collapsed' && !app.narrow()) setPanel('docked');
@@ -70,36 +67,27 @@ const app = {
     village.setSelected(S.selected, { pan });
     render();
     // In the terminal view, picking another agent opens it in the terminal too, when it can be
-    // (subagents and sessions running elsewhere just show their inspector with the reason).
+    // (subagents and sessions running elsewhere just stay selected).
     if (S.term && S.selected && S.selected !== S.term && !panel.termBlock(S.selected)) app.openTerminal(S.selected);
   },
-  /** Double-click: open it in the built-in terminal when it can be, else its inspector (which says why). */
-  activate(id) {
+  /** Double-click: open it in the built-in terminal when it can be, else its menu (which says why). */
+  activate(id, at) {
     if (!S.byId.has(id)) return;
     if (S.data?.term?.available && !panel.termBlock(id)) {
       if (S.selected !== id) app.select(id, { pan: false });
       if (S.term !== id) app.openTerminal(id);
       return;
     }
-    app.openDetail(id);
+    app.menu(id, at);
   },
-  openDetail(id) {
-    closePops();
-    if (id !== S.selected) app.select(id, { pan: S.panel !== 'full' && !app.narrow() });
-    S.detail = !!S.selected;
-    render();
-    panel.focusDetail();
-  },
+  /** The agent menu (ctxmenu.js): at { x, y } (a pointer) or { el } (under an element). */
+  menu(id, at) { panel.menu(id, at); },
+  menuOpen: () => panel.menuOpen(),
+  focusTerminal: () => termView.focus(),
   showInVillage(id) {
     if (app.narrow()) setPanel('collapsed');
     else if (S.panel === 'full') setPanel('docked');
     app.select(id);
-  },
-  closeDetail() {
-    if (!S.detail) return;
-    S.detail = false;
-    render();
-    panel.focusSelectedRow();
   },
   async patch(id, body) {
     const res = await fetch(`/api/overrides/${encodeURIComponent(id)}`, {
@@ -140,8 +128,8 @@ const launch = createLaunch(app);
 const broadcast = createBroadcast(app);
 
 // ---------- terminal view ----------
-// Terminal takes the centre; the village (or the full-screen list) and the inspector compress to the
-// sides. Entering saves the view; leaving puts back exactly that view. The PTY outlives both.
+// Terminal takes the centre; the village (or the full-screen list) compresses to a column on the
+// left. Entering saves the view; leaving puts back exactly that view. The PTY outlives both.
 const termView = createTermView(app, { termName: () => panel.termName(), terminal: () => S.data?.open?.terminal || null, onClose: () => app.closeTerminal() });
 // The layout moves in 150 ms (styles.css); the terminal is fitted once it has settled, never to a
 // column caught mid-transition.
@@ -162,16 +150,14 @@ app.openTerminal = id => {
     const f = document.activeElement;
     termPrev = {
       focus: f && f !== document.body && !f.closest('#stage') ? { el: f, key: focusKey(f) } : null,
-      panel: S.panel, views: { ...S.views }, selected: S.selected, detail: S.detail, panelW: S.panelW,
+      panel: S.panel, views: { ...S.views }, selected: S.selected, panelW: S.panelW,
       table: { sort: S.table.sort, dir: S.table.dir, flat: S.table.flat, resting: S.table.resting },
       cam: village.camera(), scroll: panel.scrollState(),
     };
-    if (S.panel === 'collapsed') S.panel = 'docked'; // the inspector needs its column (not saved)
     animateLayout();
   }
   S.term = id;
   S.selected = id;
-  S.detail = true;
   writeHash();
   village.setSelected(id, { pan: false });
   render();
@@ -189,7 +175,6 @@ app.closeTerminal = () => {
     Object.assign(S, { panel: p.panel, views: p.views, panelW: p.panelW });
     Object.assign(S.table, p.table);
     S.selected = p.selected && S.byId.has(p.selected) ? p.selected : null;
-    S.detail = !!S.selected && p.detail;
     writeHash();
     village.setSelected(S.selected, { pan: false });
   }
@@ -212,7 +197,7 @@ function refocus(p) {
   const { el, key } = p?.focus || {};
   const f = el?.isConnected ? el : key ? document.querySelector(key) : null;
   if (f && f.offsetParent !== null && !f.disabled) { f.focus({ preventScroll: true }); if (document.activeElement === f) return; }
-  if (S.detail) panel.focusTermButton(); else panel.focusSelectedRow();
+  panel.focusSelectedRow();
 }
 /** A selector for the same control after a re-render: its id, or what it acts on inside an id'd part. */
 function focusKey(f) {
@@ -237,7 +222,7 @@ function ingest(data) {
     if (!S.kids.has(a.parentId)) S.kids.set(a.parentId, []);
     S.kids.get(a.parentId).push(a);
   }
-  if (S.selected && !S.byId.has(S.selected)) { S.selected = null; S.detail = false; writeHash(); }
+  if (S.selected && !S.byId.has(S.selected)) { S.selected = null; writeHash(); }
   notifyPrompts(prevStalled != null);
   notifyChanges();
   const stalled = visibleCount(data, 'stalled');
@@ -415,7 +400,7 @@ function notifyChanges() {
   for (const x of fresh.slice(0, 3)) {
     try {
       const n = new Notification(x.title, { body: x.body, tag: x.tag });
-      n.onclick = () => { window.focus(); app.openDetail(x.id); n.close(); };
+      n.onclick = () => { window.focus(); app.select(x.id, { reveal: true }); n.close(); };
     } catch { /* notifications unavailable */ }
   }
 }
@@ -533,7 +518,6 @@ function closePops({ restoreFocus = false } = {}) {
 function togglePop(name) {
   if (openPop === name) return closePops({ restoreFocus: true });
   closePops();
-  if (name === 'filters' && S.detail) { S.detail = false; render(); }
   const el = pops[name], btn = popBtn[name];
   fillPop(name);
   el.hidden = false;
@@ -663,7 +647,6 @@ document.addEventListener('click', e => {
   if (bucket) {
     S.filters.bucket = S.filters.bucket === bucket ? null : bucket;
     if (S.panel === 'collapsed') setPanel('docked');
-    S.detail = false;
     if (S.filters.bucket) S.views[S.panel === 'full' ? 'full' : 'docked'] = 'status';
     render();
     return;
@@ -748,7 +731,6 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'v' || k === 'V') setView({ status: 'team', team: 'tree', tree: 'table', table: 'models', models: 'status' }[S.view] || 'status');
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
-  else if (k === 'Backspace' && S.detail) { e.preventDefault(); app.closeDetail(); }
   else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && S.panel !== 'full' && !e.target.closest('.panel')) village.key(k);
 });
 document.addEventListener('keyup', e => { if (e.key === 'Alt') { altDown = false; village.showAllTags(false); } });
@@ -756,7 +738,6 @@ addEventListener('blur', () => { if (altDown) { altDown = false; village.showAll
 
 function focusSearch() {
   if (S.panel === 'collapsed') setPanel('docked');
-  if (S.detail) { S.detail = false; render(); }
   $('q').focus();
   $('q').select();
 }
@@ -768,7 +749,6 @@ function escape(e, inField) {
     return;
   }
   if (inField) { e.target.blur(); return; }
-  if (S.detail) return app.closeDetail();
   if (S.query) { S.query = ''; $('q').value = ''; return render(); }
   if (S.selected) return app.select(null);
   if (S.filters.bucket) { S.filters.bucket = null; return render(); }

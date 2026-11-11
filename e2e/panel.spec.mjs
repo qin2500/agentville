@@ -1,7 +1,7 @@
 // Resizable panel, the Expand/Dock button, the full-screen Table view and the full-screen Team and
 // Status layouts. Shared fixture server, plus one big home for the 2560px screenshots.
 import { test, expect, startDocked } from './fixtures.mjs'
-import { SHOTS, claudeId, row, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, inspect } from './helpers.mjs'
+import { SHOTS, claudeId, row, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, openMenu } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 const trow = (page, id) => page.locator(`#list .trow[data-id="${id}"]`)
@@ -105,14 +105,14 @@ test('Table view: grouped by project, sortable, collapsible by mouse and keys, r
   await expect(lead).toHaveAttribute('aria-expanded', 'false')
   await expect(trow(page, `${claudeId('leadBuilding')}:sub:worker`)).toHaveCount(0)
   await expect(lead).toBeFocused()
-  // Enter opens the existing detail.
+  // Enter selects the row; Enter again opens its menu; Esc closes it and gives the row the keyboard back.
   await page.keyboard.press('Enter')
-  await expect(page.locator('#drawer .detail h3')).toContainText('API Lead')
-  // Beside the list, the inspector is a pane: "← All agents" is gone, ✕ collapses it.
-  await expect(page.locator('#drawer .dhead .back')).toBeHidden()
-  await page.locator('#drawer [data-act="closedetail"]').click()
-  await expect(page.locator('#drawer')).toBeHidden()
-  await expect(page.locator('.pbody')).not.toHaveClass(/inspecting/)
+  await expect(lead).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#ctxmenu .cm-name')).toHaveText('API Lead')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#ctxmenu')).toBeHidden()
+  await expect(lead).toBeFocused()
   // Flat list: no groups, a plain grid. Search still applies.
   await page.locator('[data-act="tlayout"][data-v="flat"]').click()
   await expect(grid).toHaveAttribute('role', 'grid')
@@ -157,10 +157,10 @@ test('big home at 2560px: Table, Team and Status use the width', async ({ browse
   } finally { await page.close(); await s.stop() }
 })
 
-test('hidden agents are findable: "N hidden" button, list with Unhide, and Unhide is primary in detail', async ({ page, request }, testInfo) => {
-  // Hide from the detail view: the toast says where to find it again.
-  await inspect(page, claudeId('leadCi'))
-  await page.locator('#drawer [data-act="hide"]').click()
+test('hidden agents are findable: "N hidden" button, list with Unhide, and Show again in its menu', async ({ page, request }, testInfo) => {
+  // Hide from the agent menu: the toast says where to find it again.
+  await openMenu(page, claudeId('leadCi'))
+  await page.locator('#ctxmenu [data-cm="hide"]').click()
   await expect(page.locator('#toast')).toContainText('Find it under “1 hidden”')
   await expect(row(page, claudeId('leadCi'))).toHaveCount(0)
   const btn = page.locator('#btn-hidden')
@@ -180,64 +180,36 @@ test('hidden agents are findable: "N hidden" button, list with Unhide, and Unhid
   await pop.locator(`[data-unhide="${claudeId('leadCi')}"]`).click()
   await expect(pop.locator('li')).toHaveCount(1)
   await expect(btn).toHaveText('1 hidden')
-  // A hidden agent's detail leads with Unhide.
+  // A hidden agent's menu offers Show again.
   await page.keyboard.press('Escape')
   await page.locator('#btn-filters').click()
   await page.locator('[data-set="hidden"]').check()
   await page.keyboard.press('Escape')
-  await page.locator(`#list [data-id="${boss}"]`).first().click()
-  await expect(page.locator('#drawer .actions .primary').first()).toHaveText('Unhide')
-  await page.locator('#drawer [data-act="unhide"]').click()
+  await page.locator(`#list [data-id="${boss}"]`).first().click({ button: 'right' })
+  await expect(page.locator('#ctxmenu [data-cm="unhide"]')).toHaveText('Show in village again')
+  await expect(page.locator('#ctxmenu [data-cm="hide"]')).toHaveCount(0)
+  await page.locator('#ctxmenu [data-cm="unhide"]').click()
   await expect(btn).toBeHidden()
 })
 
-test('full screen: clicking empty space closes the inspector and clears the selection; rows, the inspector and drags do not', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'on a phone the inspector covers the whole list, so there is no empty space beside it')
+test('full screen: clicking empty space clears the selection; rows and drags do not', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'desktop layout')
   await page.locator('#btn-full').click() // Table
-  const drawer = page.locator('#drawer')
   await page.locator(`#list .trow[data-id="${claudeId('leadCi')}"]`).click()
-  await expect(drawer).toBeVisible()
   await expect(page).toHaveURL(/#agent=/)
   const list = await page.locator('#list').boundingBox()
-  const empty = { x: list.x + 40, y: list.y + list.height - 30 } // below the last row, left of the drawer
-  // A click inside the inspector keeps it open.
-  await drawer.locator('.facts').click()
-  await expect(drawer).toBeVisible()
-  // A row click switches the selection instead of closing.
+  const empty = { x: list.x + 40, y: list.y + list.height - 30 } // below the last row
+  // A row click switches the selection instead of clearing it.
   await page.locator(`#list .trow[data-id="${claudeId('leadBlocked')}"]`).click()
-  await expect(drawer.locator('h3')).toContainText('DB Lead')
-  // A drag (e.g. selecting text) across empty space does not close it.
+  await expect(page.locator(`#list .trow[data-id="${claudeId('leadBlocked')}"]`)).toHaveAttribute('aria-selected', 'true')
+  // A drag (e.g. selecting text) across empty space does not clear it.
   await page.mouse.move(empty.x, empty.y)
   await page.mouse.down()
   await page.mouse.move(empty.x + 120, empty.y - 6, { steps: 4 })
   await page.mouse.up()
-  await expect(drawer).toBeVisible()
-  // A plain click on nothing closes it and clears #agent=.
+  await expect(page).toHaveURL(/#agent=/)
+  // A plain click on nothing clears #agent=.
   await page.mouse.click(empty.x, empty.y)
-  await expect(drawer).toBeHidden()
   await expect(page).not.toHaveURL(/#agent=/)
   await expect(page.locator('#list .trow.cur')).toHaveCount(0)
-})
-
-test('full screen: the inspector is a split pane; it never covers the list and the selected row stays visible', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === 'mobile', 'on a phone the inspector is a full-screen sheet')
-  const box = (sel) => page.locator(sel).first().boundingBox()
-  const apart = (a, b) => a.x + a.width <= b.x + 0.5 || b.x + b.width <= a.x + 0.5
-  for (const view of ['table', 'team', 'status']) {
-    if (!(await page.locator('#main').getAttribute('class')).includes('full')) await page.locator('#btn-full').click()
-    await page.locator(`#view-${view}`).click()
-    const sel = view === 'table' ? `#list .trow[data-id="${claudeId('leadCi')}"]` : `#list .row[data-id="${claudeId('leadCi')}"]`
-    await page.locator(sel).click()
-    await expect(page.locator('#drawer')).toBeVisible()
-    await page.waitForTimeout(250) // the 150 ms reflow
-    const list = await box('#list'), drawer = await box('#drawer'), row = await box(sel)
-    expect(apart(list, drawer), `${view}: inspector overlaps the list`).toBe(true)
-    expect(row.x >= list.x - 1 && row.x + row.width <= list.x + list.width + 1, `${view}: row cut off`).toBe(true)
-    expect(row.y >= list.y - 1 && row.y + row.height <= list.y + list.height + 1, `${view}: row out of view`).toBe(true)
-    if (view === 'table') { // narrower: low-priority columns go first, nothing overlaps
-      await expect(page.locator('#list .h-prs')).toBeHidden()
-      await expect(page.locator('#list .h-agent')).toBeVisible()
-    }
-    await page.keyboard.press('Escape') // close the inspector
-  }
 })

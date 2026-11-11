@@ -105,26 +105,6 @@ test('a card filters to its model (toggle, aria-pressed); ancestors stay as cont
   expect(await ids()).toEqual(before)
 })
 
-test('the inspector adds a Models section: tokens by model and the model history', async ({ page }, testInfo) => {
-  await openModels(page)
-  await mrow(page, claudeId('leadBuilding')).click()
-  const sec = page.locator('#drawer .dmodels')
-  await expect(sec).toBeVisible()
-  await expect(sec.locator('h4')).toHaveText('Models')
-  const rows = sec.locator('.mtable tbody tr')
-  await expect(rows.locator('th')).toHaveText(['Opus 5.5', 'Opus 5', 'All'])
-  await expect(sec.locator('.mtable thead')).toContainText(/Input\s*Output\s*Cache write\s*Cache read/)
-  await expect(sec.locator('.mhist li')).toHaveCount(1)
-  await expect(sec.locator('.mhist li').first()).toContainText(/Opus 5 → Opus 5\.5 · 1h ago/)
-  await expect(sec).toContainText('850k of 1M (85%)')
-  expect(await serious(page, '#drawer')).toEqual([])
-  await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-models-inspector.png` })
-  // Other views' inspectors are unchanged.
-  if (isMobile(testInfo)) return
-  await page.locator('#view-table').click()
-  await expect(page.locator('#drawer .dmodels')).toHaveCount(0)
-})
-
 test('it refreshes live: a reply on another model shows up without a reload', async ({ page }) => {
   await openModels(page)
   const solo = mrow(page, claudeId('soloTurn'))

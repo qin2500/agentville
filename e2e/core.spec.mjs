@@ -1,6 +1,6 @@
 // Buckets, hierarchy, panel modes, search/filters, detail view, selection. Shared fixture server.
 import { test, expect } from './fixtures.mjs'
-import { EXPECTED, IDS, SHOTS, row, claudeId, clearOverrides, inspect, villagerPoint } from './helpers.mjs'
+import { EXPECTED, IDS, SHOTS, row, claudeId, clearOverrides, openMenu, villagerPoint, teamView } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 
@@ -141,7 +141,7 @@ test('filters: harness and role narrow the list, chips remove them, counts stay 
   expect(await page.locator('#list .row').count()).toBeGreaterThan(2)
 })
 
-test('keyboard triage: J/K jump stalled rows, arrows move, Enter opens detail, Esc backs out', async ({ page }, testInfo) => {
+test('keyboard triage: J/K jump stalled rows, arrows move, Enter opens the agent menu, Esc backs out', async ({ page }, testInfo) => {
   test.skip(isMobile(testInfo), 'keyboard flow')
   await page.locator('body').press('j')
   const first = page.locator('#list .row.b-stalled').first()
@@ -154,38 +154,31 @@ test('keyboard triage: J/K jump stalled rows, arrows move, Enter opens detail, E
   await page.keyboard.press('ArrowDown')
   await expect(page.locator('#list .row.b-stalled').nth(1)).toBeFocused()
   await page.keyboard.press('Enter') // select
-  await page.keyboard.press('Enter') // open detail
-  await expect(page.locator('#drawer')).toBeVisible()
-  await expect(page.locator('#drawer h3')).toBeFocused()
+  await page.keyboard.press('Enter') // open its menu
+  await expect(page.locator('#ctxmenu')).toBeVisible()
+  await expect(page.locator('#ctxmenu .cm-item').first()).toBeFocused()
   await page.keyboard.press('Escape')
-  await expect(page.locator('#drawer')).toBeHidden()
+  await expect(page.locator('#ctxmenu')).toBeHidden()
   await expect(page.locator('#list .row.b-stalled').nth(1)).toBeFocused()
 })
 
-test('detail view shows facts and copies the attach command', async ({ page, context }, testInfo) => {
+test('the agent menu shows its header and copies the attach command', async ({ page, context }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  await inspect(page, claudeId('leadBlocked'))
-  const d = page.locator('#drawer')
-  await expect(d.locator('h3')).toContainText('DB Lead')
-  await expect(d).toContainText('Needs your input')
-  await expect(d.locator('.facts')).toContainText('Big Boss')
+  const d = await openMenu(page, claudeId('leadBlocked'))
+  await expect(d.locator('.cm-name')).toHaveText('DB Lead')
+  await expect(d.locator('.cm-status')).toContainText('Needs your input')
   await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-detail.png` })
-  // A background job's button copies its `claude attach` command; there is no Copy id any more.
-  await expect(d.locator('[data-act="copyresume"]')).toHaveText('Copy attach command')
-  await expect(d.locator('[data-act="copyid"]')).toHaveCount(0)
-  await d.locator('[data-act="copyresume"]').click()
-  await expect(d.locator('[data-act="copyresume"]')).toHaveText('Copied')
+  // A background job's item copies its `claude attach` command; there is no Copy id.
+  await expect(d.locator('[data-cm="copy"]')).toHaveText('Copy attach command')
+  await expect(d.locator('[data-cm="copyid"]')).toHaveCount(0)
+  await d.locator('[data-cm="copy"]').click()
+  await expect(page.locator('#toast')).toContainText('Copied')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`claude attach ${IDS.leadBlocked.slice(0, 8)}`)
-  // Hide is a labelled trash-can icon button.
-  await expect(d.getByRole('button', { name: 'Hide from Agentville' })).toHaveClass(/\btrash\b/)
-  // Parent link navigates to the boss.
-  await d.locator('[data-act="goto"]').first().click()
-  await expect(d.locator('h3')).toContainText('Big Boss')
-  // A subagent has no resume command and says so.
-  await d.locator('[data-act="back"]').click()
-  await inspect(page, `${claudeId('leadBuilding')}:sub:worker`)
-  await expect(page.locator('#drawer [data-act="copyresume"]')).toHaveCount(0) // it's a link now; no link when there's nothing to copy
-  await expect(page.locator('#drawer')).toContainText('No resume command')
+  // A subagent has no resume command: no Copy item.
+  await teamView(page)
+  const sub = `${claudeId('leadBuilding')}:sub:worker`
+  await openMenu(page, sub)
+  await expect(page.locator('#ctxmenu [data-cm="copy"]')).toHaveCount(0)
 })
 
 test('deep link #agent= selects and reveals the agent; selection survives reload', async ({ page }) => {
@@ -250,9 +243,9 @@ test('stalled is amber, errors are red: a red "N errors" pill filters to them an
   await page.locator('.counter.errors').click()
   await expect(page.locator('#list .row')).toHaveCount(errorIds.length)
   await expect(page.locator('#fchips')).toContainText('Errors only')
-  // The detail says "Error", not just red.
-  await inspect(page, claudeId('soloError'))
-  await expect(page.locator('#drawer .pill')).toContainText('Error')
+  // The agent menu says "Error", not just red.
+  await openMenu(page, claudeId('soloError'))
+  await expect(page.locator('#ctxmenu .pill')).toContainText('Error')
 })
 
 test.describe('first run', () => {

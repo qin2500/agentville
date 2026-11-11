@@ -167,12 +167,23 @@ export async function clearOverrides(request, base = BASE) {
 }
 
 export const row = (page, id) => page.locator(`#list .row[data-id="${id}"]`)
-/** Open an agent's inspector without the terminal (a double-click now opens the built-in terminal). */
-export async function inspect(page, id) {
-  const r = row(page, id)
-  // A click selects (or, already selected, deselects); Enter on the selected row opens it.
-  for (let i = 0; i < 3 && !(await page.locator('#drawer .detail').isVisible()); i++) await (i === 0 ? r.click() : r.press('Enter'))
-  await page.locator('#drawer .detail').waitFor()
+/** Right-click an agent's row: its menu (ctxmenu.js, which replaced the inspector). Returns the menu. */
+export async function openMenu(page, id) {
+  const m = page.locator('#ctxmenu')
+  if (await m.isVisible()) await page.keyboard.press('Escape')
+  await row(page, id).scrollIntoViewIfNeeded()
+  await row(page, id).click({ button: 'right' })
+  await m.locator('.cm-name').waitFor()
+  return m
+}
+/** A menu action by its data-cm key (term, open, showvillage, copy, fork, stop, important, edit, hide, unhide). */
+export const menuItem = (page, act) => page.locator(`#ctxmenu .cm-item[data-cm="${act}"]`)
+/** Where an agent's villager stands on screen (world px -> canvas CSS px), or null when it isn't drawn. */
+export function villagerAt(page, id) {
+  return page.evaluate((id) => {
+    const d = window.villageDebug(), h = d.hits.find((x) => x.id === id), v = d.view, cv = document.getElementById('cv').getBoundingClientRect()
+    return h ? { x: cv.left + (h.x + h.w / 2 - v.vx) * v.k * v.px, y: cv.top + (h.y + h.h / 2 - v.vy) * v.k * v.px } : null
+  }, id)
 }
 export const claudeId = (k) => `claude-code:${IDS[k]}`
 
@@ -215,4 +226,9 @@ export function prepareEdgeHome(dir) {
   db.prepare('INSERT INTO thread_spawn_edges VALUES (?, ?)').run(IDS.codexRunning, IDS.codexTurn)
   db.close()
   return { env, ids }
+}
+/** The docked Team view with every team unfolded (bosses start folded), so leads and subagents have rows. */
+export async function teamView(page) {
+  await page.locator('#view-team').click()
+  await page.locator('#list [data-act="expandall"]').click()
 }
