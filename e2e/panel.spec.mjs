@@ -185,7 +185,7 @@ test('hidden agents are findable: "N hidden" button, list with Unhide, and Show 
   await page.locator('#btn-filters').click()
   await page.locator('[data-set="hidden"]').check()
   await page.keyboard.press('Escape')
-  await page.locator(`#list [data-id="${boss}"]`).first().click({ button: 'right' })
+  await page.locator(`#list :is(.row, .trow)[data-id="${boss}"]`).first().click({ button: 'right' })
   await expect(page.locator('#ctxmenu [data-cm="unhide"]')).toHaveText('Show in village again')
   await expect(page.locator('#ctxmenu [data-cm="hide"]')).toHaveCount(0)
   await page.locator('#ctxmenu [data-cm="unhide"]').click()

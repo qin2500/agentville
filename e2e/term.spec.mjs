@@ -41,6 +41,7 @@ const typeLine = async (page, text) => { await page.keyboard.type(text); await p
 
 test('Terminal takes the centre and the rest of the width; the village compresses to the left; Shift+Esc puts it all back', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'desktop layout')
+  await row(page, ID).click() // selected, as it is put back after
   await openMenu(page, ID)
   await page.waitForTimeout(700) // selecting pans the village; let that finish
   const before = { village: await box(page, '#village'), panel: await box(page, '#panel'), cam: await page.evaluate(() => window.villageDebug().cam) }
@@ -206,6 +207,7 @@ test('Pop out ends the embedded attach first, then opens the same command; the v
 
 test('on a phone the terminal is full screen, and Back restores the previous view', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'phone layout')
+  await row(page, ID).click() // selected, as it is put back after
   await openMenu(page, ID)
   await enter(page)
   const st = await box(page, '#stage')
