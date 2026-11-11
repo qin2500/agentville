@@ -764,3 +764,36 @@ li > .openbtn, .tw > .openbtn { right: 92px; }
   .menubtn { right: 4px; opacity: 1; pointer-events: auto; width: 30px; height: 30px; background: transparent; border-color: transparent; color: var(--text-muted); font-size: 18px; }
   li > .row, .tw > .row { padding-right: 36px; }
 }
+
+/* ---------- village peek (peek.js): the same #village, shown in the right-hand column ---------- */
+.peekbtn[hidden], .peekhead, .peekgrip { display: none; }
+.peekbtn[aria-pressed="true"] { color: var(--focus); background: var(--surface-2); border-color: var(--line); }
+.main.peek > .village { visibility: visible; display: block; border-left: 1px solid var(--line); }
+.main.peek .peekhead { display: flex; align-items: center; gap: var(--space-2); position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  padding: 4px 4px 4px var(--space-3); background: color-mix(in srgb, var(--surface) 88%, transparent); border-bottom: 1px solid var(--line); }
+.peektitle { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.main.peek .zoom { bottom: var(--space-2); left: var(--space-2); }
+@media (min-width: 901px) {
+  .main.peek.full { grid-template-columns: minmax(0, 1fr) 0fr var(--peek-w, 380px); }
+  .main.peek.full > .panel { border-right: 0; }
+  .main.termview.peek { grid-template-columns: var(--panel-w) minmax(0, 1fr) var(--peek-w, 380px); }
+  .main.termview.peek.collapsed { grid-template-columns: 40px minmax(0, 1fr) var(--peek-w, 380px); }
+  .main.termview.full.peek { grid-template-columns: .34fr minmax(0, 1fr) var(--peek-w, 380px); }
+  .main.termview.full.peek > .village { display: block; }
+  .main.peek .peekgrip { display: block; position: absolute; left: -1px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 6; touch-action: none; }
+  .peekgrip::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .15s; }
+  .peekgrip:hover::after, .peekgrip:focus-visible::after, .resizing .peekgrip::after { background: var(--focus); }
+  .peekgrip:focus-visible { outline: none; }
+}
+@media (max-width: 900px) {
+  /* Narrow: a sheet over the bottom of the screen (above the full-screen terminal too). */
+  .main.peek > .village { position: fixed; left: 0; right: 0; bottom: 0; height: min(60dvh, 520px); z-index: 30;
+    border: 1px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; box-shadow: 0 -8px 24px rgb(0 0 0 / .4); }
+  /* In the terminal (which covers the header) the toggle floats at the top right, clear of the terminal's buttons. */
+  .app:has(.main.termview) .peekbtn { position: fixed; top: var(--space-2); right: var(--space-2); z-index: 31; background: var(--surface-2); border-color: var(--line); }
+  .main.termview .termhead { padding-right: 36px; }
+  /* The village leaves the grid, so keep the expanded list in its own track. */
+  .main.full.peek > .panel { grid-column: 2; grid-row: 1; }
+}
+/* A phone's top bar is full: the village toggle takes the logo's place. */
+@media (max-width: 480px) { .top:has(.peekbtn:not([hidden])) .brand { display: none; } }

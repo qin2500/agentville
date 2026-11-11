@@ -88,7 +88,7 @@ export function createVillage(app) {
   // Canvas pixels: at 1–4× one canvas px is `zoom` CSS px (cheap, crisp); at Map (0.5×) the canvas is
   // CSS-sized and the world is drawn at half size. k = world px → canvas px.
   const reduce = () => S.reduceMotion;
-  const active = () => !document.hidden && S.panel !== 'full' && host.clientWidth > 0;
+  const active = () => !document.hidden && (S.panel !== 'full' || S.peek) && host.clientWidth > 0; // S.peek: peek.js
   // Map (any zoom < 1) is a fit level: the largest of ½, ¼, ⅛ that shows the whole town (every
   // neighbourhood, its streets and the square), centred; the forest ring and the sea fill the rest.
   const land = () => W.town;
@@ -483,10 +483,12 @@ export function createVillage(app) {
       selected = id;
       cursor = null;
       if (id && !placed.vill.has(id) && S.byId.has(id)) build(); // a quiet project's agent: bring its neighbourhood back
-      if (id && pan && placed.vill.has(id) && S.panel !== 'full') centerOn(id, true);
+      if (id && pan && placed.vill.has(id) && (S.panel !== 'full' || S.peek)) centerOn(id, true);
       invalidate();
     },
     setActive,
+    /** After the village's box changed size (the peek): the whole town again, unless the camera was moved by hand. */
+    refit() { if (!W || !host.clientWidth) return; if (!userMoved && !selected) home(false); else invalidate(); },
     key(k) { if (k === '+' || k === '=') zoomStep(1); else if (k === '-') zoomStep(-1); else if (k === '0') { home(); remember(); } else if (k === 'i' || k === 'I') setView(!iso); },
     showAllTags(on) { altTags = on; invalidate(); },
     // The terminal view saves the camera on the way in and puts it back on the way out.

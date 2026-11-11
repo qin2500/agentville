@@ -10,6 +10,7 @@ import { loadModels } from './models.js';
 import { createUpdate } from './update.js';
 import { createLaunch } from './launch.js';
 import { createBroadcast } from './broadcast.js';
+import { createPeek } from './peek.js';
 import { transitions } from './notify.js';
 import { viewsFrom, nextView } from './views.js';
 
@@ -129,6 +130,7 @@ const spend = createSpend(app);
 const update = createUpdate(app);
 const launch = createLaunch(app);
 const broadcast = createBroadcast(app);
+const peek = createPeek(app, { store, village });
 
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) compresses to a column on the
@@ -279,6 +281,7 @@ function render() {
   $('app').classList.toggle('reduce-motion', S.reduceMotion);
   const main = $('main');
   main.className = 'main' + (S.panel === 'collapsed' ? ' collapsed' : S.panel === 'full' ? ' full' : '') + (S.term ? ' termview' : '') + (tvAnim ? ' tv-anim' : '');
+  peek.render(); // after the classes above: it adds .peek when the village is peeking
   $('stage').hidden = !S.term;
   termView.header();
   renderTop(loading, off);
@@ -727,7 +730,7 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'v' || k === 'V') setView(nextView(S.view));
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
-  else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && S.panel !== 'full' && !e.target.closest('.panel')) village.key(k);
+  else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && (S.panel !== 'full' || S.peek) && !e.target.closest('.panel')) village.key(k);
 });
 document.addEventListener('keyup', e => { if (e.key === 'Alt') { altDown = false; village.showAllTags(false); } });
 addEventListener('blur', () => { if (altDown) { altDown = false; village.showAllTags(false); } });
@@ -739,6 +742,7 @@ function focusSearch() {
 }
 function escape(e, inField) {
   if (closePops({ restoreFocus: true })) return;
+  if (peek.escape(e)) return;
   if (e.target.id === 'q') {
     if (S.query) { S.query = ''; e.target.value = ''; render(); } else e.target.blur();
     e.preventDefault();
