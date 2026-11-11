@@ -781,12 +781,12 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .cm-item.danger:hover, .cm-item.danger:focus { background: color-mix(in srgb, var(--error) 14%, transparent); }
 /* What the open menu is for. */
 .cm-target { box-shadow: inset 0 0 0 2px var(--agent-color, var(--accent)); }
-/* Claude Code's /color (ui.js agentColor sets --agent-color; nothing when none): a thin bar along the
-   top of every agent row, Team card and Tree node; the selection and menu rings use it too. */
+/* Claude Code's /color (ui.js agentColor sets --agent-color; nothing when none) is who the agent is, so
+   it colours the role glyph beside the name, like an avatar. Status keeps the left edge, the tint and the
+   status icon (what the agent is doing), so the two never stack up as stripes. The selection and menu rings use it too. */
 .row { position: relative; }
-.row::before { content: ""; position: absolute; left: -3px; right: 0; top: 0; height: 2px; background: var(--agent-color); pointer-events: none; }
-.card:not(.solo) { border-top: 2px solid var(--agent-color, var(--line)); }
-.card:not(.solo) > .row::before { display: none; }
+.row .rg .role, .tnode .tn1 > .role { color: var(--agent-color, currentColor); }
+.row.b-resting .rg .role { opacity: .6; }
 .row:focus-visible { outline-color: var(--agent-color, var(--focus)); }
 .sheet header { border-top: 3px solid var(--agent-color, transparent); background: color-mix(in srgb, var(--agent-color, var(--surface)) 12%, var(--surface)); }
 /* "⋯" on a row: on hover or keyboard focus with a mouse, always there on a touch screen. */
