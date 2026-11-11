@@ -185,10 +185,10 @@ test('sampler: everything exhausted goes to the pool, and never back; the toggle
   } finally { await t.done() }
 })
 
-test('decide: quarantine accounts — gone at once on the Sideshift Wi-Fi, preferred elsewhere', () => {
+test('decide: quarantine accounts — gone at once on the work Wi-Fi, preferred elsewhere', () => {
   const quarantine = new Set(['B', 'D'])
   const fine = { fiveHour: w(20), weekly: w(10) }
-  // On the Sideshift Wi-Fi a quarantine account leaves at once: not out, auto-switch off, in cooldown.
+  // On the work Wi-Fi a quarantine account leaves at once: not out, auto-switch off, in cooldown.
   const banned = { ...base, active: 'B', activeUsage: fine, onWork: true, quarantine, enabled: false, lastAutoAt: NOW - 1000 }
   assert.deepEqual(decide(banned), { action: 'switch', to: 'C', why: 'quarantine' })
   assert.equal(decide({ ...banned, busy: true }).why, 'a switch is running')
@@ -197,13 +197,13 @@ test('decide: quarantine accounts — gone at once on the Sideshift Wi-Fi, prefe
   assert.deepEqual(decide({ ...banned, usage: spent }), { action: 'switch', to: 'C', why: 'quarantine' })
   assert.deepEqual(decide({ ...banned, usage: new Map() }), { action: 'switch', to: 'A', why: 'quarantine' }, 'usage unknown: still a regular account')
   assert.equal(decide({ ...banned, saved: ['B', 'D'], poolAvailable: false }).why, 'nowhere to go', 'no regular account at all')
-  // Out on the Sideshift Wi-Fi: regular accounts only.
+  // Out on the work Wi-Fi: regular accounts only.
   const both = new Map([['B', { fiveHour: w(10, 600e3), weekly: w(10) }], ['C', { fiveHour: w(10, 3600e3), weekly: w(10) }]])
   assert.equal(decide({ ...base, usage: both, onWork: true, quarantine }).to, 'C')
   // Out anywhere else: a quarantine account first, even when a regular one resets sooner.
   const regularSooner = new Map([['B', { fiveHour: w(10, 3 * 3600e3), weekly: w(10) }], ['C', { fiveHour: w(10, 600e3), weekly: w(10) }]])
   assert.equal(decide({ ...base, usage: regularSooner, quarantine }).to, 'B')
-  // The 10 s check off the Sideshift Wi-Fi on a regular account: a quarantine account with room, else stay.
+  // The 10 s check off the work Wi-Fi on a regular account: a quarantine account with room, else stay.
   const prefer = { ...base, active: 'A', activeUsage: null, quarantine, usage: regularSooner, prefer: true }
   assert.deepEqual(decide(prefer), { action: 'switch', to: 'B', why: 'prefer' })
   assert.equal(decide({ ...prefer, usage: new Map([['B', { fiveHour: w(99), weekly: w(10) }], ['C', fine]]) }).why, 'no quarantine account available', 'never to another regular one')
@@ -212,31 +212,31 @@ test('decide: quarantine accounts — gone at once on the Sideshift Wi-Fi, prefe
   assert.equal(decide({ ...prefer, lastAutoAt: NOW - 1000 }).why, 'cooldown', 'and the cooldown')
 })
 
-test('network rule (every 10 s): off a quarantine account at once on the Sideshift Wi-Fi, onto one anywhere else', async () => {
+test('network rule (every 10 s): off a quarantine account at once on the work Wi-Fi, onto one anywhere else', async () => {
   const t = await setup()
   const settle = () => new Promise((r) => setTimeout(r, 300)) // the check that marking the network starts
   try {
-    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:01' // fake networks: the real one is never read
+    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:01' // fake networks: the real one is never read
     await t.req('PATCH', `/api/accounts/${UUID.B}`, { quarantine: true })
-    assert.equal((await t.server.sampler.enforce()).why, 'no Sideshift network marked', 'nothing happens until one is marked')
+    assert.equal((await t.server.sampler.enforce()).why, 'no work network marked', 'nothing happens until one is marked')
 
-    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:0f' // at the office
+    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:0f' // at the office
     assert.equal((await t.req('POST', '/api/network/work', { work: true })).json.current.work, true)
     await settle()
     assert.equal((await t.server.sampler.enforce()).why, 'right kind of account', 'a regular account at the office stays')
 
-    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:01' // home again: onto the quarantine account
+    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:01' // home again: onto the quarantine account
     let d = await t.server.sampler.enforce()
     assert.deepEqual([d.action, d.to, d.why], ['switch', UUID.B, 'prefer'])
     assert.equal(t.live(), t.creds.B)
 
-    process.env.VILLAGE_NETWORK_ID = 'none' // offline: nothing changes
+    process.env.AGENTVILLE_NETWORK_ID = 'none' // offline: nothing changes
     assert.equal((await t.server.sampler.enforce()).why, 'offline')
 
     // Back at the office, inside the cooldown and with every regular account used up: off B anyway.
     t.people.A.five = 100; t.people.C.five = 100
     await t.req('GET', '/api/accounts/usage?fresh=1')
-    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:0f'
+    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:0f'
     d = await t.server.sampler.enforce()
     assert.deepEqual([d.action, d.why], ['switch', 'quarantine'])
     assert.equal(d.to, UUID.C, 'the regular account that frees up soonest')
@@ -246,12 +246,12 @@ test('network rule (every 10 s): off a quarantine account at once on the Sideshi
     // Home, but the quarantine account has no room: stay on the regular one.
     t.people.B.five = 100
     await t.req('GET', '/api/accounts/usage?fresh=1')
-    process.env.VILLAGE_NETWORK_ID = 'gw:00:00:00:00:00:01'
+    process.env.AGENTVILLE_NETWORK_ID = 'gw:00:00:00:00:00:01'
     await t.req('POST', '/api/autoswitch', { enabled: true })
     d = await t.server.sampler.enforce()
     assert.ok(['cooldown', 'no quarantine account available'].includes(d.why), d.why)
     assert.equal(t.live(), t.creds.C)
-  } finally { delete process.env.VILLAGE_NETWORK_ID; await t.done() }
+  } finally { delete process.env.AGENTVILLE_NETWORK_ID; await t.done() }
 })
 
 test('decide: prefers the account whose weekly window resets soonest, then the 5-hour one', () => {
