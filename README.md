@@ -3,10 +3,8 @@
 **Every Claude Code and Codex session on your machine, as a little pixel-art village.** See at a
 glance who's building, who's waiting on something, and who needs you.
 
-![Agentville: the village of agents beside the agent list](docs/screenshot-village.png)
-
 Agentville is a small desktop app (Electron, macOS first). It reads the session files Claude Code and Codex already write
-to your disk and shows each agent as a villager, with a dark-mode list on the left of the village. There's
+to your disk and shows each agent as a villager, with a dark-mode panel on the left of the village. There's
 nothing to sign up for, and nothing leaves your machine except the usage and update checks described
 under [Privacy & safety](#privacy--safety).
 
@@ -34,47 +32,57 @@ lead's yard, and pull requests become buildings. Stalled villagers show a "!" bu
 and night, an isometric (2.5D) and a top-down view (**I** toggles), and buildings never move around
 between visits. Click a villager to select its row, and the other way round.
 
-**The agent menu.** Right-click an agent (in the village or the list), long-press it on a phone, or
-use its **⋯** button: a header with its name, status and PRs, then **Open in terminal** (or **Open
-in Ghostty**), **Show in village**, **Copy resume command**, **Fork…**, **Stop…**, **Mark
-important**, **Edit…** (name, role and parent) and **Hide in village**. On the keyboard, the menu
-key or Shift+F10 opens it on the focused row.
+**The agent menu.** Right-click an agent (in the village, the panel or the Tree), or use its **⋯**
+button: an info header with its name, status, pull requests and colour, then **Open in terminal**
+(or **Open in Ghostty**), **Show in village**, **Copy attach command** (**Copy resume command** for
+a session that isn't a background job), **Fork…**, **Stop job…**, **Mark important**, **Edit…** (name,
+role and parent) and **Hide in village**. On the keyboard, the menu key or Shift+F10 opens it on the
+focused row.
 
-**Views.** The panel groups agents three ways (**V** cycles):
+**Colour and marks.** An agent's Claude Code `/color` tints the role icon beside its name (like an avatar),
+the menu header and the selection highlight, so it never competes with the status edge; with no colour set, the icon stays plain.
+**Mark important** keeps an agent from ever being folded or hidden automatically (only **Hide in
+village** removes it) and puts it in [Restore after crash](#restore-after-crash). Agents that have
+been quiet for more than 10 days leave the app altogether (nothing on disk is touched); live and
+Important agents are exempt.
+
+**Views.** The panel groups agents three ways, with **Team**, **Tree** and **Models** tabs (**V** cycles):
 
 - **Team**: the boss → lead → sub tree. **Crowns** (the bosses and everyone under them) come first,
   then each project's teams and the solo agents. A project with nothing awake isn't listed (its
-  Important agents keep it there); each team keeps its quiet members behind a "+N resting" line.
+  Important agents keep it there; **Hide quiet projects** in Settings turns this off); each team
+  keeps its quiet members behind a "+N resting" line. Docked beside the village it shows top-level
+  agents only, and each team opens one level per caret click; folded teams show a one-line summary.
 - **Tree**: the same hierarchy as an org chart. Crowned bosses sit at the top with their leads and
   workers below, grouped by project, and solo agents go in one group at the end. Resting teams fold
   into a "+N resting" pill, and each team folds on its own (**Expand all** and **Collapse to live**
   do this for everything). Drag or scroll to pan, and pinch or Cmd/Ctrl-scroll to zoom. Arrow keys
   move between a parent, its reports and their siblings. A search keeps each match's chain of
-  command, shown dimmed. Narrow panels and phones get an indented outline instead. Only cards near
+  command, shown dimmed. A narrow panel gets an indented outline instead. Only cards near
   the screen are drawn, so a thousand agents stay smooth.
 - **Models**: which model each agent is *really* using (from its latest reply) next to what it was
   told to use, its route, context use and tokens, with flags for mismatches.
 
 The first time you open Agentville, the panel fills the window in Team view. **⤡ Dock** (or **F**)
-puts it on the left of the village; Agentville remembers your choice.
+puts it on the left of the village; Agentville remembers your choice. Drag the edge of the docked
+panel to resize it.
 
-![The first-run view: the panel expanded, in Team view](docs/screenshot-team.png)
+**Village peek.** When the expanded panel or the terminal covers the village, a button at the top
+right shows it in a column beside them. Drag the column's edge to resize it; **×** (or **Esc** with focus inside it) closes it.
 
-![The Models view, expanded](docs/screenshot-models.png)
-
-**Token spend.** The top bar shows tokens per minute and the last hour's total. Click it for a chart
-of the past hour, 24-hour and 7-day totals, a breakdown by kind (input, output, cache writes, cache
-reads; Codex in its own rows) and, while you're on a saved Claude account, a projection of when your
-5-hour and weekly limits run out.
-
-![The token spend popover](docs/screenshot-spend.png)
+**Token spend and projections.** The top bar shows tokens per minute and the last hour's total, plus
+which limit runs out first. Click it for a chart of the past hour, 24-hour and 7-day totals, a
+breakdown by kind (input, output, cache writes, cache reads; Codex in its own rows) and, while you're
+on a saved Claude account, a projection of when your 5-hour and weekly limits run out. The weekly
+time is the earliest it can run out, given that usage pauses whenever the 5-hour window is full.
 
 **Accounts and auto-switch** (optional, Claude Code only). Save more than one Claude login in the
 **Account** menu, see each one's 5-hour and weekly usage, and move every running background job to
 another account in one go. Every switch makes a backup first, tries the change on one job before the
 rest, and rolls everything back if that fails; **Undo** restores the last backup. **Auto-switch** (on
-by default; toggle it in the token-spend popover) moves you to an account with room when the current
-one runs out. If you use a shared gateway or token pool (configured via `ANTHROPIC_BASE_URL` and
+by default; toggle it in the token-spend popover) moves you to the account whose *weekly* allowance
+resets soonest when the current one runs out, so each allowance is spent before it expires, and
+moves back once that account's 5-hour window resets (see [Accounts in detail](#accounts-in-detail)). If you use a shared gateway or token pool (configured via `ANTHROPIC_BASE_URL` and
 friends in `~/.claude/settings.json` → `env`), it appears as one more choice, the "pool". You can
 also mark accounts **quarantine** so they're never used on your work Wi-Fi.
 [Details](#accounts-in-detail).
@@ -84,15 +92,17 @@ internet loss* (each agent commits locally, writes a resume note and stops), *Re
 errored agents*. You always confirm a preview that lists every recipient first.
 [Details](#fleet-actions-experimental).
 
-**Open in a terminal.** **Open** resumes an agent in a new terminal window: Ghostty if it's installed,
+**Terminal.** **Open** resumes an agent in a new terminal window: Ghostty if it's installed,
 else Terminal.app on macOS; `$TERMINAL`, `gnome-terminal` or `x-terminal-emulator` on Linux.
 **Open in terminal** runs the same command in a terminal inside the page, with the agent list kept on
-the left so one click switches agents. The server picks the command itself
+the left (drag its edge to resize it) so one click switches agents. The server picks the command itself
 (`claude attach <job>`, `claude --resume <id>` or `codex resume <id>`); the page can't choose it. A
 session that's already running somewhere else is never resumed a second time. The last few terminals
 you opened stay live, so switching back shows one at once, as you left it. Cmd-C copies a selection,
-Cmd-V pastes, Cmd-F finds, Cmd-K clears the view and Cmd-click opens a link; the wheel goes to the
-program when it tracks the mouse (Claude Code's full-screen mode), as in any terminal.
+Cmd-V pastes, Cmd-F finds, Cmd-K clears the view and Cmd-click opens a link; Shift+Enter inserts a
+newline instead of sending. The wheel goes to the program when it tracks the mouse (Claude Code's
+full-screen mode), as in any terminal. Keys typed while a terminal is still attaching are held for a
+moment and sent once it's live.
 
 **Splits.** Drag an agent from the list onto the terminal to put it beside the one there, as in
 Ghostty: the pane under the pointer lights up the half the new terminal will take, and dropping
@@ -312,8 +322,16 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
   at a time, at most three a minute.
 - **Auto-switch.** An account is out when its 5-hour or weekly window reaches 99 %, or when a running
   agent reports a usage limit. Agentville then switches to the saved account with room (both windows
-  under 95 %) whose 5-hour window resets soonest, else to the pool. At most once every 15 minutes, and
-  never from the pool back to an account.
+  under 95 %) whose **weekly** window resets soonest (the 5-hour reset breaks ties, and resets
+  within an hour of each other count as a tie), else to the pool. The idea: an account's weekly
+  allowance is lost when it resets, so spend the one that expires first. At most once every 15
+  minutes, and never from the pool back to an account.
+- **Rebalancing.** Once a switch has left you on an account with a later weekly reset, Agentville
+  moves back to the earlier-expiring account when it has room again (its week resets at least 6 hours
+  sooner, at least 10 % of its week is left, and it has used under 80 % of its 5-hour window). It
+  checks the others at most every 15 minutes, only moves away from an account auto-switch itself
+  chose (never one you picked by hand, which stays until it runs out), and only when the current
+  account's weekly reset is known.
 - **Quarantine accounts and your work Wi-Fi.** Some accounts shouldn't be used on a work network. Mark
   them **Quarantine**, and while you're on your work Wi-Fi choose **This is the work Wi-Fi** once.
   Networks are recognised by the router's hardware address, a local lookup that needs no permission.
@@ -457,6 +475,10 @@ ones that matter.
 ## Development
 
 ```sh
+npm run build                                # vite build web: the page into web/dist
+npm start                                    # the server alone (node server/cli.mjs) on 127.0.0.1:5275
+npm run app                                  # the desktop app from the checkout, without building it
+npm run app:build -- --install               # build Agentville.app into ~/Applications
 npm test                                     # unit tests (node --test), synthetic fixtures only
 npx playwright install chromium              # once
 npx playwright test                          # the page's UI specs in Chromium against a fixture home
