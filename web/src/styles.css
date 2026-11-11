@@ -790,6 +790,13 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .row::after, .tnode::after { content: ""; position: absolute; inset: 0 0 0 auto; width: 45%; z-index: -1; pointer-events: none; border-radius: inherit;
   background: linear-gradient(to left, color-mix(in srgb, var(--agent-color) 24%, transparent), transparent); }
 .row.b-resting::after { opacity: .55; }
+/* A coloured agent's status tint fades out by the middle of the row, leaving the right half to its colour. */
+.row.has-color.b-stalled { background: linear-gradient(to right, var(--stalled-bg) 35%, transparent 55%); }
+.row.has-color.b-stalled[aria-current="true"] { background: linear-gradient(to right, var(--stalled-bg) 35%, transparent 55%), var(--surface-3); }
+.row.has-color.sev-error { background: linear-gradient(to right, var(--error-bg) 35%, transparent 55%); }
+.row.has-color.sev-error[aria-current="true"] { background: linear-gradient(to right, var(--error-bg) 35%, transparent 55%), var(--surface-3); }
+.row.has-color.sev-prompt { background: linear-gradient(to right, var(--prompt-bg) 35%, transparent 55%); }
+.row.has-color.sev-prompt[aria-current="true"] { background: linear-gradient(to right, var(--prompt-bg) 35%, transparent 55%), var(--surface-3); }
 .row:focus-visible { outline-color: var(--agent-color, var(--focus)); }
 .sheet header { border-top: 3px solid var(--agent-color, transparent); background: color-mix(in srgb, var(--agent-color, var(--surface)) 12%, var(--surface)); }
 /* "⋯" on a row: on hover or keyboard focus with a mouse, always there on a touch screen. */
