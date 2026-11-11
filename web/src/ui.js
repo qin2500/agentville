@@ -12,10 +12,10 @@ export const BUCKET_NAME = { stalled: 'Stalled', waiting: 'Waiting', building: '
 export const ROLE_NAME = { boss: 'Boss', lead: 'Lead', sub: 'Subagent', solo: 'Solo' };
 export const HARNESS_NAME = { 'claude-code': 'Claude Code', codex: 'Codex' };
 // Claude Code's `/color` names (the server's `a.color`), a step lighter than the CLI's so they read on
-// the dark panels. No color (unset, Codex, subagents) is grey. Used as `--agent-color` on a row.
+// the dark panels. No color (unset, Codex, subagents) is nothing: '' removes `--agent-color`, so no bar
+// and the plain default highlight. Used as `--agent-color` on a row.
 export const AGENT_COLOR = { red: '#ef5350', orange: '#f5873a', yellow: '#e8b931', green: '#3fbf6f', cyan: '#22b8cf', blue: '#4c8df6', purple: '#a873f0', pink: '#ec5f9e' };
-export const NO_AGENT_COLOR = '#6f7582';
-export const agentColor = a => AGENT_COLOR[a?.color] || NO_AGENT_COLOR;
+export const agentColor = a => AGENT_COLOR[a?.color] || '';
 
 const MAPS = {
   stalled: ['....xxxx....', '....xxxx....', '....xxxx....', '....xxxx....', '....xxxx....', '....xxxx....', '....xxxx....', '............', '............', '....xxxx....', '....xxxx....', '............'],
