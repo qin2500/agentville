@@ -166,23 +166,7 @@ export function createVillage(app) {
       ctx.fillRect(x * T, y * T, T + 0.5, T + 0.5);
     }
     for (const v of W.villages) { const b = v.block; ctx.globalAlpha = 0.16; ctx.fillStyle = v.accent; ctx.fillRect(b.x * T, b.y * T, b.w * T, b.h * T); ctx.globalAlpha = 1; }
-    simpleDock = [];
-    let ships = [];
-    if (W.dock) { // the dock: the pier on the water, and a hull at each berth with a PR loading
-      const G = dockGeom(W.dock, f.dock.level);
-      ctx.fillStyle = '#9a6a40'; ctx.fillRect(G.X0, G.Y0, G.X1 - G.X0, G.Y1 - G.Y0);
-      ships = G.berths.slice(0, (f.dock.loading || []).length);
-      const [a] = P(G.X0, G.Y1), [b] = P(G.X1, G.Y0), [, c] = P(G.X0, G.Y0), [, d] = P(G.X1, G.Y1);
-      simpleDock.push({ key: 'dock', x: a, y: c, w: b - a, h: d - c });
-    }
     ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
-    for (const b of ships) {
-      const [x, y] = P(b.x, b.y + 23).map(Math.round);
-      ctx.fillStyle = '#1a1c22'; ctx.fillRect(x - 12, y - 24, 24, 30);
-      ctx.fillStyle = '#6a4630'; ctx.fillRect(x - 11, y - 4, 22, 9);
-      ctx.fillStyle = '#f3ead2'; ctx.fillRect(x - 8, y - 23, 16, 18);
-      simpleDock.push({ key: 'dock', x: x - 12, y: y - 24, w: 24, h: 30 });
-    }
     // Buildings and villagers, back to front.
     const things = [];
     for (const it of W.items) if (it.kind === 'home' || it.kind === 'pr') things.push({ it, d: (it.x + it.w + it.y + it.h) * T });
