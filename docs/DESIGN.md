@@ -271,7 +271,8 @@ from a house with a Building resident (4 frames, 2 fps). A day/night tint follow
 
 ### The 2.5D (isometric) view
 
-The default view. Same layout as the top-down one (world.js), projected 2:1 (`isoP`).
+The only view (the top-down 2D view was removed on 2026-11-11). The layout is computed on the tile
+map in world px (world.js) and projected 2:1 (`isoP`); the procedural fallback draws in the same projection.
 
 - **Depth:** everything upright (villagers, lamps, banners, strollers, trees near houses) is a point
   on the ground; every building is a box on its footprint. `isoSort` draws whatever is further back

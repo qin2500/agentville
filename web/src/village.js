@@ -3,7 +3,7 @@
 // camera (Map, 1–4×, clamped to the world), input, selection, DOM labels and the frame loop. If the sprite sheets fail to load, the same layout is
 // drawn procedurally below. Frames run at 8 fps only while visible and animating; otherwise on demand.
 import { BUCKET_NAME, ROLE_NAME, store, icon, esc } from './ui.js';
-import { T, ZOOMS, R, plan, layout, placeAgents, loadSheets, SEA_DEEP, isoP, isoInv, itemBox, agentOffset } from './world.js';
+import { T, ZOOMS, R, ISO, plan, layout, placeAgents, loadSheets, SEA_DEEP, isoP, isoInv, itemBox, agentOffset } from './world.js';
 import { visibleProjects } from './quiet.js';
 import { folds } from './important.js';
 
@@ -20,12 +20,9 @@ export function createVillage(app) {
   const nightParam = new URLSearchParams(location.search).get('night');
   const quietNote = document.getElementById('quiet-note');
   const emptyNote = document.getElementById('empty-note');
-  // The view: isometric (2.5D, the default) or top-down (2D). ?view=iso|flat overrides the saved choice;
-  // under automation the default stays top-down, so the e2e suites keep testing it unless they opt in.
-  const viewParam = new URLSearchParams(location.search).get('view');
-  let iso = viewParam ? viewParam === 'iso' : store.get('va.iso', navigator.webdriver ? 'flat' : 'iso') === 'iso';
-  const camKey = () => (iso ? 'va.cam.iso' : 'va.cam2'); // va.cam was the island world's camera
-  const savedCam = store.get(camKey(), null);
+  // The village is isometric (2.5D) only: the top-down view and its toggle are gone.
+  const CAM_KEY = 'va.cam.iso'; // va.cam was the island world's camera, va.cam2 the top-down view's
+  const savedCam = store.get(CAM_KEY, null);
 
   let zoom = savedCam?.z < 1 || ZOOMS.includes(savedCam?.z) ? savedCam.z : 2, cam = savedCam ? { x: savedCam.x, y: savedCam.y } : { x: 0, y: 0 }, tween = null;
   let userMoved = !!savedCam;
@@ -92,10 +89,8 @@ export function createVillage(app) {
   // Map (any zoom < 1) is a fit level: the largest of ½, ¼, ⅛ that shows the whole town (every
   // neighbourhood, its streets and the square), centred; the forest ring and the sea fill the rest.
   const land = () => W.town;
-  // View px: world px in the top-down view, projected px in the isometric one (the simple fallback
-  // renderer is top-down only).
-  const isoOn = () => iso && artState !== 'failed';
-  const P = (x, y) => (isoOn() ? isoP(x, y) : [x, y]);
+  // View px: the isometric projection of world px (the simple fallback renderer draws in it too).
+  const P = isoP;
   const shift = ([x, y], [ox, oy]) => [x + ox, y + oy];
   /** A tile rect [x0, y0, x1, y1] (inclusive) as a box in view px. */
   function box([x0, y0, x1, y1]) {
@@ -123,7 +118,7 @@ export function createVillage(app) {
     cam.x = x1 - x0 < bw ? (x0 + x1) / 2 : Math.min(Math.max(cam.x, x0 + bw / 2), x1 - bw / 2);
     cam.y = y1 - y0 < bh ? (y0 + y1) / 2 : Math.min(Math.max(cam.y, y0 + bh / 2), y1 - bh / 2);
   }
-  const remember = () => { userMoved = true; store.set(camKey(), { x: Math.round(cam.x), y: Math.round(cam.y), z: zoom }); };
+  const remember = () => { userMoved = true; store.set(CAM_KEY, { x: Math.round(cam.x), y: Math.round(cam.y), z: zoom }); };
   function nightAmount() {
     if (nightParam != null) return nightParam === '1' ? 1 : 0;
     const d = new Date(), hr = d.getHours() + d.getMinutes() / 60;
@@ -144,9 +139,9 @@ export function createVillage(app) {
     if (W) {
       const restingHomes = new Map();
       for (const p of placed.vill.values()) if (folds(p.a) && p.own) restingHomes.set(p.home.id, [...(restingHomes.get(p.home.id) || []), p.a.id]);
-      for (const it of W.items) if (restingHomes.has(it.id)) { const [x, y, w, h] = itemBox(it, isoOn()); houseHits.push({ ids: restingHomes.get(it.id), x, y, w, h }); }
+      for (const it of W.items) if (restingHomes.has(it.id)) { const [x, y, w, h] = itemBox(it); houseHits.push({ ids: restingHomes.get(it.id), x, y, w, h }); }
     }
-    const f = { ctx, k: v.k, vx: v.vx, vy: v.vy, bw: v.bw, bh: v.bh, zoom, t, still, night: nightAmount(), agents: placed.vill, iso: isoOn(), 
+    const f = { ctx, k: v.k, vx: v.vx, vy: v.vy, bw: v.bw, bh: v.bh, zoom, t, still, night: nightAmount(), agents: placed.vill,
       selected, cursor, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null };
     if (W && artState === 'ready') hits = renderer.draw(f);
     else if (W && artState === 'failed') hits = drawSimple(f);
@@ -154,30 +149,55 @@ export function createVillage(app) {
     placeLabels(v);
   }
 
-  // ---------- procedural fallback: the same layout as flat shapes ----------
+  // ---------- procedural fallback: the same layout as plain shapes, in the same iso projection ----------
   function drawSimple(f) {
     const { k, vx, vy, bw, bh } = f;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = SEA_DEEP; ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
-    const x0 = Math.floor(vx / T) - 1, y0 = Math.floor(vy / T) - 1, x1 = Math.ceil((vx + bw) / T) + 1, y1 = Math.ceil((vy + bh) / T) + 1;
+    // The ground: world tiles through the iso transform (as the sprite renderer does).
+    const cs = [isoInv(vx, vy), isoInv(vx + bw, vy), isoInv(vx, vy + bh), isoInv(vx + bw, vy + bh)];
+    const x0 = Math.floor(Math.min(...cs.map(c => c[0])) / T) - 1, x1 = Math.ceil(Math.max(...cs.map(c => c[0])) / T) + 1;
+    const y0 = Math.floor(Math.min(...cs.map(c => c[1])) / T) - 1, y1 = Math.ceil(Math.max(...cs.map(c => c[1])) / T) + 1;
+    ctx.setTransform(k * ISO, k * ISO / 2, -k * ISO, k * ISO / 2, -vx * k, -vy * k);
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
       const key = `${x},${y}`;
       if (!W.land.has(key)) continue;
       ctx.fillStyle = W.street.has(key) ? '#6f5a40' : W.path.has(key) ? '#8a7353' : (x + y) % 2 ? '#3b5d3a' : '#43683f';
-      ctx.fillRect(x * T, y * T, T, T);
+      ctx.fillRect(x * T, y * T, T + 0.5, T + 0.5);
     }
     for (const v of W.villages) { const b = v.block; ctx.globalAlpha = 0.16; ctx.fillStyle = v.accent; ctx.fillRect(b.x * T, b.y * T, b.w * T, b.h * T); ctx.globalAlpha = 1; }
-    for (const it of W.items) {
-      if (it.kind !== 'home' && it.kind !== 'pr') continue;
-      const [, , , w, h] = R[it.look], x = it.x * T, y = (it.y + it.h) * T - h, roof = Math.round(h * 0.45);
-      ctx.fillStyle = '#1a1c22'; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
-      ctx.fillStyle = it.kind === 'pr' ? (it.building ? '#8f8a86' : '#3f5a8c') : '#9c3f35'; ctx.fillRect(x, y, w, roof);
-      ctx.fillStyle = '#9a6a3e'; ctx.fillRect(x, y + roof, w, h - roof);
+    simpleDock = [];
+    let ships = [];
+    if (W.dock) { // the dock: the pier on the water, and a hull at each berth with a PR loading
+      const G = dockGeom(W.dock, f.dock.level);
+      ctx.fillStyle = '#9a6a40'; ctx.fillRect(G.X0, G.Y0, G.X1 - G.X0, G.Y1 - G.Y0);
+      ships = G.berths.slice(0, (f.dock.loading || []).length);
+      const [a] = P(G.X0, G.Y1), [b] = P(G.X1, G.Y0), [, c] = P(G.X0, G.Y0), [, d] = P(G.X1, G.Y1);
+      simpleDock.push({ key: 'dock', x: a, y: c, w: b - a, h: d - c });
     }
+    ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
+    for (const b of ships) {
+      const [x, y] = P(b.x, b.y + 23).map(Math.round);
+      ctx.fillStyle = '#1a1c22'; ctx.fillRect(x - 12, y - 24, 24, 30);
+      ctx.fillStyle = '#6a4630'; ctx.fillRect(x - 11, y - 4, 22, 9);
+      ctx.fillStyle = '#f3ead2'; ctx.fillRect(x - 8, y - 23, 16, 18);
+      simpleDock.push({ key: 'dock', x: x - 12, y: y - 24, w: 24, h: 30 });
+    }
+    // Buildings and villagers, back to front.
+    const things = [];
+    for (const it of W.items) if (it.kind === 'home' || it.kind === 'pr') things.push({ it, d: (it.x + it.w + it.y + it.h) * T });
+    for (const p of f.agents.values()) if (!folds(p.a) && !p.crowd) things.push({ p, d: (p.pose === 'carry' ? p.x0 : p.x) + p.y });
     const out = [];
-    for (const p of [...f.agents.values()].filter(p => !folds(p.a) && !p.crowd).sort((a, b) => a.y - b.y)) {
-      const left = Math.round((p.pose === 'carry' ? p.x0 : p.x) - 6), top = p.y - 16;
+    for (const { it, p } of things.sort((a, b) => a.d - b.d)) {
+      if (it) {
+        const [x, y, w, h] = itemBox(it), roof = Math.round(h * 0.45);
+        ctx.fillStyle = '#1a1c22'; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+        ctx.fillStyle = it.kind === 'pr' ? (it.building ? '#8f8a86' : '#3f5a8c') : '#9c3f35'; ctx.fillRect(x, y, w, roof);
+        ctx.fillStyle = '#9a6a3e'; ctx.fillRect(x, y + roof, w, h - roof);
+        continue;
+      }
+      const fx = p.pose === 'carry' ? p.x0 : p.x, [ox, oy] = agentOffset({ x: fx, y: p.y });
+      const left = Math.round(fx - 6 + ox), feet = p.y + oy, top = feet - 16;
       ctx.fillStyle = '#1a1c22'; ctx.fillRect(left - 1, top - 1, 14, 18);
       ctx.fillStyle = p.a.role === 'boss' ? '#f2c14e' : p.a.role === 'sub' ? '#7d8290' : '#e8b48a'; ctx.fillRect(left, top, 12, 16);
       if (p.a.id === selected || p.a.id === cursor) { ctx.strokeStyle = '#eaf2ff'; ctx.lineWidth = 1; ctx.strokeRect(left - 2.5, top - 2.5, 17, 21); }
@@ -187,7 +207,7 @@ export function createVillage(app) {
         ctx.fillStyle = p.a.bucket === 'waiting' ? '#3d7be0' : p.a.severity === 'error' ? '#e5383b' : p.a.prompt ? '#9b5de5' : '#f5a623';
         ctx.fillRect(left + 2, t, 8, 8);
       }
-      out.push({ id: p.a.id, x: left - 2, y: t, w: 16, h: p.y - t, cx: left + 6, top: t });
+      out.push({ id: p.a.id, x: left - 2, y: t, w: 16, h: feet - t, cx: left + 6, top: t, wx: fx, wy: p.y });
     }
     return out;
   }
@@ -208,8 +228,7 @@ export function createVillage(app) {
     if (W) for (const vil of W.villages) {
       const c = zoom < 1 && counts.get(vil.name), parts = c ? [['prompt', c.prompt], ['error', c.error], ['stalled', c.need], ['waiting', c.wait]].filter(p => p[1]) : [];
       const pri = vil.name === hoverVil ? 0 : parts.length ? 3 - Math.min(0.9, ((c.error + c.prompt) * 1e6 + c.need * 1e3 + c.wait) / 1e7) : 3.95;
-      const [sx, sy] = isoOn() ? shift(P((vil.plaza.x + vil.plaza.w / 2) * T, (vil.plaza.y + 1) * T), [0, -(zoom < 1 ? 40 : 20)])
-        : [(vil.plaza.x + vil.plaza.w / 2) * T, (vil.plaza.y - (zoom < 1 ? 3 : 0.2)) * T];
+      const [sx, sy] = shift(P((vil.plaza.x + vil.plaza.w / 2) * T, (vil.plaza.y + 1) * T), [0, -(zoom < 1 ? 40 : 20)]);
       const cand = add(`v:${vil.name}`, pri, parts.length ? 'sign plate' : 'sign', vil.name, sx, sy, true, vil.accent);
       if (parts.length) Object.assign(cand, { counts: c, cw: parts.reduce((w, [, n]) => w + 30 + String(n).length * 9, 0),
         html: `<b>${esc(vil.name)}</b><span class="cnt">${parts.map(([k, n]) => `<i class="k-${k}">${icon(k)}${n}</i>`).join('')}</span>` });
@@ -292,7 +311,7 @@ export function createVillage(app) {
     const p = placed.vill.get(id);
     if (!p) return;
     if (zoom < 1) zoom = 2;
-    const away = folds(p.a) || p.crowd, [x, y] = shift(away ? [p.door, p.base] : [p.x, p.y], agentOffset(p, isoOn()));
+    const away = folds(p.a) || p.crowd, [x, y] = shift(away ? [p.door, p.base] : [p.x, p.y], agentOffset(p));
     panTo(x, y - 16, animate);
   }
   // Default view: the whole town on one screen. The largest of 2× and 1× at which every neighbourhood
@@ -336,7 +355,7 @@ export function createVillage(app) {
     for (let i = hits.length - 1; i >= 0; i--) { const h = hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) return { id: h.id }; }
     for (const h of houseHits) if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) return { id: h.ids[0], house: true };
     if (zoom < 1 && W) { // Map: a click on a village zooms into it
-      const [wx, wy] = isoOn() ? isoInv(x, y) : [x, y];
+      const [wx, wy] = isoInv(x, y);
       const vil = W.villages.find(vl => { const b = vl.block; return wx >= (b.x - 1) * T && wx < (b.x + b.w + 1) * T && wy >= (b.y - 1) * T && wy < (b.y + b.h + 1) * T; });
       if (vil) return { village: vil };
     }
@@ -426,21 +445,6 @@ export function createVillage(app) {
   document.getElementById('zoom-in').addEventListener('click', () => zoomStep(1));
   document.getElementById('zoom-out').addEventListener('click', () => zoomStep(-1));
   document.getElementById('zoom-reset').addEventListener('click', () => { home(); remember(); });
-  // 2.5D ⇄ 2D. Each view keeps its own saved camera; one never saved opens on the whole town.
-  const viewBtn = document.getElementById('view-toggle');
-  const showViewBtn = () => { viewBtn.setAttribute('aria-pressed', String(isoOn())); viewBtn.textContent = isoOn() ? '2.5D' : '2D'; viewBtn.setAttribute('aria-label', `${isoOn() ? '2.5D view (isometric)' : '2D view (top-down)'}: switch view (I)`); };
-  function setView(next) {
-    if (next === iso) return;
-    iso = next;
-    store.set('va.iso', iso ? 'iso' : 'flat'); // not 'va.view': that key is the panel's views
-    const c = store.get(camKey(), null);
-    tween = null;
-    if (c) { zoom = c.z < 1 || ZOOMS.includes(c.z) ? c.z : 2; cam = { x: c.x, y: c.y }; } else if (W) home(false);
-    showViewBtn();
-    invalidate();
-  }
-  viewBtn.addEventListener('click', () => setView(!iso));
-  showViewBtn();
   new ResizeObserver(() => { if (homeLater && host.clientWidth && !userMoved) home(false); invalidate(); }).observe(host);
 
   function updateAria() {
@@ -489,12 +493,12 @@ export function createVillage(app) {
     setActive,
     /** After the village's box changed size (the peek): the whole town again, unless the camera was moved by hand. */
     refit() { if (!W || !host.clientWidth) return; if (!userMoved && !selected) home(false); else invalidate(); },
-    key(k) { if (k === '+' || k === '=') zoomStep(1); else if (k === '-') zoomStep(-1); else if (k === '0') { home(); remember(); } else if (k === 'i' || k === 'I') setView(!iso); },
+    key(k) { if (k === '+' || k === '=') zoomStep(1); else if (k === '-') zoomStep(-1); else if (k === '0') { home(); remember(); } },
     showAllTags(on) { altTags = on; invalidate(); },
     // The terminal view saves the camera on the way in and puts it back on the way out.
     camera: () => (tween ? { x: tween.x1, y: tween.y1, z: zoom } : { x: cam.x, y: cam.y, z: zoom }), // a pan in flight counts as done
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
-    debug: () => ({ zoom, iso: isoOn(), cam: { ...cam }, clusters,
+    debug: () => ({ zoom, iso: true, cam: { ...cam }, clusters,
       outdoors: [...placed.vill.values()].filter(p => !folds(p.a) && !p.crowd).map(p => p.a.id), homes: W?.items.filter(it => it.kind === 'home').map(it => it.agentId) || [], badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
       town: W?.town, square: W?.square, quiet, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
       ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), depthCheck: () => (renderer && artState === 'ready' ? renderer.depthCheck() : []),

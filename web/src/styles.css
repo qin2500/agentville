@@ -98,8 +98,6 @@ svg.role { width: 14px; height: 14px; }
 .empty-note b { color: var(--text); font-size: 14px; }
 .empty-note[hidden] { display: none; }
 .quiet-note .ghost { border-color: transparent; padding: 2px 8px; }
-.viewbtn { width: auto; padding: 0 7px; font: 600 11px/1 ui-monospace, monospace; border-left: 1px solid var(--line); border-radius: 0 var(--radius) var(--radius) 0; }
-.viewbtn[aria-pressed="true"] { color: var(--text); }
 .acct-badge.q { color: var(--waiting); }
 .acct-net { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; font-size: 12px; color: var(--text-muted); padding: 6px 2px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .acct-net.work { color: var(--text); }
