@@ -164,13 +164,13 @@ a.chip:hover { color: var(--text); text-decoration: underline; }
 .row.b-building .l2 svg { color: var(--building); }
 .row.b-resting, .row.b-resting .rg, .row.b-resting .nm { color: var(--text-muted); }
 .row .old { color: var(--stalled); }
-.row[aria-current="true"] { background: var(--surface-3); border-left-color: var(--focus); }
+.row[aria-current="true"] { background: var(--surface-3); border-left-color: var(--agent-color, var(--focus)); box-shadow: inset 0 0 0 1px var(--agent-color, var(--focus)); }
 .row.b-stalled[aria-current="true"] { background: var(--stalled-bg); }
 .row.sev-error, .row.sev-error[aria-current="true"] { background: var(--error-bg); }
 .row.sev-prompt, .row.sev-prompt[aria-current="true"] { background: var(--prompt-bg); }
 .row.sev-prompt .l2, .row.sev-prompt .l2 svg { color: var(--prompt); }
 .row.sev-error { border-left-color: var(--error); }
-.row.sev-error[aria-current="true"] { border-left-color: var(--focus); }
+.row.sev-error[aria-current="true"] { border-left-color: var(--agent-color, var(--focus)); }
 .row.sev-error .l2 svg { color: var(--error); }
 .row.sev-error .old, .trow.sev-error .num.old { color: var(--error); }
 .row.is-hidden { opacity: .5; }
@@ -204,7 +204,7 @@ a.chip:hover { color: var(--text); text-decoration: underline; }
 .card { background: var(--bg); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .card.w-error { border-left-color: var(--error); } .card.w-stalled { border-left-color: var(--stalled); } .card.w-waiting { border-left-color: var(--waiting); } .card.w-building { border-left-color: var(--building); }
 .card .row.b-stalled, .card .row.sev-error { border-left-color: transparent; }
-.card .row[aria-current="true"] { border-left-color: var(--focus); }
+.card .row[aria-current="true"] { border-left-color: var(--agent-color, var(--focus)); }
 .card ul .row { padding-left: calc(var(--space-3) + 16px); }
 
 .pill { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 1px 8px; border-radius: var(--radius-pill); background: var(--surface-3); color: var(--text-muted); }
@@ -712,12 +712,12 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
    A little signboard: a header about the agent, then its actions. Hard pixel shadow and an accent
    top edge like the village's signs, on the same dark surfaces as the panels. */
 .ctxmenu { position: fixed; z-index: 60; left: 0; top: 0; width: max-content; min-width: 240px; max-width: min(320px, calc(100vw - 16px)); overflow: auto; overscroll-behavior: contain;
-  background: var(--surface); color: var(--text); border: 2px solid #0b0c10; border-top: 4px solid var(--accent); border-radius: 4px;
+  background: var(--surface); color: var(--text); border: 2px solid #0b0c10; border-top: 4px solid var(--agent-color, var(--accent)); border-radius: 4px;
   box-shadow: inset 0 0 0 1px var(--line), 4px 4px 0 rgb(0 0 0 / .5); font-size: 13px; animation: cm-in .08s ease-out; }
 @keyframes cm-in { from { opacity: 0; transform: translateY(-2px); } }
 .reduce-motion .ctxmenu { animation: none; }
 @media (prefers-reduced-motion: reduce) { .ctxmenu { animation: none; } }
-.cm-head { display: grid; gap: 5px; padding: 10px 12px 9px; background: linear-gradient(var(--surface-2), var(--surface)); border-bottom: 2px dashed var(--line); }
+.cm-head { display: grid; gap: 5px; padding: 10px 12px 9px; background: linear-gradient(color-mix(in srgb, var(--agent-color, var(--surface-2)) 22%, var(--surface-2)), var(--surface)); border-bottom: 2px dashed color-mix(in srgb, var(--agent-color, var(--line)) 55%, var(--line)); }
 .cm-head p { margin: 0; }
 .cm-title { display: flex; align-items: flex-start; gap: 6px; font-size: 14px; font-weight: 700; line-height: 1.25; }
 .cm-title svg { margin-top: 2px; }
@@ -744,7 +744,15 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .cm-item.danger { color: var(--error); }
 .cm-item.danger:hover, .cm-item.danger:focus { background: color-mix(in srgb, var(--error) 14%, transparent); }
 /* What the open menu is for. */
-.cm-target { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent); }
+.cm-target { box-shadow: inset 0 0 0 2px var(--agent-color, var(--accent)); }
+/* Claude Code's /color (ui.js agentColor sets --agent-color; grey when none): a thin bar along the
+   top of every agent row, Team card and Tree node; the selection and menu rings use it too. */
+.row { position: relative; }
+.row::before { content: ""; position: absolute; left: -3px; right: 0; top: 0; height: 2px; background: var(--agent-color); pointer-events: none; }
+.card:not(.solo) { border-top: 2px solid var(--agent-color, var(--line)); }
+.card:not(.solo) > .row::before { display: none; }
+.row:focus-visible { outline-color: var(--agent-color, var(--focus)); }
+.sheet header { border-top: 3px solid var(--agent-color, transparent); background: color-mix(in srgb, var(--agent-color, var(--surface)) 12%, var(--surface)); }
 /* "⋯" on a row: on hover or keyboard focus with a mouse, always there on a touch screen. */
 .menubtn { position: absolute; right: 64px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; display: grid; place-items: center; padding: 0;
   border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1;

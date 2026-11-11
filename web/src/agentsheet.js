@@ -1,7 +1,7 @@
 // Fork…, Stop job… and Edit… from the agent menu (ctxmenu.js): one sheet, the same steps the old
 // inspector had. Stop and Fork go through a server preview first (the exact command), then a one-time confirm;
 // Edit is the name / role / parent override form.
-import { esc } from './ui.js';
+import { esc, agentColor } from './ui.js';
 
 const NONE_PARENT = ''; // "None" in the parent picker: an explicit "no parent" override
 
@@ -39,6 +39,7 @@ export function createAgentSheet(app, { descendants }) {
   function render() {
     const a = agent();
     if (!a) { sheet.innerHTML = `${head('Agent gone', 'It is no longer in the list.')}<footer><span class="spacer"></span><button class="ghost" type="button" data-as="close">Close</button></footer>`; return; }
+    sheet.style.setProperty('--agent-color', agentColor(a));
     const name = esc(a.name);
     const cmd = A.preview ? `<pre class="cmd" id="act-cmd">${esc(A.preview.command)}</pre>` : '';
     const blocked = A.preview?.blocked ? `<p class="helper">${esc(A.preview.blocked)}.</p>` : '';

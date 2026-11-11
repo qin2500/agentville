@@ -6,7 +6,7 @@
 //
 // Actions keep their old rules and confirm steps: Fork, Stop job and Edit open a sheet (agentsheet.js)
 // that shows the exact command or form first. No conversation text is shown here.
-import { BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, bucketIcon, icon, ago, esc, safeHref } from './ui.js';
+import { BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, bucketIcon, icon, ago, esc, safeHref, agentColor } from './ui.js';
 import { prTone } from './prs.js';
 import { stoppedNote } from './important.js';
 
@@ -85,6 +85,7 @@ export function createMenu(app, deps) {
   function render() {
     const a = S.byId.get(M.id) || S.data?.agents?.find(x => x.id === M.id);
     if (!a) return close();
+    el.style.setProperty('--agent-color', agentColor(a));
     const list = items(a);
     const GROUP = { fork: 1, stop: 1, important: 2, edit: 2, hide: 2, unhide: 2 };
     let g = 0;

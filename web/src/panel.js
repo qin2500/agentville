@@ -1,6 +1,6 @@
 // The agent panel: Team, Tree and Models views. Rows are cached by id and patched in
 // place; containers are keyed too, so a poll moves at most a few nodes and never rebuilds the list.
-import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, bucketIcon, icon, ago, agoLong, esc, h, store } from './ui.js';
+import { BUCKET_RANK, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, isPrompt, bucketIcon, icon, ago, agoLong, esc, h, store, agentColor } from './ui.js';
 import { createModels } from './models.js';
 import { createTree } from './tree.js';
 import { rank, byRank, syncNodes } from './order.js';
@@ -126,6 +126,7 @@ export function createPanel(app) {
     }
     btn.className = `row ${a.role} b-${a.bucket}${isError(a) ? ' sev-error' : isPrompt(a) ? ' sev-prompt' : ''}${a.hidden ? ' is-hidden' : ''}${ctx ? ' ctx' : ''}${btn.classList.contains('flash') ? ' flash' : ''}`;
     btn.style.setProperty('--depth', depth);
+    btn.style.setProperty('--agent-color', agentColor(a));
     if (S.selected === a.id) btn.setAttribute('aria-current', 'true'); else btn.removeAttribute('aria-current');
     return btn;
   }
@@ -463,6 +464,7 @@ export function createPanel(app) {
     const el = keyed(`card:${a.id}`, () => h('div', { class: 'card' }));
     const all = [a, ...descendants(a)];
     el.className = `card w-${all.some(isError) ? 'error' : ['stalled', 'waiting', 'building', 'resting'][worst(a)]}`;
+    el.style.setProperty('--agent-color', agentColor(a));
     const nodes = [];
     if (projectLabel) { const ph = keyed(`cardproj:${a.id}`, () => h('div', { class: 'cardhead' })); ph.textContent = projectLabel; nodes.push(ph); }
     nodes.push(rowBtn(a, { ctx: !sets.match.has(a.id) }));

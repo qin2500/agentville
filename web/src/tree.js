@@ -5,7 +5,7 @@
 // viewport are in the DOM, cards are keyed by id and patched in place, and a poll keeps the
 // expand/collapse state, the camera (or scroll) and focus; if items above move, the view shifts
 // with them so what you were looking at stays put. No conversation text: names and statuses only.
-import { ROLE_NAME, BUCKET_NAME, isError, isPrompt, bucketIcon, icon, ago, esc, h } from './ui.js';
+import { ROLE_NAME, BUCKET_NAME, isError, isPrompt, bucketIcon, icon, ago, esc, h, agentColor } from './ui.js';
 import { rank, syncNodes } from './order.js';
 import { buildTree, layout, outline, family, groupKey, SOLO_KEY, DIM } from './tree-model.js';
 import { stoppedNote } from './important.js';
@@ -188,6 +188,7 @@ export function createTree({ S, app, matches, filtering }) {
     }
     el.className = `tnode r-${roleK} t-${tone(a)}${n.ctx ? ' ctx' : ''}${S.selected === n.id ? ' cur' : ''}${a.hidden ? ' is-hidden' : ''}`;
     el.setAttribute('aria-selected', String(S.selected === n.id));
+    el.style.setProperty('--agent-color', agentColor(a));
     const sibs = n.parent.roots || n.parent.kids;
     aria(el, n.depth + 1, sibs.length, sibs.indexOf(n) + 1, hasKids || (pill && pill.n) ? String(n.kids.length > 0) : null);
     if (row) el.style.setProperty('--lvl', row.level - 1); else el.style.removeProperty('--lvl');

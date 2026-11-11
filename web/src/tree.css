@@ -22,8 +22,11 @@
 .tnode { position: absolute; left: 0; top: 0; width: 200px; height: 50px; display: grid; grid-template-rows: 1fr 1fr; align-content: center; gap: 1px; padding: 4px 10px 4px 9px;
   background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--resting); border-radius: var(--radius); color: var(--text); cursor: pointer; outline: none; contain: layout style; }
 .tnode:hover { background: var(--surface-3); }
-.tnode:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; z-index: 1; }
-.tnode.cur { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.tnode:focus-visible { outline: 2px solid var(--agent-color, var(--focus)); outline-offset: 2px; z-index: 1; }
+.tnode.cur { border-color: var(--agent-color, var(--focus)); box-shadow: 0 0 0 1px var(--agent-color, var(--focus)); }
+.tnode.cm-target { box-shadow: 0 0 0 2px var(--agent-color, var(--accent)); }
+/* /color: a thin bar along the top (grey when none). */
+.tnode::before { content: ""; position: absolute; left: -3px; right: -1px; top: -1px; height: 3px; border-radius: var(--radius) var(--radius) 0 0; background: var(--agent-color); pointer-events: none; }
 .tnode .tn1, .tnode .tn2 { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
 .tnode .tnm { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .tnode.r-boss .tnm, .tnode.r-lead .tnm { font-weight: 600; }

@@ -34,6 +34,10 @@ const headCache = new Map()
 const tailCache = new Map()
 const edgeCache = new Map()
 
+/** The names Claude Code's `/color` sets; anything else (unset, "default", junk) is no color. */
+export const AGENT_COLORS = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink']
+export const agentColor = (v) => (typeof v === 'string' && AGENT_COLORS.includes(v.toLowerCase()) ? v.toLowerCase() : null)
+
 async function headMeta(file, sid, stamp) {
   const hit = headCache.get(file)
   if (hit?.stamp === stamp) return hit.meta
@@ -148,7 +152,8 @@ const titleText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().
  *   (`claude attach <id>`), as `[short, launchedAt]`; the caller drops jobs created before the
  *   call, which is what a relaunch (`--bg --resume`) of an existing job looks like;
  * - the PRs the CLI linked to it (`pr-link` records: URL and number only);
- * - its names (`custom-title`, `ai-title`, `agent-name` records), latest of each, for search.
+ * - its names (`custom-title`, `ai-title`, `agent-name` records), latest of each, for search;
+ * - its `/color` (`agent-color` records), the latest one.
  * Only records that start with those types are parsed, so a tool output quoting one never counts.
  * ponytail: the first scan reads every transcript once (~1 GB on a heavy machine, ~2 s).
  */
@@ -157,7 +162,7 @@ async function spawnEdges(file, size) {
   if (!c || size < c.offset) c = { offset: 0, pending: new Map(), jobs: [], prs: [], names: {} }
   if (size > c.offset) {
     c.offset = await readLinesFrom(file, c.offset, (line) => {
-      if (line.startsWith('{"type":"pr-link"') || line.startsWith('{"type":"custom-title"') || line.startsWith('{"type":"ai-title"') || line.startsWith('{"type":"agent-name"')) {
+      if (line.startsWith('{"type":"pr-link"') || line.startsWith('{"type":"custom-title"') || line.startsWith('{"type":"ai-title"') || line.startsWith('{"type":"agent-name"') || line.startsWith('{"type":"agent-color"')) {
         let r
         try { r = JSON.parse(line) } catch { return }
         if (r.type === 'pr-link') {
@@ -165,6 +170,7 @@ async function spawnEdges(file, size) {
           if (m && !c.prs.some((p) => p.href === r.prUrl)) c.prs.push({ id: m[1], href: r.prUrl })
           return
         }
+        if (r.type === 'agent-color') { c.color = agentColor(r.agentColor); return }
         const k = { 'custom-title': 'customTitle', 'ai-title': 'aiTitle', 'agent-name': 'agentName' }[r.type]
         const v = titleText(r[k])
         if (v) c.names[k] = v
@@ -552,6 +558,8 @@ export async function scan(now = Date.now()) {
       modelConfig: jobModelConfig(j),
       promptAt: f?.promptAt || 0,
       promptIsPrep: Boolean(f?.promptIsPrep),
+      // `/color`: the job's own record, else the latest one in its transcript.
+      color: agentColor(j.color) || (current && edgeCache.get(current.file)?.color) || null,
       fanAgents: (Array.isArray(j.fan) ? j.fan : []).filter((x) => x?.kind === 'agent').length,
     }
     facts.push(agent)
@@ -591,6 +599,7 @@ export async function scan(now = Date.now()) {
       prompt: cutOff && !toolNeedsUser ? null : (toolNeedsUser && f.evidence.prompt) || reg.prompt || null,
       waitingOn: isLive ? currentWait(f.evidence, now) : null,
       prs: withLinked([], edgeCache.get(t.file)?.prs),
+      color: edgeCache.get(t.file)?.color || null,
       resume: `claude --resume ${t.sid}`,
       fork: { sid: t.sid, cwd: meta.cwd || f.cwd || liveEntry?.cwd || null },
       inbox: liveEntry?.inbox || null,

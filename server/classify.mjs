@@ -197,6 +197,8 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       since: Math.round(c.since || 0),
       lastActivityAt: Math.round(a.lastActivityAt || 0),
       sizeBytes: a.sizeBytes || 0,
+      // Claude Code's `/color` name ('purple'…), or null (none set, Codex, subagents).
+      color: a.color || null,
       live: Boolean(a.live),
       prs: a.prs || [],
       // A job that needs you: what it asks for and the scheduler's suggested reply (short strings).
