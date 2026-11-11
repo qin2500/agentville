@@ -777,6 +777,8 @@ li > .openbtn, .tw > .openbtn { right: 92px; }
   .main.peek.full { grid-template-columns: minmax(0, 1fr) 0fr var(--peek-w, 380px); }
   .main.peek.full > .panel { border-right: 0; }
   .main.termview.peek { grid-template-columns: var(--panel-w) minmax(0, 1fr) var(--peek-w, 380px); }
+  /* Outranks ".main.termview:not(.full) > .village { visibility: hidden }": the peek must show it. */
+  .main.termview.peek > .village { visibility: visible; }
   .main.termview.peek.collapsed { grid-template-columns: 40px minmax(0, 1fr) var(--peek-w, 380px); }
   .main.termview.full.peek { grid-template-columns: .34fr minmax(0, 1fr) var(--peek-w, 380px); }
   .main.termview.full.peek > .village { display: block; }
