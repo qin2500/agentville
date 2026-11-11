@@ -5,6 +5,12 @@
  * the sampler asks Anthropic for the usage of the login in Claude's store only (never refreshing
  * it) and records 5-hour and weekly samples for the projection (projection.mjs).
  *
+ * Goal: use as much of every account as possible before it resets. Each account's weekly allowance
+ * expires at its weekly reset; the 5-hour window only caps how fast it can be spent. So spend from
+ * the one that expires soonest: when it runs out, go to the next-soonest; when its 5-hour window
+ * resets, go back (rebalance: from cached readings, confirmed by a fresh read at most every 15 min,
+ * only when its week resets REBALANCE_LEAD_MS sooner and it has room, so it doesn't flip back and forth).
+ *
  * When the active saved account is out (a window at OUT_AT %, or running agents report a usage
  * limit since the last switch), it switches to the available saved account whose weekly window
  * resets soonest (then the 5-hour one); if none is available, to the pool. It uses the normal switch (backups, canary,
@@ -31,6 +37,18 @@ export const AVAILABLE_BELOW = 95 // % used, both windows: an account is worth s
 export const COOLDOWN_MS = 15 * 60e3
 export const KEEP_SAMPLES_MS = 6 * 3600e3
 const LIMIT_REASON = /^Usage limit\b/
+// Rebalance: move to an account whose weekly allowance expires sooner, before the active one runs out.
+export const REBALANCE_LEAD_MS = 6 * 3600e3 // its week must reset at least this much sooner
+export const REBALANCE_MIN_ROOM = 10 // weekly % it must have left
+export const REBALANCE_MAX_FIVE = 80 // 5-hour % it may have used (no 5-hour limit always passes)
+export const REBALANCE_CHECK_MS = 15 * 60e3 // how often the sampler re-reads the other accounts for it
+
+/** A reading with every window whose reset has passed counted as unused (the cache can be older than a reset). */
+export function fresh(u, now) {
+  if (!u || u.error) return u
+  const win = (x) => (x && !x.none && x.resetsAt != null && x.resetsAt <= now ? { ...x, used: 0, resetsAt: null } : x)
+  return { ...u, fiveHour: win(u.fiveHour), weekly: win(u.weekly) }
+}
 
 /**
  * The decision, pure. `usage`: Map id -> { fiveHour, weekly, error? } (other saved accounts' latest).
@@ -39,7 +57,7 @@ const LIMIT_REASON = /^Usage limit\b/
  * `{ action: 'none', why }` or `{ action: 'switch', to, why }`, `why` in 'five_hour' | 'weekly' |
  * 'limit' | 'quarantine' | 'prefer' for a switch.
  */
-export function decide({ enabled, active, saved, activeUsage, usage, limitHit, busy, lastAutoAt, poolAvailable, now, onWork = false, quarantine = new Set(), prefer = false }) {
+export function decide({ enabled, active, saved, activeUsage, usage, limitHit, busy, lastAutoAt, poolAvailable, now, onWork = false, quarantine = new Set(), prefer = false, rebalance = false }) {
   if (active === 'pool') return { action: 'none', why: 'on the pool' }
   if (!saved.includes(active)) return { action: 'none', why: 'not a saved account' }
   const banned = onWork && quarantine.has(active)
@@ -47,15 +65,21 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   if (busy) return { action: 'none', why: 'a switch is running' }
   if (!banned && lastAutoAt && now - lastAutoAt < COOLDOWN_MS) return { action: 'none', why: 'cooldown' }
   const out = activeUsage?.fiveHour?.used >= OUT_AT ? 'five_hour' : activeUsage?.weekly?.used >= OUT_AT ? 'weekly' : limitHit ? 'limit' : ''
-  const why = banned ? 'quarantine' : out || (prefer && !onWork && !quarantine.has(active) ? 'prefer' : '')
+  const why = banned ? 'quarantine' : out || (prefer && !onWork && !quarantine.has(active) ? 'prefer' : '') || (rebalance ? 'rebalance' : '')
   if (!why) return { action: 'none', why: 'not out' }
   const ok = (u) => u && !u.error && u.fiveHour && u.weekly && u.fiveHour.used < AVAILABLE_BELOW && u.weekly.used < AVAILABLE_BELOW
   // Off the work Wi-Fi quarantine accounts rank first; on it they aren't candidates at all.
   // Then the account whose weekly allowance resets soonest (use it before it expires), then the 5-hour reset.
   const rank = (id) => (onWork ? 0 : quarantine.has(id) ? 0 : 1)
   const at = (id, k) => usage.get(id)[k].resetsAt ?? Infinity
+  const week = (a, b) => { const d = at(a, 'weekly') - at(b, 'weekly'); return Math.abs(d) < 3600e3 ? 0 : d } // within the hour: a tie
   const best = saved.filter((id) => id !== active && ok(usage.get(id)) && !(onWork && quarantine.has(id)) && (why !== 'prefer' || quarantine.has(id)))
-    .sort((a, b) => rank(a) - rank(b) || at(a, 'weekly') - at(b, 'weekly') || at(a, 'fiveHour') - at(b, 'fiveHour'))[0]
+    .sort((a, b) => rank(a) - rank(b) || week(a, b) || at(a, 'fiveHour') - at(b, 'fiveHour'))[0]
+  if (why === 'rebalance') { // only for an account whose allowance expires well before the active one's, with real room
+    const b = best && usage.get(best), mine = activeUsage?.weekly?.resetsAt ?? Infinity
+    const worth = b && rank(best) <= rank(active) && at(best, 'weekly') + REBALANCE_LEAD_MS <= mine && 100 - b.weekly.used >= REBALANCE_MIN_ROOM && (b.fiveHour.none || b.fiveHour.used < REBALANCE_MAX_FIVE)
+    return worth ? { action: 'switch', to: best, why } : { action: 'none', why: 'not out' }
+  }
   if (best) return { action: 'switch', to: best, why }
   if (why === 'prefer') return { action: 'none', why: 'no quarantine account available' }
   if (why === 'quarantine') { // off a quarantine account no matter what: the regular one that frees up soonest, used up or not
@@ -117,10 +141,16 @@ export function createSampler({ dataDir, account, agents, network, now = Date.no
       onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)) }
     // Not out, or a guard says no: nothing else to check.
     const pre = decide({ ...base, usage: new Map(), poolAvailable: true })
-    if (pre.action === 'none') return pre
+    if (pre.action === 'none') {
+      if (pre.why !== 'not out' || list.length < 2 || at - (state.lastRebalanceCheck || 0) < REBALANCE_CHECK_MS) return pre
+      state.lastRebalanceCheck = at // a fresh read of the others, at most every 15 min
+      const all = await account.accounts.usage({ fresh: true })
+      const d = decide({ ...base, usage: new Map(all.accounts.map((x) => [x.id, fresh(x, at)])), busy: account.isBusy(), rebalance: true })
+      return d.action === 'switch' ? autoSwitch(d, u.id, at) : d
+    }
     // Out: check every saved account now (this may refresh inactive ones; never the active one).
     const all = await account.accounts.usage({ fresh: true })
-    const d = decide({ ...base, usage: new Map(all.accounts.map((x) => [x.id, x])), busy: account.isBusy() })
+    const d = decide({ ...base, usage: new Map(all.accounts.map((x) => [x.id, fresh(x, at)])), busy: account.isBusy() })
     return d.action === 'switch' ? autoSwitch(d, u.id, at) : d
   }
 
@@ -189,7 +219,7 @@ export function createSampler({ dataDir, account, agents, network, now = Date.no
     if (!state.enabled || !latest?.saved || !account.accounts.cachedUsage) return null
     const list = await account.accounts.load()
     const net = network ? (await network.status()).current : { work: false }
-    const d = decide({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, usage: account.accounts.cachedUsage(),
+    const d = decide({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, usage: new Map([...account.accounts.cachedUsage()].map(([id, x]) => [id, fresh(x, now())])),
       limitHit: false, busy: false, lastAutoAt: null, poolAvailable: account.poolAvailable(), now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)) })
     if (d.action !== 'switch') return null
     return { to: d.to, label: d.to === 'pool' ? 'the pool' : list.find((a) => a.id === d.to)?.label || 'another saved account' }

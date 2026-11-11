@@ -113,10 +113,7 @@ test('projection: the binding window, and where auto-switch would go (cached rea
     assert.deepEqual([p.binding.window, p.binding.at], ['fiveHour', p.fiveHour.at])
     assert.equal(p.weekly.basis, 'flatOut')
     assert.equal(calls(), n0, 'the projection makes no usage calls')
-    // B and C not read yet: nothing known to switch to but the pool.
-    assert.deepEqual(p.next, { to: 'pool', label: 'the pool' })
-    await t.req('GET', '/api/accounts/usage') // the menu reads every account: now the cache knows C resets soonest
-    p = (await t.req('GET', '/api/spend')).json.projection
+    // The sample's rebalance check read B and C too: the cache knows C resets soonest.
     assert.deepEqual(p.next, { to: UUID.C, label: 'c@example.com' })
     await t.req('POST', '/api/autoswitch', { enabled: false })
     assert.equal((await t.req('GET', '/api/spend')).json.projection.next, null, 'auto-switch off: no hint')
@@ -130,7 +127,10 @@ test('sampler: samples the active account only; when it runs out, switches to th
     const n0 = usageCalls().length
     let d = await t.server.sampler.sample()
     assert.equal(d.why, 'not out')
-    assert.deepEqual(usageCalls().slice(n0), ['A'], 'only the active account is sampled')
+    assert.deepEqual(usageCalls().slice(n0).sort(), ['A', 'A', 'B', 'C'], 'the active account, plus one rebalance read of all of them')
+    const n1 = usageCalls().length
+    assert.equal((await t.server.sampler.sample()).why, 'not out')
+    assert.deepEqual(usageCalls().slice(n1), ['A'], 'then only the active account until the next rebalance check (15 min)')
     assert.equal(t.api.requests.filter((r) => r.path === '/v1/oauth/token').length, 0, 'and nothing is refreshed')
     let spend = (await t.req('GET', '/api/spend')).json
     assert.deepEqual([spend.projection.account, spend.projection.fiveHour.used, spend.projection.fiveHour.state], [UUID.A, 20, 'gathering'])
