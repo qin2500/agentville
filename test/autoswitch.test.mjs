@@ -62,12 +62,12 @@ const PEOPLE = () => ({
   C: { email: 'c@example.com', five: 40, week: 30, fiveResetsIn: 1 * 3600e3 },
 })
 async function setup() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'village-auto-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-auto-'))
   const home = makeAccountHome(root)
   const people = PEOPLE()
   const api = await fakeAnthropic(people)
   Object.assign(process.env, home.env, api.env)
-  for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY', 'VILLAGE_TERMINAL', 'VILLAGE_SAMPLE_MS']) delete process.env[k]
+  for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY', 'AGENTVILLE_TERMINAL', 'AGENTVILLE_SAMPLE_MS']) delete process.env[k]
   const dataDir = path.join(root, 'data')
   const server = createServer({ dataDir })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
