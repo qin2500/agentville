@@ -1,7 +1,7 @@
 // Models view: which model every agent is really on (its latest reply), what it was told to use,
 // whether it goes through the pool, how full its context is and its tokens, from GET /api/models.
 // A strip of one card per model in use sits on top (click to filter); below, a treegrid grouped
-// like Table (project → boss → lead → sub) in the same stable first-seen order. Rows are keyed by
+// by project (project → boss → lead → sub) in the same stable first-seen order. Rows are keyed by
 // id and patched in place; data refreshes with the agents poll while this view is showing.
 import { rank, byRank } from './order.js';
 import { ROLE_NAME, HARNESS_NAME, icon, ago, clock, esc, h } from './ui.js';
