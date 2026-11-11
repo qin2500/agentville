@@ -29,7 +29,8 @@ import { buildModels, readDefaults } from './models.mjs'
 import { createSampler } from './autoswitch.mjs'
 import { createResearch } from './research.mjs'
 import { createNetwork } from './network.mjs'
-import { detectTerminal, findExecutable, openInTerminal } from './terminal.mjs'
+import { detectTerminal, findExecutable, openInTerminal, runAppleScript } from './terminal.mjs'
+import { normalizeLayout, layoutLeaves, ghosttyLayoutLaunch } from './ghostty-layout.mjs'
 import { createTerminals } from './pty.mjs'
 import { canRestartSelf, createUpdater, restartSelf } from './update.mjs'
 import * as claude from './claude-code.mjs'
@@ -275,6 +276,45 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     return [502, { error: running ? `${r.error} The built-in terminal was already closed; open it again with Terminal.` : r.error, closed: !!running }]
   }
 
+  /**
+   * The terminal view's split layout → one Ghostty window with the same splits (ghostty-layout.mjs).
+   * The same rule as `popout`, for every pane: never in both places. Every pane's command is decided
+   * (and any refusal returned) before anything ends; then each embedded process ends and must exit;
+   * only then does the window open. Ghostty only: no other terminal has scriptable splits.
+   */
+  async function popoutLayout(body) {
+    const tree = normalizeLayout(body?.layout)
+    const ids = layoutLeaves(tree)
+    const term = await detectTerminal()
+    if (!term) return [501, { error: 'No supported terminal' }]
+    if (term.kind !== 'ghostty-mac') return [501, { error: 'Popping out a split layout needs Ghostty' }]
+    const agents = (await snapshot()).agents
+    const commands = new Map(), running = []
+    for (const id of ids) {
+      const live = terms.get(id)
+      if (live) { running.push(id); commands.set(id, { argv: live.argv, cwd: live.cwd }); continue }
+      const a = agents.find((x) => x.id === id)
+      try {
+        commands.set(id, await openCommand(a))
+      } catch (err) {
+        if (!err.status) throw err
+        return [err.status, { error: `${a?.name || 'An agent'}: ${err.message}`, closed: false }]
+      }
+    }
+    const ended = await Promise.all(running.map((id) => terms.end(id, 'popout')))
+    cached = null
+    if (ended.some((ok) => !ok)) {
+      return [504, { error: "A built-in terminal's process did not exit, so no Ghostty window was opened", closed: running.filter((_, i) => ended[i]) }]
+    }
+    const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined)
+    const focus = typeof body?.focus === 'string' && ids.includes(body.focus) ? body.focus : null
+    const launch = ghosttyLayoutLaunch(term.bin, tree, commands, { focus, cellW: n(body?.cell?.w), cellH: n(body?.cell?.h), width: n(body?.size?.w), height: n(body?.size?.h) })
+    if (!launch) return [501, { error: 'Popping out a split layout needs Ghostty' }]
+    const r = await runAppleScript(launch, HOME, 30000)
+    if (r.ok) return [200, { ok: true, terminal: term.name, panes: ids.length, closed: running }]
+    return [502, { error: running.length ? `${r.error} The built-in terminals were already closed; open them again from the list.` : r.error, closed: running }]
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://local')
@@ -284,6 +324,16 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       }
       if (!isLocalRequest(req)) return send(res, 403, { error: 'Local requests only' })
       if (url.pathname === '/api/agents' && req.method === 'GET') return send(res, 200, { ...(await snapshot()), term: terms.info() })
+      if (url.pathname === '/api/termlayout/popout' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        // Counted with the other terminal requests. ponytail: one global window, single local user.
+        const now = Date.now()
+        while (termActs.length && now - termActs[0] > 60_000) termActs.shift()
+        if (termActs.length >= termPerMinute) return send(res, 429, { error: 'Too many terminal requests; wait a minute' })
+        termActs.push(now)
+        return send(res, ...await popoutLayout(body))
+      }
       const tm = /^\/api\/term\/([^/]+)(\/popout)?$/.exec(url.pathname)
       if (tm && (req.method === 'POST' || (req.method === 'DELETE' && !tm[2]))) {
         let reattach = null, size = null

@@ -128,6 +128,41 @@ test('no supported terminal: 501 and the capability is null', async () => {
   } finally { process.env.AGENTVILLE_TERMINAL = path.join(bin, 'kitty') }
 })
 
+const layoutPop = (body, headers = {}) => fetch(`${base}/api/termlayout/popout`, {
+  method: 'POST', headers: { 'content-type': 'application/json', origin: base, ...headers }, body: JSON.stringify(body) })
+const pair = (a, b) => ({ layout: { dir: 'row', ratio: 0.5, a: { id: a }, b: { id: b } } })
+
+test('Pop out layout: guarded, checked, and Ghostty only (nothing opens elsewhere)', async () => {
+  const before = opened().length
+  const job = `claude-code:${ids.job}`, closed = `claude-code:${ids.closed}`
+  assert.equal((await layoutPop(pair(job, closed), { origin: 'http://evil.example' })).status, 403)
+  assert.equal((await layoutPop(pair(job, closed), { 'content-type': 'text/plain' })).status, 415)
+  let r = await layoutPop({ layout: { dir: 'row', ratio: 0.5, a: { id: job }, b: { id: job } } })
+  assert.deepEqual([r.status, (await r.json()).error], [400, 'An agent can be in the layout only once'])
+  r = await layoutPop({ layout: 'nope' })
+  assert.equal(r.status, 400)
+  r = await layoutPop(pair(job, closed)) // the configured terminal is the fake kitty
+  assert.deepEqual([r.status, (await r.json()).error], [501, 'Popping out a split layout needs Ghostty'])
+  assert.equal(opened().length, before)
+})
+
+test('Pop out layout: one pane that cannot open refuses the whole layout before anything ends', { skip: process.platform !== 'darwin' }, async () => {
+  // A Ghostty-shaped path makes this the Ghostty route; the refusal comes before any script runs.
+  const app = path.join(root, 'Fake.app', 'Contents', 'MacOS')
+  fs.mkdirSync(app, { recursive: true })
+  script(path.join(app, 'ghostty'), 'process.exit(9)')
+  process.env.AGENTVILLE_TERMINAL = path.join(app, 'ghostty')
+  try {
+    const r = await layoutPop(pair(`claude-code:${ids.job}`, `claude-code:${ids.job}:sub:s1`))
+    const body = await r.json()
+    assert.equal(r.status, 409)
+    assert.match(body.error, /: Open its lead instead$/)
+    assert.equal(body.closed, false)
+    const r2 = await layoutPop(pair(`claude-code:${ids.job}`, `claude-code:${ids.live}`))
+    assert.match((await r2.json()).error, /Already running in another terminal$/)
+  } finally { process.env.AGENTVILLE_TERMINAL = path.join(bin, 'kitty') }
+})
+
 // Adversarial arguments through the exact shells that will run them.
 const values = ["single'quote", 'double"quote', '$(touch nope)', '; touch nope', '--flag', 'line\nbreak', '`touch nope`', '$HOME', '雪']
 const echoArgv = [process.execPath, '-e', 'process.stdout.write(JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}))', '--', ...values]
