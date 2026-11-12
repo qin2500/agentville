@@ -912,6 +912,7 @@ function createRenderer(IMG) {
       walkers.push({ id, kind: an, x, y, facing: s.right ? 'R' : 'L', moving: s.moving && !still, t });
     }
     for (const d of dock.parts) list.push(d);
+    walkers.push(...dock.walking); // the dock's walkers (dock-walk.js) face where they walk too
     const order = isoSort(list);
     drawOrder = order;
     const pops = [], hits = [], badges = [], resting = new Map();
@@ -1130,7 +1131,7 @@ function createRenderer(IMG) {
       if (!d.b) return;
       const data = d.b.img.getContext('2d').getImageData(0, 0, d.b.img.width, d.b.img.height).data;
       drawOrder.forEach((o, j) => {
-        if (!o.vd || o.vd.ghost) return;
+        if (!o.vd || o.vd.ghost || o.vd.walker) return; // a dock walker passes in front of houses on the street
         const x = Math.floor(o.vd.left + 8 - d.b.x), y = Math.floor(o.vd.feet - 1 - d.b.y);
         if (x < 0 || y < 0 || x >= d.b.img.width || y >= d.b.img.height || !data[(y * d.b.img.width + x) * 4 + 3]) return;
         if (j > i) out.push({ villager: o.vd.v.a.id, building: d.it.id });

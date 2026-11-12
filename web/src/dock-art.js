@@ -1,7 +1,7 @@
 // The dock (owner, 2026-11-11): "a cute little dock on our island". A wooden pier runs out into a cove
-// cut into the town's south shore; each PR being shipped is a little ship at a berth. A porter carries
-// crates from the pier foot to its ship as checks pass and review lands (crates stack on the pier and on
-// the deck), and when the PR merges the ship casts off and sails out of view. The pier grows with
+// cut into the town's south shore; each PR being shipped is a little ship at a berth. Villagers walk
+// crates there from town (dock-walk.js) while checks pass and review lands (crates stack on the deck),
+// and when the PR merges the ship casts off and sails out of view. The pier grows with
 // `level` (1–5): longer, more berths, then a lamp, a warehouse, a crane and a flag.
 //
 // world.js places it (the cove is cut in buildLand, so it never moves while the island stays the same
@@ -9,8 +9,9 @@
 // models are flat faces in world px (x east, y south, z up), rasterised pixel-exact into cached canvases
 // like iso.js does, so they stay crisp at every zoom. The village is isometric only (owner, 2026-11-11).
 // Data: `S.dock` (see dockData).
-import { T, ISO, isoP, isoInv, hash, LOOKS, ACCENT } from './world.js';
+import { T, ISO, isoP, isoInv, hash, ACCENT } from './world.js';
 import { store } from './ui.js';
+import { createWalkers } from './dock-walk.js';
 
 export const BERTHS = [1, 2, 2, 3, 4];  // berths per level
 const LEN = [4, 5, 6, 8, 9];             // pier length per level, in tiles past the shore
@@ -18,7 +19,6 @@ const DECK = 4;                          // the pier's deck height above the wat
 const SHIP_L = 46, SHIP_HALF = 9, SHIP_Z = 8;
 const SAIL_MS = 7500;                    // casting off to out of view
 const FRESH_MS = 10 * 60e3;              // a sail older than this when first seen isn't animated
-const LANE = 14;                         // porter walking speed, world px/s
 const DEMO = typeof location !== 'undefined' && new URLSearchParams(location.search).get('dockdemo') === '1';
 
 export const clampLevel = l => Math.min(5, Math.max(1, Math.round(+l) || 1));
@@ -49,12 +49,15 @@ export function progress(p, now = Date.now()) {
 
 // ---------- ?dockdemo=1 ----------
 // Three PRs loading at different progress, level 4, and one sails every 20 s (the oldest, nearly full).
-// It replaces S.dock for the whole page, so the click panel shows the same ships.
+// It replaces S.dock for the whole page, so the click panel shows the same ships. Two of the three
+// belong to resting agents when there are any (so they walk crates down); the third to nobody on the
+// map (a townsperson walks it).
 const BORN = Date.now();
 export const dockDemo = () => DEMO;
-export function demoDock(now = Date.now()) {
+export function demoDock(now = Date.now(), resting = []) {
   const E = 20000, e = Math.floor(now / E), repos = ['agentville', 'lighthouse', 'harbour'], names = ['Ada', 'Bo', 'Cy'];
-  const pr = n => { const repo = repos[((n % 3) + 3) % 3]; return { id: 400 + (n % 600), repo, href: `https://github.com/demo/${repo}/pull/${400 + (n % 600)}`, agentId: null, agentName: names[((n % 3) + 3) % 3] }; };
+  const owners = [...resting].sort((a, b) => String(a.id).localeCompare(String(b.id))).slice(0, 2);
+  const pr = n => { const repo = repos[((n % 3) + 3) % 3], who = n % 3 ? owners[(n % 3) - 1] : null; return { id: 400 + (n % 600), repo, href: `https://github.com/demo/${repo}/pull/${400 + (n % 600)}`, agentId: who?.id ?? null, agentName: who?.name ?? names[((n % 3) + 3) % 3] }; };
   const loading = [1, 2, 3].map(j => {
     const n = e + j, since = (n - 3) * E, k = Math.min(1, Math.max(0, (now - since) / (3 * E))), total = 6, passed = Math.min(total, Math.floor(k * 7));
     return { ...pr(n), state: 'open', checks: { passed, failed: 0, pending: total - passed }, review: k > 0.72 ? 'approved' : 'pending', since };
@@ -250,7 +253,8 @@ export function createDockArt(H) {
   const berthOf = new Map(), lastBerth = new Map(); // href → berth: loading now / when last seen loading
   let sails = [];
   const arts = new Map(), art = (k, make) => { if (!arts.has(k)) arts.set(k, make()); return arts.get(k); };
-  let hits = [], lights = [], tags = [], parts = [], ground = [], wakes = [];
+  let hits = [], lights = [], tags = [], parts = [], ground = [], wakes = [], walking = [];
+  const walkers = createWalkers();
 
   // Berths: a ship underway keeps its berth until it's gone; a loading PR keeps its berth while it
   // loads; a newly merged PR casts off from the berth it was loading at (or a free one, if this page
@@ -283,7 +287,7 @@ export function createDockArt(H) {
 
   /** Lay out this frame's dock: the ground layer (pier, wakes), the upright parts for the depth sort, hits. */
   function frame(f, W) {
-    hits = []; lights = []; tags = []; parts = []; ground = []; wakes = [];
+    hits = []; lights = []; tags = []; parts = []; ground = []; wakes = []; walking = [];
     const D = W.dock;
     if (!D) return;
     const { t, still } = f, data = f.dock || {}, now = Date.now(), G = dockGeom(D, data.level);
@@ -319,7 +323,6 @@ export function createDockArt(H) {
     }
 
     const { loading, sails } = step(data, now, still, G.berths.length);
-    const piles = { [-1]: 0, 1: 0 };
     const ship = (o) => {
       const { key, x, y, accent, alpha = 1 } = o, hl = f.dockHover === key;
       const a = art(`ship|${accent}|${hl}`, () => shipArt(accent, hl, false));
@@ -335,21 +338,16 @@ export function createDockArt(H) {
       const pen = (c.failed || 0) > 0 ? '#e5383b' : p.review === 'approved' ? '#2f9e5b' : '#f4efe4';
       ship({ key, x: b.x, y: b.y, accent, crates, pen, id: p.id });
       wakes.push(...ripples(V, b.x, b.y, SHIP_HALF, 36, f8, key, still));
-      piles[b.side] += 4 - crates;
-      // The porter: out along its side of the pier with a crate, back empty, until the ship is full.
-      const lane = b.side < 0 ? G.X0 + 9 : G.X1 - 9, y0 = G.Y0 + 16, y1 = b.y + 18, span = y1 - y0, walk = span / LANE, leg = walk + 0.8;
-      const done = prog >= 1, u = still || done ? walk / 2 : (t + rnd(p.href) * leg * 2) % (leg * 2), back = u >= leg, s = back ? u - leg : u, k = Math.min(1, s / walk);
-      const wy = done ? y1 : back ? y1 - span * k : y0 + span * k, moving = !still && !done && s < walk;
-      const look = f.agents?.get(p.agentId)?.look || LOOKS[hash(p.agentId || p.href) % LOOKS.length];
-      const v = { a: { id: `dock:${p.href}`, role: 'solo', bucket: 'dock', name: p.agentName }, look, pose: done || back ? 'stand' : 'carry', phase: rnd(p.href), own: false };
-      const [X, Y] = V(lane, wy, DECK).map(Math.round), left = X - 8;
-      const vd = { v, ghost: false, left, feet: Y, top: Y - 18, dir: done ? (b.side < 0 ? 2 : 3) : back ? 1 : 0, row: moving ? Math.floor(t * 8) % 4 : 0, bob: 0, moving };
-      parts.push(pt({ vd }, lane, wy, left - 2, Y - 32, left + 18, Y + 3));
-      hits.push({ key, x: left - 1, y: Y - 26, w: 18, h: 27 });
     }
-    for (const side of [-1, 1]) if (piles[side]) {
-      const x = side < 0 ? G.X0 + 7 : G.X1 - 7, y = G.Y0 + 8, [X, Y] = V(x, y, DECK).map(Math.round);
-      parts.push(pt({ dk: 'pile', n: Math.min(6, piles[side]), x: X, y: Y }, x, y, X - 12, Y - 24, X + 12, Y));
+    // The walkers carrying crates down from town (the renderer's villager drawing, reused).
+    for (const w of walkers.step({ W, G, agents: f.agents, ships: loading, t, still })) {
+      const sx = (w.dx - w.dy) * ISO, dir = sx > 0 ? 3 : sx < 0 ? 2 : 0, [X, Y] = V(w.x, w.y, w.onPier ? DECK : 0).map(Math.round), left = X - 8;
+      const v = { a: w.agent || { id: w.id, role: 'solo', bucket: 'dock', name: '' }, look: w.look, pose: w.carry ? 'carry' : 'stand', phase: rnd(w.id), own: false };
+      const vd = { v, ghost: false, walker: true, left, feet: Y, top: Y - 18, dir, row: w.moving ? Math.floor(t * 8) % 4 : 0, bob: 0, moving: w.moving };
+      parts.push(pt({ vd }, w.x, w.y, left - 2, Y - 32, left + 18, Y + 3));
+      // A click selects the agent, as at home; a townsperson's opens its ship's PR.
+      hits.push({ key: w.agentId != null ? `agent:${w.agentId}` : `ship:${w.href}`, x: left - 1, y: Y - 26, w: 18, h: 27 });
+      walking.push({ id: w.id, kind: 'porter', x: left, y: Y, facing: dir === 3 ? 'R' : 'L', moving: w.moving, t });
     }
     // Sailing: ease out sideways from the berth, then away south, faster and faster, off the edge of the
     // view (its distance is fixed when it casts off), fading over the last moment in case the view moved.
@@ -419,10 +417,6 @@ export function createDockArt(H) {
         ctx.drawImage(pennant(d.pen, d.fr), mx, my - 1);
       }
       ctx.globalAlpha = 1;
-    } else if (d.dk === 'pile') {
-      const c = crate(); // rows of 3, 2, 1, each nested on the one below
-      let i = 0;
-      for (let r = 0; r < 3 && i < d.n; r++) for (let k = 0; k < 3 - r && i < d.n; k++, i++) ctx.drawImage(c, d.x - 11 + r * 4 + k * 7, d.y - 8 - r * 6);
     } else if (d.dk === 'flag') {
       ctx.fillStyle = '#140f1c'; ctx.fillRect(d.x - 1, d.y - 38, 3, 38);
       ctx.fillStyle = '#c98a4a'; ctx.fillRect(d.x, d.y - 37, 1, 36);
@@ -441,6 +435,7 @@ export function createDockArt(H) {
   return {
     frame, drawGround, draw, hit,
     get parts() { return parts; }, get lights() { return lights; }, get tags() { return tags; },
-    debug: () => ({ berths: [...berthOf], sails: sails.map(s => ({ href: s.href, berth: s.berth, t0: s.t0 })), parts: parts.length }),
+    get walking() { return walking; },
+    debug: () => ({ berths: [...berthOf], sails: sails.map(s => ({ href: s.href, berth: s.berth, t0: s.t0 })), parts: parts.length, walkers: walkers.debug() }),
   };
 }
