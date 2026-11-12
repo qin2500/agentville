@@ -121,6 +121,14 @@ export function createPeek(app, { store, village }) {
 
   return {
     render,
+    /** Close the peek in one layout ('term' or 'full') without touching the others. */
+    close(l) {
+      if (!open[l]) return;
+      open = { ...open, [l]: false };
+      store.set('va.peek', open);
+      app.render();
+      village.setActive();
+    },
     /** Esc with the keyboard inside the peek closes it (and hands focus to the toggle). */
     escape(e) {
       if (!S.peek || !e.target.closest?.('#village')) return false;

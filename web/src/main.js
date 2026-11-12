@@ -348,7 +348,7 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
   $('view-tree').setAttribute('aria-pressed', String(S.view === 'tree'));
   $('view-models').setAttribute('aria-pressed', String(S.view === 'models'));
   $('btn-new').hidden = S.view !== 'team';
-  const full = S.panel === 'full';
+  const full = S.panel === 'full' && !S.term; // beside the terminal, Expand still means the whole window
   $('btn-full').textContent = full ? '⤡ Dock' : '⤢ Expand';
   $('btn-full').title = full ? 'Dock the panel beside the village (F or Esc)' : 'Expand to full screen (F)';
   applyPanelWidth();
@@ -436,6 +436,14 @@ function chime() {
 }
 
 // ---------- panel modes / hash ----------
+/** Expand / Dock (the button and F). Expanding from the terminal view gives the whole window to the
+ *  list: it closes the terminal and the village peek rather than squeezing the list beside them. */
+function toggleFull() {
+  if (S.panel === 'full' && !S.term) return setPanel('docked');
+  if (S.term) { peek.close('term'); app.closeTerminal(); }
+  peek.close('full');
+  setPanel('full');
+}
 function setPanel(mode) {
   if (S.panel === mode) return;
   S.panel = mode;
@@ -689,7 +697,7 @@ document.addEventListener('click', e => {
   }
   if (t.closest('#btn-expand')) return setPanel('docked');
   if (t.closest('#btn-collapse')) return setPanel('collapsed');
-  if (t.closest('#btn-full')) return setPanel(S.panel === 'full' ? 'docked' : 'full');
+  if (t.closest('#btn-full')) return toggleFull();
   if (t.closest('#view-team')) return setView('team');
   if (t.closest('#view-tree')) return setView('tree');
   if (t.closest('#view-models')) return setView('models');
@@ -757,7 +765,7 @@ document.addEventListener('keydown', e => {
   const k = e.key;
   if (k === '/') { e.preventDefault(); focusSearch(); }
   else if (k === '\\') setPanel(S.panel === 'collapsed' ? 'docked' : S.panel === 'docked' ? 'collapsed' : 'docked');
-  else if (k === 'f' || k === 'F') setPanel(S.panel === 'full' ? 'docked' : 'full');
+  else if (k === 'f' || k === 'F') toggleFull();
   else if (k === 'o' || k === 'O') { // open the focused row's agent, else the selected one, in a terminal
     const id = e.target.closest?.('[data-id]')?.dataset.id || S.selected;
     if (id) panel.open(id);
