@@ -24,7 +24,7 @@
 .tnode:hover { background: var(--surface-3); }
 .tnode:focus-visible { outline: 2px solid var(--agent-color, var(--focus)); outline-offset: 2px; z-index: 1; }
 .tnode.cur { border-color: var(--agent-color, var(--focus)); box-shadow: 0 0 0 1px var(--agent-color, var(--focus)); }
-.tnode.cm-target { box-shadow: 0 0 0 2px var(--agent-color, var(--accent)); }
+.tnode.cm-target { box-shadow: 0 0 0 2px var(--agent-color, var(--text-muted)); }
 /* /color: a thin bar along the top (grey when none). */
 .tnode .tn1, .tnode .tn2 { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
 .tnode .tnm { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
