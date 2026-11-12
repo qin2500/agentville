@@ -835,3 +835,19 @@ li > .openbtn, .tw > .openbtn { right: 92px; }
 }
 /* A phone's top bar is full: the village toggle takes the logo's place. */
 @media (max-width: 480px) { .top:has(.peekbtn:not([hidden])) .brand { display: none; } }
+
+/* ===== village only (zen.js): body.village-only hides all UI; the village fills the window ===== */
+.zenbtn { font-size: 14px; }
+body.village-only .app > .top, body.village-only .nudge, body.village-only .panel, body.village-only .stage,
+body.village-only .splitter, body.village-only .peekgrip, body.village-only .peekhead { visibility: hidden !important; } /* hidden, not removed: layout/terminal size stay put */
+body.village-only .zoom, body.village-only .quiet-note, body.village-only .peekbtn, body.village-only .toast,
+body.village-only .pop, body.village-only dialog, body.village-only .ctxmenu { display: none !important; }
+body.village-only .main > .village { position: fixed !important; inset: 0 !important; width: auto !important; height: auto !important; z-index: 40 !important;
+  display: block !important; visibility: visible !important; border: 0 !important; max-width: none !important; max-height: none !important; }
+.zenpill { position: fixed; z-index: 50; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; padding: var(--space-2) var(--space-4);
+  background: var(--surface-3); color: var(--text); border: 1px solid var(--line); border-radius: 999px; font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / .45);
+  opacity: 0; transition: opacity .3s ease; }
+.zenpill.show { opacity: 1; }
+.zenpill.out { opacity: 0; transition-duration: .5s; }
+@media (prefers-reduced-motion: reduce) { .zenpill { transition: none; } }
+body:has(.app.reduce-motion) .zenpill { transition: none; }

@@ -88,7 +88,7 @@ export function createVillage(app) {
   // Canvas pixels: at 1–4× one canvas px is `zoom` CSS px (cheap, crisp); at Map (0.5×) the canvas is
   // CSS-sized and the world is drawn at half size. k = world px → canvas px.
   const reduce = () => S.reduceMotion;
-  const active = () => !document.hidden && (S.panel !== 'full' || S.peek) && host.clientWidth > 0; // S.peek: peek.js
+  const active = () => !document.hidden && (S.panel !== 'full' || S.peek || document.body.classList.contains('village-only')) && host.clientWidth > 0; // S.peek: peek.js; village-only: zen.js
   // Map (any zoom < 1) is a fit level: the largest of ½, ¼, ⅛ that shows the whole town (every
   // neighbourhood, its streets and the square), centred; the forest ring and the sea fill the rest.
   const land = () => W.town;
