@@ -1,7 +1,7 @@
 // World v3 (docs/ARCHITECTURE.md, "The village"): one compact town of project neighbourhoods around a central square, drawn
 // with the v2 value structure (muted terrain, toned buildings, outlined agents, loud badges). Two halves:
 //   layout()        pure placement: plots, homes, PR sites, streets, the land and the forest ring.
-//                   Positions persist in localStorage (`va.world8`) and never move. Needs no images.
+//                   Positions persist in localStorage (`va.world9`) and never move. Needs no images.
 //   createRenderer  the sprite renderer (Ninja Adventure, CC0). village.js falls back to its own
 //                   procedural drawing of the same layout if the sheets don't load.
 // "Growing towns" (va-city-spec): each project's plot is a planned settlement (city-plan.js) whose
@@ -19,6 +19,7 @@ import { tierFor, capacityFor, planSettlement, GROUND, WALKABLE } from './city-p
 import { paintGround } from './ground-art.js';
 import { createPropArt } from './props-art.js';
 import { createAmbient } from './ambient.js';
+import { styleFor as poolStyle } from './styles-pool.js';
 
 // import.meta.env is Vite's; guarded so pure helpers (isoP, hash...) can be imported from node tests.
 const BASE = `${import.meta.env?.BASE_URL ?? '/'}assets/ninja-adventure/`;
@@ -49,7 +50,7 @@ export const R = {
 // Compatibility shim (seam): dock-walk.js still reads R[look][5] for a PR building's door. Plan lot
 // looks have no sprite; give each an entry whose door is the footprint's middle (items carry the real
 // one in it.doorX, which everything in world.js / village.js uses).
-for (const [look, w] of [['farmhouse', 3], ['cottage', 3], ['timber', 3], ['townhouse', 3], ['manor', 4]]) R[look] ??= [null, 0, 0, w * 16, 0, w * 8, []];
+for (const [look, w] of [['farmhouse', 3], ['cottage', 3], ['timber', 3], ['townhouse', 3], ['manor', 4], ['palace', 4]]) R[look] ??= [null, 0, 0, w * 16, 0, w * 8, []];
 export const LOOKS = ['Villager2', 'Woman', 'OldMan', 'Villager4', 'Hunter', 'Princess', 'Villager3', 'Boy', 'Monk2', 'Villager5', 'OldMan3'];
 export const NINJAS = ['NinjaBlue', 'NinjaRed', 'NinjaYellow', 'NinjaGreen', 'NinjaMasked', 'NinjaDark', 'NinjaLeaf', 'NinjaGray'];
 export const ACCENT = ['#e4572e', '#2e86de', '#f2b134', '#9b59b6', '#16a085', '#e84393', '#27ae60', '#d35400'];
@@ -130,7 +131,7 @@ export function itemBox(it) {
   const b = isoItem(it, false);
   return [b.ox + b.box[0], b.oy + b.box[1], b.box[2], b.box[3]];
 }
-const KEY = 'va.world8'; // va.world7 was v2 (tighter spacing): v3 spreads buildings out, so plots re-plan once
+const KEY = 'va.world9'; // world8 was v3; v4 adds pool styles and crown palaces on the existing L lots (no 'palace' lots from the planner)
 
 export const hash = s => { let h = 2166136261; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
 const rnd = s => (hash(s) % 10000) / 10000;
@@ -176,15 +177,22 @@ export function tierWithHysteresis(growth, prev) {
 }
 // Plans are pure in (tier, seed, capacity): computed once per session per plot shape.
 const PLANS = new Map();
-function planFor(tier, seed, cap) {
-  const k = `${tier}|${seed}|${cap}`;
+function planFor(tier, seed, cap, crowns = 1) {
+  const k = `${tier}|${seed}|${cap}|${crowns}`;
   let p = PLANS.get(k);
   if (!p) {
     if (PLANS.size > 64) PLANS.clear();
-    p = planSettlement({ tier, seed, lots: cap }); // lots = the capacity bucket itself: same plan for every need in it
+    p = planSettlement({ tier, seed, lots: cap, crowns }); // lots = the capacity bucket itself: same plan for every need in it
     PLANS.set(k, p);
   }
   return p;
+}
+/** A project's style (styles-pool.js object): stable per name; `?citystyle=N` forces family N for every project.
+ *  `preset`: a fixed { family } from the project's meta (the ?citydemo=1 projects). */
+export function styleFor(name, preset) {
+  const f = param('citystyle');
+  const forced = f != null && f !== '' && !Number.isNaN(+f) ? ((Math.round(+f) % 6) + 6) % 6 : preset?.family;
+  return poolStyle(name, forced != null ? { family: forced } : {});
 }
 /** `?citytier=N` (0..3): every project is drawn at tier N (persisted tiers are left alone). */
 function forcedTier() {
@@ -225,14 +233,15 @@ export function plan(agents, byId, projects, { demo = false } = {}) {
     // Capacity only grows within a tier: an agent leaving never shrinks (re-plans) the plot.
     let cap = capacityFor(tier, need);
     if (b && b.tier === tier && b.cap > cap) cap = b.cap;
-    return { name, homes, prs, growth, busy, tier, gt, need, cap };
+    const crowns = Math.max(1, Math.min(3, homes.filter(a => a.role === 'boss').length)); // crown estates in the plan
+    return { name, homes, prs, growth, busy, tier, gt, need, cap, crowns, style: styleFor(name, meta.style ? { family: meta.style.family ?? meta.style } : undefined) };
   });
   const items = villages.flatMap(v => [
     ...v.homes.map(a => `home:${a.id}:${a.role === 'boss' || pinned(a) ? 'L' : a.role === 'lead' ? 'M' : 'S'}`),
     ...v.prs.map(p => `pr:${v.name}#${p.id}:${p.live ? 1 : 0}`),
   ]);
   // Re-layout only when something changes: who has a house, a PR's state, or a plot's tier/capacity.
-  return { villages, sig: JSON.stringify([villages.map(v => [v.name, v.tier, v.cap]), items]), saved: S, key };
+  return { villages, sig: JSON.stringify([villages.map(v => [v.name, v.tier, v.cap, v.crowns, v.style.key]), items]), saved: S, key };
 }
 
 export function layout(P, now = Date.now()) {
@@ -286,7 +295,7 @@ export function layout(P, now = Date.now()) {
 
   // Each plot is the plan for its tier and capacity, sized w × h. Existing plots go first (they keep
   // their ground); new ones take the free spot nearest the square, biggest and busiest first.
-  const plans = new Map(P.villages.map(pv => [pv.name, planFor(pv.tier, hash(pv.name), pv.cap)]));
+  const plans = new Map(P.villages.map(pv => [pv.name, planFor(pv.tier, hash(pv.name), pv.cap, pv.crowns)]));
   const live = n => B[n] && !B[n].away ? 0 : 1, area = pv => plans.get(pv.name).w * plans.get(pv.name).h;
   const order = [...P.villages].sort((a, b) => live(a.name) - live(b.name) || area(b) - area(a) || b.busy - a.busy || a.name.localeCompare(b.name));
   const byName = new Map();
@@ -295,7 +304,7 @@ export function layout(P, now = Date.now()) {
     let b = B[name];
     // A tier or capacity change re-plans this plot only: it keeps its centre when the new size fits
     // there, else it moves to a free spot. Other plots never move.
-    const replan = b && !b.away && (b.tier !== pv.tier || b.cap !== pv.cap || b.w !== p.w || b.h !== p.h);
+    const replan = b && !b.away && (b.tier !== pv.tier || b.cap !== pv.cap || (b.crowns ?? 1) !== pv.crowns || b.w !== p.w || b.h !== p.h);
     if (!b || b.away || replan) {
       let r = null;
       if (replan) {
@@ -312,8 +321,8 @@ export function layout(P, now = Date.now()) {
       }
       evict(b, name);
     }
-    Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, seen: now });
-    const v = { ...pv, block: b, plan: p, accent: ACCENT[b.acc % ACCENT.length] };
+    Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, crowns: pv.crowns, seen: now });
+    const v = { ...pv, block: b, plan: p, accent: ACCENT[b.acc % ACCENT.length], bossIds: new Set(pv.homes.filter(a => a.role === 'boss').map(a => a.id)) };
     byName.set(name, v);
     placeVillage(W, v, S, now);
   }
@@ -351,7 +360,7 @@ function placeVillage(W, v, S, now) {
   // shows; one that is gone keeps it HOLD_MS (then it is freed), and is the first to give it up when a
   // newcomer finds every lot taken.
   let L = S.lots[name];
-  if (!L || L.cap !== v.cap || L.tier !== v.tier) L = S.lots[name] = { cap: v.cap, tier: v.tier, a: {}, h: {} };
+  if (!L || L.cap !== v.cap || L.tier !== v.tier || (L.crowns ?? 1) !== v.crowns) L = S.lots[name] = { cap: v.cap, tier: v.tier, crowns: v.crowns, a: {}, h: {} };
   L.h ||= {};
   const lots = new Map(p.lots.map(l => [l.id, l]));
   const want = [], extra = new Map();
@@ -388,12 +397,13 @@ function placeVillage(W, v, S, now) {
   };
   for (const lot of p.lots) {
     const id = byLot.get(lot.id), iid = id || `house:${name}:${lot.id}`;
-    add({ id: iid, ...(id ? extra.get(id) : { kind: 'house' }), look: lot.look, x: X + lot.x, y: Y + lot.y, w: lot.w, h: lot.h, doorX: lot.doorX,
-      variant: hash(id || `${lot.id}${name}`) % 16, lot: lot.id, rank: lot.rank, tier: v.tier, village: v });
+    const crown = lot.rank === 'L' && !!id && extra.get(id).kind === 'home' && v.bossIds.has(extra.get(id).agentId); // a crown estate shows its crown only while a boss lives there
+    add({ id: iid, ...(id ? extra.get(id) : { kind: 'house' }), look: crown ? 'palace' : lot.look, x: X + lot.x, y: Y + lot.y, w: lot.w, h: lot.h, doorX: lot.doorX,
+      variant: hash(id || `${lot.id}${name}`) % 16, lot: lot.id, rank: lot.rank, tier: v.tier, style: v.style, crown, village: v });
   }
   for (const c of p.civic || []) {
     const id = `civic:${name}:${c.id}`;
-    add({ id, kind: 'civic', civic: c.id, look: c.look, x: X + c.x, y: Y + c.y, w: c.w, h: c.h, doorX: c.doorX ?? null, variant: hash(id) % 16, tier: v.tier, village: v });
+    add({ id, kind: 'civic', civic: c.id, look: c.look, x: X + c.x, y: Y + c.y, w: c.w, h: c.h, doorX: c.doorX ?? null, variant: hash(id) % 16, tier: v.tier, style: v.style, village: v });
   }
 }
 
@@ -538,6 +548,14 @@ const PROP_SPRITE = {
   cart: () => 'cart', laundry: () => 'laundry', lamp: () => 'lantern', banner: () => 'banner',
 };
 const TREES = new Set(['tree', 'pine', 'sapling']);
+// A village's tree species (styles-pool `trees`, most common first) -> R sprites; the plan's v is the tiebreak.
+const SPECIES = { round: ['treeRound', 'treeRound2'], big: ['treeBig'], pink: ['treePink'], pine: ['pine'], cypress: ['pine'], birch: ['treeRound2'] };
+function treeFor(style, v) {
+  const t = style?.trees;
+  if (!t?.length) return PROP_SPRITE.tree(v);
+  const w = [t[0], t[0], ...t.slice(1)], s = SPECIES[w[(v | 0) % w.length]] || SPECIES.round; // the first species weighs double
+  return s[((v | 0) >> 2) % s.length];
+}
 function scatter(W) {
   const at = (r, x, y, extra = {}) => W.props.push({ r, x, y: y - R[r][4], base: y, ...extra });
   // The town square: a big tree in the middle and a lantern on each corner.
@@ -546,7 +564,7 @@ function scatter(W) {
   for (const [x, y] of [[s.x, s.y + 1], [s.x + s.w - 1, s.y + 1], [s.x, s.y + s.h], [s.x + s.w - 1, s.y + s.h]]) at('lantern', x * T, y * T, { light: 1 });
   for (const v of W.villages) { // each settlement's main square: its banner
     const p = v.plaza;
-    at('banner', (p.x + p.w - 1) * T, (p.y + 1) * T + 4, { banner: v.accent });
+    at('banner', (p.x + p.w - 1) * T, (p.y + 1) * T + 4, { banner: v.style?.accent || v.accent });
   }
   // The plan's props, at their foot points (plan tiles → world px). Sprite kinds stand centred on
   // their foot; hay is ground decor (baked); the rest are { pk } drawn by props-art.
@@ -556,10 +574,23 @@ function scatter(W) {
       const fx = X + p.x * T, fy = Y + p.y * T;
       if (p.kind === 'hay') { W.groundDecor.push(['hay', Math.round(fx - 24), Math.round(fy - 24)]); continue; }
       const sp = PROP_SPRITE[p.kind];
-      if (!sp) { W.props.push({ pk: p, x: fx, y: fy, base: fy }); continue; }
-      const r = sp(p.v || 0), extra = TREES.has(p.kind) ? { tree: 1 } : p.kind === 'lamp' ? { light: 1 } : p.kind === 'banner' ? { banner: v.accent } : {};
+      if (!sp) { W.props.push({ pk: p, st: v.style, x: fx, y: fy, base: fy }); continue; }
+      const r = p.kind === 'tree' ? treeFor(v.style, p.v || 0) : sp(p.v || 0), extra = TREES.has(p.kind) ? { tree: 1 } : p.kind === 'lamp' ? { light: 1 } : p.kind === 'banner' ? { banner: v.style?.accent || v.accent } : {};
       at(r, Math.round(fx - R[r][3] / 2), Math.round(fy), extra);
     }
+  }
+  // Courtyard dressing: a crown home's forecourt gets a flowerbox each side of its door and a banner in the
+  // style accent, on free tiles (no plan prop, no footprint). Never the door tile, the tile below it or the
+  // diagonals (door x+-k, y+k); a prop with no qualifying tile is skipped.
+  for (const it of W.items) {
+    if (!it.crown || !it.doorTile) continue;
+    const v = it.village, [tx, ty] = it.doorTile, taken = new Set(W.props.filter(p => p.dress).map(p => key(p.tx, p.ty)));
+    const free = (a, b) => !taken.has(key(a, b)) && !W.fp.has(key(a, b)) && !W.occ.has(key(a, b)) && a !== tx
+      && !(v.plan.props || []).some(p => Math.floor(v.block.x + p.x) === a && Math.floor(v.block.y + p.y) === b);
+    const place = (cands, f) => { const c = cands.find(([a, b]) => free(a, b)); if (c) { taken.add(key(c[0], c[1])); f(c[0], c[1]); } };
+    const dress = (a, b, o) => Object.assign(o, { dress: 1, tx: a, ty: b });
+    for (const sx of [-1, 1]) place([[tx + sx, ty], [tx + 2 * sx, ty]], (a, b) => W.props.push(dress(a, b, { pk: { kind: 'flowerbox', x: a - v.block.x + 0.5, y: b - v.block.y + 0.6, v: (a + b) & 3 }, st: v.style, x: a * T + T / 2, y: b * T + T * 0.6, base: b * T + T * 0.6 })));
+    place([[tx + 2, ty], [tx - 2, ty], [tx + 3, ty], [tx - 3, ty]], (a, b) => at('banner', a * T, b * T + 4, { banner: v.style?.accent || v.accent, dress: 1, tx: a, ty: b }));
   }
   // Street lamps on the ring roads: each plot's corners, and every 10 tiles or so along a long side,
   // never two within 5 tiles of each other, so the town is ringed with light at night.
@@ -787,7 +818,7 @@ function createRenderer(IMG) {
     // iso draw order (by where their feet land on screen). A procedural prop (pk) stands on its foot
     // point; its screen rect relative to that point comes from props-art.
     for (const p of W.props) {
-      if (p.pk) { p.io = isoP(p.x, p.base); p.ext = propArt.extent(p.pk); } // io: the foot itself, in view px
+      if (p.pk) { p.io = isoP(p.x, p.base); p.ext = propArt.extent(p.pk, p.st); } // io: the foot itself, in view px
       else p.io = pointOffset(p.x + R[p.r][3] / 2, p.base);
     }
     amb.prepare(W);
@@ -830,7 +861,7 @@ function createRenderer(IMG) {
         if (!W.path.has(k) && N8.some(([a, b]) => !W.land.has(key(x + a, y + b)))) g.drawImage(IMG.water, 0, 80, T, T, dx, dy, T, T);
         const code = W.ground.get(k);
         // A plot's ground is the plan's (ground-art.js); the ring roads keep the STREET autotile.
-        if (code != null && code !== GROUND.GRASS && code !== GROUND.NONE) paintGround(g, code, x, y, dx, dy, (a, b) => W.ground.get(key(x + a, y + b)) ?? GROUND.GRASS);
+        if (code != null && code !== GROUND.GRASS && code !== GROUND.NONE) paintGround(g, code, x, y, dx, dy, (a, b) => W.ground.get(key(x + a, y + b)) ?? GROUND.GRASS, W.inBlock.get(k)?.style);
         else if (W.street.has(k)) autotile(IMG.floor, (a, b) => W.street.has(key(a, b)), x, y, STREET, dx, dy);
         else if (W.path.has(k) && code == null) autotile(IMG.floor, (a, b) => W.path.has(key(a, b)) && W.land.has(key(a, b)), x, y, PATH, dx, dy);
       } else {
@@ -907,7 +938,7 @@ function createRenderer(IMG) {
     for (const p of W.liveProps) {
       if (p.pk) { // procedural: foot at p.io (view px), screen rect p.ext relative to it
         const [X, Y] = p.io, e = p.ext;
-        if (inView(X + e[0], Y + e[1], e[2] - e[0], e[3] - e[1])) list.push(pt({ pk: p.pk, x: X, y: Y }, p.x, p.base, X + e[0], Y + e[1], X + e[2], Y + e[3]));
+        if (inView(X + e[0], Y + e[1], e[2] - e[0], e[3] - e[1])) list.push(pt({ pk: p.pk, pst: p.st, x: X, y: Y }, p.x, p.base, X + e[0], Y + e[1], X + e[2], Y + e[3]));
         continue;
       }
       const [ox, oy] = p.io, w = R[p.r][3], h = R[p.r][4];
@@ -967,7 +998,7 @@ function createRenderer(IMG) {
       else if (d.dk) dock.draw(ctx, d, f);
       else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); amb.overlay(ctx, d.it, d.b, f); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
       else if (d.amb) amb.draw(ctx, d, f);
-      else if (d.pk) propArt.draw(ctx, d.pk, d.x, d.y, t, f.night);
+      else if (d.pk) propArt.draw(ctx, d.pk, d.x, d.y, t, f.night, d.pst);
       else if (d.an) { if (d.flip) { ctx.save(); ctx.translate(d.x + 16, d.y); ctx.scale(-1, 1); ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, 0, 0, 16, 16); ctx.restore(); } else ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, d.x, d.y, 16, 16); }
       else if (d.banner) drawBanner(ctx, d);
       else if (d.lamp) drawLamp(ctx, d.x, d.y, f.night);
