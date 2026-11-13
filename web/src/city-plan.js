@@ -7,7 +7,10 @@
 // visible: every door opens on a forecourt row (doorstep / pavement) with the street below it, town and city
 // streets and the village main street are 2 wide, neighbouring buildings stand at least a tile apart (city
 // townhouses in pairs), so the tiles (dx+k, dy+k), k = 1, 2, south-east of every lot door are never under a
-// roof. Character comes from the tier:
+// roof. v3 (va-city3-spec) keeps v2's buildings (same lots per bucket, same civic set) and spreads them out:
+// 2-tile gaps (no touching pairs) with pocket lawns and trees in town and city rows, 2-wide cross streets, two back-garden rows, a 3-wide main street,
+// 2-wide main cross streets, a wider square and close, and 2-tile gaps between village pairs, so the plot
+// is about 1.4x v2's area in town and city and ~1.1x in a village (hamlets unchanged). Character from tier:
 //   hamlet  a lane or two round a small green with a well; farmhouses, barn, windmill, granary, fields.
 //   village a main street with a second row behind it, a green with well and maypole, the chapel facing
 //           the green, smithy and inn on the main street, farmland round the edge.
@@ -92,6 +95,7 @@ const prop = (P, kind, x, y, v = 0, extra) => P.props.push(extra ? { kind, x, y,
 function row(P, x0, x1, yF, items, gap) {
   const g = typeof gap === 'function' ? gap : () => gap;
   const tot = items.reduce((a, it, i) => a + it.w + (i < items.length - 1 ? g(i) : 0), 0);
+  if (tot > x1 - x0 + 1) throw new Error(`city-plan: a row of ${items.length} does not fit in ${x1 - x0 + 1} tiles`);
   let x = x0 + ((x1 - x0 + 1 - tot) >> 1);
   const out = [];
   items.forEach((it, i) => { out.push(place(P, it, x, yF - it.h)); x += it.w + g(i); });
@@ -130,6 +134,17 @@ function dressBlock(P, r, x0, x1, y0, fc, style, houses, fcCode) {
     else if (style === 'hamlet') prop(P, pick(r, ['beehive', 'laundry', 'woodpile', 'scarecrow']), px, py, Math.floor(r() * 4));
     else if (style === 'village') prop(P, pick(r, ['laundry', 'beehive', 'woodpile', 'flowers']), px, py, Math.floor(r() * 4));
     else if (r() < 0.5) prop(P, pick(r, ['laundry', 'beehive', 'flowers', 'bush']), px, py, Math.floor(r() * 4));
+  }
+  // v3: town and city gaps (2 wide) behind the front flowers are little lawns with a tree, pocket gardens
+  if (!rural) {
+    const fr = houses.filter(b => b.y + b.h === fc).sort((a, b) => a.x - b.x);
+    for (let i = 1; i < fr.length; i++) {
+      const gx0 = fr[i - 1].x + fr[i - 1].w, gx1 = fr[i].x - 1;
+      if (gx1 <= gx0) continue;
+      for (let y = y0; y < fc - 1; y++) for (let x = gx0; x <= gx1; x++) if (!isFoot(P, x, y) && get(P, x, y) === G.GARDEN) P.g[y * P.w + x] = G.LAWN;
+      if (fc - 1 - y0 >= 3) prop(P, 'tree', gx0 + 1, y0 + 0.6, Math.floor(r() * 4));
+      if (fc - 2 - y0 >= 3) prop(P, r() < 0.5 ? 'bush' : 'flowers', gx0 + 0.5 + (i % 2), fc - 1.6, Math.floor(r() * 4));
+    }
   }
   // flower boxes, a barrel or a bush in the gaps between the buildings
   for (let x = x0; x <= x1; x++) {
@@ -182,7 +197,7 @@ function farmland(P, r, x0, x1, y0, y1, tier) {
 // The back row keeps the next band's roofs off the diagonal south-east of the doors on the lane above.
 function rural(tier, s, r) {
   const V = tier === 1;
-  const per = V ? 2 : 1, colW = 4 * per, centerW = V ? 8 : 4;
+  const per = V ? 2 : 1, colW = V ? 9 : 4, centerW = V ? 8 : 4; // v3: a 2-tile gap between village pairs
   let cw = 1, ce = 1, nA = 1;
   const cyc = V ? 'aew' : 'ewa';
   for (let i = 0; i < s; i++) { const k = cyc[i % 3]; if (k === 'a') nA++; else if (k === 'e') ce++; else cw++; }
@@ -199,7 +214,9 @@ function rural(tier, s, r) {
   fill(P, 0, 0, W, H, G.PASTURE);
   fill(P, 0, 0, W, 1, G.FIELD);
   fill(P, 0, H - 1, W, 1, G.FIELD);
-  const westSlot = j => 1 + j * 4 + 1, eastSlot = j => ex0 + j * 4; // gaps sit on the far side from the green
+  const xtra = colW - 4 * per; // gaps sit on the far side from the green
+  const westSlot = j => 1 + Math.floor(j / per) * colW + xtra + (j % per) * 4 + 1;
+  const eastSlot = j => ex0 + Math.floor(j / per) * colW + (j % per) * 4;
   let y = 1, lane0 = 0;
   for (let k = 0; k < nA; k++) {
     const hall = k === nA - 1, h = bandOf(k), fc = y + h - 1, yS = fc + 1, rank = hall ? 'M' : 'S';
@@ -310,20 +327,23 @@ function rural(tier, s, r) {
 // straight onto the ring. No walls: a town has an orchard ring, a city a tree-lined lawn belt with a
 // boulevard inside it (the last band's street is the boulevard's south side).
 function urban(tier, s, r, marketSide, canalOn) {
-  const C = tier === 3, R = C ? 2 : 1, SW = 11, CWd = C ? 16 : 11, BH = 5, SH = 2;
+  // v3 (va-city3-spec): the same buildings as v2 with more room between them: 2-tile gaps in every row,
+  // two back-garden rows, a 3-wide main street, 2-wide main cross streets and a wider square and close.
+  const C = tier === 3, R = C ? 2 : 1, SW = C ? 14 : 13, CWd = C ? 22 : 13, BH = 6, SH = 2, MSH = 3;
   let nN = C ? 2 : 1, nS = 1, cw = 1, ce = 1;
   for (let i = 0; i < s; i++) { const k = 'sewn'[i % 4]; if (k === 's') nS++; else if (k === 'e') ce++; else if (k === 'w') cw++; else nN++; }
-  const cols = [];
+  const cols = [], ns = [];
   let x = R;
-  for (let i = 0; i < cw; i++) { cols.push({ x0: x, x1: x + SW - 1 }); x += SW + 1; }
-  cols.push({ x0: x, x1: x + CWd - 1, center: true }); x += CWd + 1;
-  for (let i = 0; i < ce; i++) { cols.push({ x0: x, x1: x + SW - 1 }); x += SW + 1; }
+  for (let i = 0; i < cw; i++) { cols.push({ x0: x, x1: x + SW - 1 }); x += SW; ns.push({ x, w: 2 }); x += 2; }
+  cols.push({ x0: x, x1: x + CWd - 1, center: true }); x += CWd; ns.push({ x, w: 2 }); x += 2;
+  for (let i = 0; i < ce; i++) { cols.push({ x0: x, x1: x + SW - 1 }); x += SW; if (i < ce - 1) { ns.push({ x, w: 2 }); x += 2; } }
   const nb = nN + 1 + nS, m = nN, cc = cw, mc = cc + marketSide;
   const bh = k => (k === 0 && k !== m - 1 ? BH - 1 : BH);
+  const sh = k => (k === m ? MSH : SH);
   const top = [], fcs = [], st = [];
   let yy = R;
-  for (let k = 0; k < nb; k++) { top.push(yy); fcs.push(yy + bh(k) - 1); st.push(yy + bh(k)); yy += bh(k) + SH; }
-  const W = x - 1 + R, H = yy + 1;
+  for (let k = 0; k < nb; k++) { top.push(yy); fcs.push(yy + bh(k) - 1); st.push(yy + bh(k)); yy += bh(k) + sh(k); }
+  const W = x + R, H = yy + 1;
   const P = grid(W, H);
   const { x0: cx0, x1: cx1 } = cols[cc];
   const lampKind = C ? 'lamppost' : 'lamp';
@@ -331,15 +351,14 @@ function urban(tier, s, r, marketSide, canalOn) {
   if (C) { fill(P, 0, 0, W, H, G.LAWN); fill(P, 1, 1, W - 2, H - 2, G.STREET); } else fill(P, 0, 0, W, H, G.ORCHARD);
   fill(P, R, R, W - 2 * R, H - 1 - R, G.GARDEN);
   // streets: one per band below its row, one between each pair of columns; the main ones leave the plot
-  for (let k = 0; k < nb; k++) fill(P, R, st[k], W - 2 * R, SH, G.STREET);
-  const nsx = cols.slice(0, -1).map(c => c.x1 + 1);
-  for (const sx of nsx) fill(P, sx, R, 1, H - 1 - R, G.STREET);
-  fill(P, 0, st[m], W, SH, G.STREET);
-  fill(P, cx0 - 1, 0, 1, H, G.STREET);
-  fill(P, cx1 + 1, 0, 1, H, G.STREET);
-  if (C) fill(P, cx0, st[m - 2], CWd, SH, G.GARDEN); // the cathedral close spans two bands
+  for (let k = 0; k < nb; k++) fill(P, R, st[k], W - 2 * R, sh(k), G.STREET);
+  for (const c of ns) fill(P, c.x, R, c.w, H - 1 - R, G.STREET);
+  fill(P, 0, st[m], W, MSH, G.STREET);
+  fill(P, cx0 - 2, 0, 2, H, G.STREET);
+  fill(P, cx1 + 1, 0, 2, H, G.STREET);
+  if (C) fill(P, cx0, st[m - 2], CWd, sh(m - 2), G.GARDEN); // the cathedral close spans two bands
   // the main square (with the street rows above and below it), the market square beside it
-  const sq = { x: cx0, y: st[m - 1], w: CWd, h: SH + BH + SH, kind: 'square' };
+  const sq = { x: cx0, y: st[m - 1], w: CWd, h: sh(m - 1) + BH + MSH, kind: 'square' };
   fill(P, sq.x, sq.y, sq.w, sq.h, G.PLAZA);
   P.squares.push(sq);
   P.plaza = { x: sq.x, y: sq.y, w: sq.w, h: sq.h };
@@ -356,13 +375,12 @@ function urban(tier, s, r, marketSide, canalOn) {
     }
   }
   const plazaBlock = (c, k) => C && !(c === cc && k === m) && ((c - cc) % 3 + 3) % 3 === 0 && ((k - m) % 3 + 3) % 3 === 0;
-  const pairs = i => (i % 2 ? 1 : 0); // city townhouses stand in pairs with a gap between pairs
   for (let k = 0; k < nb; k++) for (let c = 0; c < cols.length; c++) {
     const { x0, x1 } = cols[c], y0 = top[k], fc = fcs[k], wd = x1 - x0 + 1;
     if (k === m && (c === cc || c === mc)) continue;
     if (C && c === cc && (k === m - 2 || k === m - 1)) { if (k === m - 1) cathedralClose(P, x0, x1, top[m - 2], fc); continue; }
     if (k === m - 1 && c === cc) { // town: the manor and the guildhall front the square
-      const b = row(P, x0, x1, fc, [lot('manor', 'L'), civ('guildhall')], 1);
+      const b = row(P, x0, x1, fc, [lot('manor', 'L'), civ('guildhall')], 2);
       dressBlock(P, r, x0, x1, y0, fc, 'town', b, G.PLAZA);
       prop(P, 'banner', b[1].x - 0.5, fc + 0.3, 0);
       prop(P, 'banner', b[1].x + b[1].w + 0.5, fc + 0.3, 1);
@@ -370,7 +388,7 @@ function urban(tier, s, r, marketSide, canalOn) {
     }
     if (k === m - 1 && c === mc) { // the market hall (and the guildhall in a city) over the market
       const items = C ? [civ('guildhall'), civ('markethall')] : [civ('markethall'), lot('timberM', 'M')];
-      const b = row(P, x0, x1, fc, items, 1);
+      const b = row(P, x0, x1, fc, items, 2);
       dressBlock(P, r, x0, x1, y0, fc, C ? 'city' : 'town', b, G.PLAZA);
       prop(P, 'noticeboard', b[0].x - 0.5 < x0 ? b[0].x + b[0].w + 0.5 : b[0].x - 0.5, fc - 0.4, 0);
       continue;
@@ -389,14 +407,12 @@ function urban(tier, s, r, marketSide, canalOn) {
       continue;
     }
     const rank = k === m - 1 || k === m ? 'M' : 'S';
-    let items, gap = 1;
-    if (C) {
-      const key = rank === 'M' ? 'townhouseM' : 'townhouse', [w] = DIM[key];
-      let n = 1;
-      while ((n + 1) * w + Math.ceil((n + 1) / 2) - 1 <= wd) n++;
-      items = many(n, key, rank);
-      gap = pairs;
-    } else { const key = rank === 'M' ? 'timberM' : 'timber', [w] = DIM[key]; items = many(fit(wd, w, 1), key, rank); }
+    // the v2 counts per block (so every bucket keeps its lots), now as singles with 2-tile gaps
+    const key = C ? (rank === 'M' ? 'townhouseM' : 'townhouse') : rank === 'M' ? 'timberM' : 'timber';
+    const [w] = DIM[key], v2w = c === cc ? (C ? 16 : 11) : 11; // the v2 block width
+    let n = fit(v2w, w, 1);
+    if (C) { n = 1; while ((n + 1) * w + Math.ceil((n + 1) / 2) - 1 <= v2w) n++; } // v2's townhouse pairs
+    const items = many(n, key, rank), gap = 2; // singles, 2 tiles apart
     const b = row(P, x0, x1, fc, items, gap);
     dressBlock(P, r, x0, x1, y0, fc, C ? 'city' : 'town', b, G.PLAZA);
     prop(P, lampKind, x0 + 0.5, st[k] + 0.15, 0);
@@ -408,6 +424,9 @@ function urban(tier, s, r, marketSide, canalOn) {
   const fx = cx0 + Math.floor(CWd / 2), fy = sqTop + Math.floor(BH / 2);
   prop(P, 'fountain', fx, fy, 0);
   for (const tx of [cx0, cx1]) for (const ty of [sqTop, sqBot - 1]) if (!isFoot(P, tx, ty)) prop(P, 'tree', tx + 0.5, ty + 0.5, (tx + ty) % 4);
+  for (const ty of [sqTop + 2, sqBot - 3]) { prop(P, 'tree', cx0 + 0.5, ty + 0.5, ty % 4); prop(P, 'tree', cx1 + 0.5, ty + 0.5, (ty + 1) % 4); }
+  prop(P, 'flowers', fx - 1.5, fy + 1.5, 1);
+  prop(P, 'flowers', fx + 1.5, fy - 1.5, 2);
   prop(P, 'bench', fx - 2.5, sqBot - 0.5, 0);
   prop(P, 'bench', fx + 1.5, sqBot - 0.5, 1);
   prop(P, 'bench', cx0 + 1.5, fy + 0.5, 0, { dir: 'y' });
@@ -436,27 +455,28 @@ function urban(tier, s, r, marketSide, canalOn) {
   return P;
 }
 
-// The cathedral fronting the square across two bands; the manor and a townhouse pair front the square
+// The cathedral fronting the square across two bands; the manor and two townhouses (2 apart) front the square
 // beside it, and a townhouse on each side stands behind them on a two-row lane off the cross street; the
 // rest is the lawn and gardens of the close.
 function cathedralClose(P, x0, x1, y0, fc) {
-  place(P, civ('cathedral'), x0 + 5, fc - 8);
-  const front = [place(P, lot('manor', 'L'), x0, fc - 4), place(P, lot('townhouse', 'M'), x1 - 3, fc - 3), place(P, lot('townhouse', 'M'), x1 - 1, fc - 3)];
+  const kx = x0 + ((x1 - x0 + 1 - 6) >> 1); // the nave in the middle, 2+ tiles clear of the houses each side
+  place(P, civ('cathedral'), kx, fc - 8);
+  const front = [place(P, lot('manor', 'L'), x0, fc - 4), place(P, lot('townhouse', 'M'), x1 - 5, fc - 3), place(P, lot('townhouse', 'M'), x1 - 1, fc - 3)];
   fill(P, x0, fc - 7, 4, 2, G.LANE);
   fill(P, x1 - 3, fc - 7, 4, 2, G.LANE);
   place(P, lot('townhouseM', 'M'), x0, fc - 10);
-  place(P, lot('townhouseM', 'M'), x1 - 2, fc - 10); // 3 wide: its door stays 2+ tiles off the nave mirrored
+  place(P, lot('townhouseM', 'M'), x1 - 2, fc - 10);
   for (let y = y0; y < fc; y++) for (let x = x0; x <= x1; x++) {
     if (isFoot(P, x, y) || get(P, x, y) === G.LANE) continue;
     P.g[y * P.w + x] = x >= x0 + 4 && x <= x1 - 4 ? G.LAWN : G.GARDEN;
   }
   for (let x = x0; x <= x1; x++) if (!isFoot(P, x, fc)) P.g[fc * P.w + x] = G.PLAZA;
-  for (let y = y0; y < fc - 8; y++) prop(P, 'tree', x0 + 5.5 + ((y * 3) % 6), y + 0.5, y % 4);
-  prop(P, 'tree', x0 + 4.5, fc - 6.5, 1);
-  prop(P, 'tree', x1 - 3.5, fc - 6.5, 2);
+  for (let y = y0; y < fc - 8; y++) prop(P, 'tree', kx + 0.5 + ((y * 3) % 6), y + 0.5, y % 4);
+  for (const tx of [x0 + 4, kx - 1, kx + 6, x1 - 4]) prop(P, 'tree', tx + 0.5, fc - 6.5, tx % 4);
   prop(P, 'lamppost', x0 + 4.5, fc - 0.5, 0);
-  prop(P, 'lamppost', x1 - 3.5, fc - 0.5, 0);
+  prop(P, 'lamppost', x1 - 2.5, fc - 0.5, 0);
   prop(P, 'flowers', x1 - 3.5, fc - 1.5, 1);
+  prop(P, 'bench', kx - 0.5, fc - 2.5, 0, { dir: 'y' });
   prop(P, 'laundry', x0 + 1.5, fc - 4.5, 0);
   prop(P, 'flowers', x1 - 1.5, fc - 4.5, 0);
   return front;

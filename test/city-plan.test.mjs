@@ -271,3 +271,112 @@ test('perf: city with 250 lots plans in under 30 ms', () => {
   const avg = (performance.now() - t0) / runs
   assert.ok(avg < 30, `average ${avg.toFixed(1)} ms`)
 })
+
+// ---- v3: same plot size, fewer buildings (main 1d78f40, seed 1) ----
+// [tier, lots, w, h, mainLots, mainBuildings (lots + civic)]
+const MAIN = [
+  [0, 1, 16, 18, 3, 6],
+  [0, 12, 24, 24, 12, 15],
+  [0, 40, 40, 36, 42, 45],
+  [0, 120, 68, 54, 125, 128],
+  [0, 250, 96, 72, 250, 253],
+  [1, 1, 28, 20, 6, 12],
+  [1, 12, 28, 26, 12, 18],
+  [1, 40, 52, 32, 42, 48],
+  [1, 120, 92, 44, 126, 132],
+  [1, 250, 124, 62, 264, 270],
+  [2, 1, 37, 23, 15, 18],
+  [2, 12, 37, 23, 15, 18],
+  [2, 40, 61, 30, 44, 47],
+  [2, 120, 85, 50, 127, 130],
+  [2, 250, 121, 71, 274, 277],
+  [3, 1, 44, 30, 33, 37],
+  [3, 12, 44, 30, 33, 37],
+  [3, 40, 44, 37, 47, 51],
+  [3, 120, 80, 51, 130, 134],
+  [3, 250, 116, 65, 273, 277],
+]
+
+for (const [tier, lots, w, h, mainLots, mainB] of MAIN) {
+  test(`v3: tier ${tier}, ${lots} lots: same buildings, more space`, () => {
+    const plan = planSettlement({ tier, seed: 1, lots })
+    // (a) same buildings as main
+    assert.equal(plan.lots.length, mainLots, 'lot count equals main')
+    assert.equal(plan.civic.length, mainB - mainLots, 'civic count equals main')
+    const a = plan.w * plan.h
+    const mainA = w * h
+    if (tier >= 2) {
+      // (b) town/city plots 1.25x..1.6x main's area
+      assert.ok(a >= 1.25 * mainA, `area ${a} should be >= 1.25 x main ${mainA}`)
+      assert.ok(a <= 1.6 * mainA, `area ${a} should be <= 1.6 x main ${mainA}`)
+      // (d) density
+      const dens = ((plan.lots.length + plan.civic.length) * 100) / a
+      const mainDens = (mainB * 100) / mainA
+      assert.ok(dens <= 0.8 * mainDens, `density ${dens.toFixed(2)} should be <= 0.8 x main ${mainDens.toFixed(2)}`)
+    } else {
+      // (c) hamlet/village: not smaller, at most 1.25x
+      assert.ok(a >= mainA, `area ${a} should be >= main ${mainA}`)
+      assert.ok(a <= 1.25 * mainA, `area ${a} should be <= 1.25 x main ${mainA}`)
+    }
+  })
+}
+
+// (e) plot area still grows with capacity within each tier
+test('v3: plot area grows with capacity within each tier', () => {
+  for (const tier of TIER_LIST) {
+    let prev = 0
+    for (const lots of [1, 12, 40, 120, 250]) {
+      const p = planSettlement({ tier, seed: 1, lots })
+      assert.ok(area(p) >= prev, `tier ${tier}: area must not shrink at ${lots} lots`)
+      prev = area(p)
+    }
+    const a = (n) => area(planSettlement({ tier, seed: 1, lots: n }))
+    assert.ok(a(40) < a(120) && a(120) < a(250), `tier ${tier}: 40 < 120 < 250 lots strictly grows`)
+    assert.ok(a(1) < a(250))
+  }
+})
+
+// (f) town/city: house lots in the same row are at least 2 tiles apart horizontally
+test('v3: town and city rows keep a gap of >= 2 tiles between house lots', () => {
+  for (const tier of [2, 3]) {
+    for (const seed of SEEDS) {
+      for (const lots of [1, 12, 40, 120, 250]) {
+        const plan = planSettlement({ tier, seed, lots })
+        const byRow = new Map()
+        for (const l of plan.lots) {
+          if (!byRow.has(l.y)) byRow.set(l.y, [])
+          byRow.get(l.y).push(l)
+        }
+        for (const [y, row] of byRow) {
+          row.sort((p, q) => p.x - q.x)
+          for (let i = 1; i < row.length; i++) {
+            const gap = row[i].x - (row[i - 1].x + row[i - 1].w)
+            assert.ok(gap >= 2, `tier ${tier} seed ${seed} ${lots} lots row y=${y}: gap ${gap} between ${row[i - 1].id} and ${row[i].id}`)
+          }
+        }
+      }
+    }
+  }
+})
+
+test('v3: town landmarks: guildhall, clocktower, markethall, fountain', () => {
+  for (const seed of SEEDS) {
+    for (const lots of [12, 40, 120]) {
+      const plan = planSettlement({ tier: 2, seed, lots })
+      if (lots < 40) continue
+      for (const re of [/guildhall/, /clocktower/, /markethall/]) assert.ok(civicHas(plan, re), `town ${lots} lots seed ${seed}: ${re}`)
+      assert.ok(propKinds(plan).has('fountain'), 'fountain')
+    }
+  }
+})
+
+test('v3: city landmarks: cathedral and a fountain or statue', () => {
+  for (const seed of SEEDS) {
+    for (const lots of [40, 120, 250]) {
+      const plan = planSettlement({ tier: 3, seed, lots })
+      assert.ok(civicHas(plan, /cathedral/), `cathedral (${lots} lots, seed ${seed})`)
+      const k = propKinds(plan)
+      assert.ok(k.has('fountain') || k.has('statue'), 'fountain or statue')
+    }
+  }
+})
