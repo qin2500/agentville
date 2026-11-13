@@ -1,4 +1,4 @@
-// Village engine v2 entry (design §6.1). OWNER: A1.
+// Village engine v2 entry (design §6.1).
 // createEngine(app) returns the same object as createVillage(app) (village.js), so main.js swaps one line
 // behind ?engine=2. M1 draws the debug grid only (flat tiles, walkability and cover heatmaps: &grid=ground|walk|cover|lot).
 //

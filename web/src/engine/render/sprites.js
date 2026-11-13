@@ -1,4 +1,4 @@
-// Sprite cache (design §3.4, seam R4). OWNER: R4.
+// Sprite cache (design §3.4, seam R4).
 //
 //   new SpriteCache({ maxBytes = 56<<20, now, budgetMs = 6 })
 //     get(key, make) -> SpriteEntry | null   build synchronously while this frame's budget lasts, else queue and return null

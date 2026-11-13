@@ -1,4 +1,4 @@
-// Flow fields for crowds going to one shared destination (design §2.2, budgets §2.5). OWNER: N3. Pure, no DOM.
+// Flow fields for crowds going to one shared destination (design §2.2, budgets §2.5). Pure, no DOM.
 //
 // flowField(grid, targets, { maxCost }) runs one multi-source Dijkstra outward from the targets over the WorldGrid
 // `cost` layer. Walkers then read the field in O(1) per step: dirAt(x, y) is the next step, costAt(x, y) the cost left.

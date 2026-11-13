@@ -1,5 +1,5 @@
 // agentville.fantasy: the default world (today's fantasy village) as a bundled, trusted mod (village-mods.md §2, §6.1).
-// OWNER: MOD0-X. Imports only its own files, classic pure modules (city-plan.js, styles-pool.js, important.js) and nothing
+// Imports only its own files, classic pure modules (city-plan.js, styles-pool.js, important.js) and nothing
 // from web/src/engine except api.js constants.
 //   behaviour, represent: declarative data (deep-merged and frozen by the registry like rules/terrain/objects).
 //   ambient: CODE (behaviour modules + a spawn function), hooks-like; it runs in-process today because this mod is

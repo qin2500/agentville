@@ -1,5 +1,5 @@
 // agentville.fantasy layout: the town raster, the ring road round every block and the 2-wide roads to the square.
-// OWNER: MOD-READY P1. Pure. Moved from the engine's world/sites.js (geoFast; classic world.js buildRoads) unchanged:
+// Pure. Moved from the engine's world/sites.js (geoFast; classic world.js buildRoads) unchanged:
 // same tile order, same A* (kit routeOnRaster) and the same costs, so the world is byte-identical.
 import { createRaster, routeOnRaster, rectsBounds, inRect } from '#agentville/mod';
 

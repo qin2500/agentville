@@ -1,4 +1,4 @@
-// Mod registry, MOD0: bundled trusted mods only, in-process (village-mods.md §2.3, §6.1.1). OWNER: A1.
+// Mod registry, MOD0: bundled trusted mods only, in-process (village-mods.md §2.3, §6.1.1).
 // The sandbox (MOD-2) and data packs (MOD-5) plug in here later; nothing outside engine/mod/ knows where a mod came from.
 import { API_VERSION, FEATURES } from './api.js';
 import { hash, streamFor } from '../core/rng.js';

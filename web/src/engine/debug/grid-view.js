@@ -1,4 +1,4 @@
-// M1 debug render: flat-coloured tiles, walkability and cover heatmaps (`&grid=ground|walk|cover|lot`). OWNER: A9.
+// M1 debug render: flat-coloured tiles, walkability and cover heatmaps (`&grid=ground|walk|cover|lot`).
 // Pure apart from ctx calls: no DOM, no globals, no randomness.
 import { COST_BLOCKED, EDGE } from '../core/grid.js';
 

@@ -1,5 +1,5 @@
 // buildWorld: rules (every mod hook once, plain data: rules-phase.js) → settlements → sites → plans → stamp → lots → scatter → derived layers (design §1.3, village-mods.md §6.1.7).
-// OWNER: A1 (integration). Pure, no DOM. The engine supplies the mechanics; every world rule comes from `mod`.
+// Pure, no DOM. The engine supplies the mechanics; every world rule comes from `mod`.
 import { WorldGrid, makeCostFn } from '../core/grid.js';
 import { ObjectStore } from '../core/objects.js';
 import { planSettlements, placeBlocks } from './sites.js';

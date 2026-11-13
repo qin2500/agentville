@@ -1,5 +1,5 @@
 // agentville.fantasy layout hook (api.js LayoutResult): the island, ring roads, roads to the square and the harbour.
-// OWNER: MOD-READY P1. Pure in `input` (the engine caches the result; ctx.time is not given). Moved from the engine's
+// Pure in `input` (the engine caches the result; ctx.time is not given). Moved from the engine's
 // world/sites.js: geoFast + sitesOfRaster + the per-tile pass of stampRaster, byte-identical to the old built-in layout.
 //   roads.js  the raster, block footprints, ring roads, A* roads to the square
 //   dock.js   the harbour site, waterfront clearing, footpath, bounds for the harbour, the `dock` venue site

@@ -1,4 +1,4 @@
-// Venues: where a world's PRs go (MOD-READY P6; api.js VenueSite, VenueDef). OWNER: P6. Pure, no DOM.
+// Venues: where a world's PRs go (MOD-READY P6; api.js VenueSite, VenueDef). Pure, no DOM.
 // The layout names venue SITES (LayoutResult.venues: id -> { kind, rect, anchor, data? }); the mod defines venue KINDS
 // (mod.venues: kind -> VenueDef). For every site whose kind has a def, buildVenues:
 //   1. computes the level: def.level({ prs, states }, prev, ctx), prev = persisted.venues[id].level (same kind);

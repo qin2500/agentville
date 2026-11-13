@@ -1,5 +1,5 @@
 // Sites: the town square and the project blocks, placed (engine mechanism). Port of world.js plan() + layout() up to
-// placeVillage (design §1.3 step 1). OWNER: MOD-READY P1 (was A3). Pure, no DOM, no storage.
+// placeVillage (design §1.3 step 1). Pure, no DOM, no storage.
 // MOD0 (village-mods.md §6.1.3): only the mechanics live here. Every world rule (growth, tiers, capacity, who gets a
 // lot, crowns, style, the planner and the layout constants) comes from the mod: `mod.hooks.*` and `mod.rules`.
 // MOD-READY (MOD-4a): the geometry round the blocks (roads, land, water, venue sites) is the mod's `hooks.layout`

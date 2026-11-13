@@ -1,4 +1,4 @@
-// Engine v2 depth ordering (design §3.2, §3.3 layer 3). OWNER: R1. Pure, no DOM.
+// Engine v2 depth ordering (design §3.2, §3.3 layer 3). Pure, no DOM.
 //
 // One packed sort key per drawable in the World layer:
 //   key = ((depth * 4 + sub) * 8 + layer) * 4096 + (col + 2048)

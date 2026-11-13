@@ -1,4 +1,4 @@
-// Engine v2 coordinates (design §3.2, R7, R10). OWNER: A2. Pure, no DOM.
+// Engine v2 coordinates (design §3.2, R7, R10). Pure, no DOM.
 // World positions are FLOAT TILES. Tile (tx, ty) covers [tx, tx+1) x [ty, ty+1); its centre is (tx+.5, ty+.5).
 // Projection at 1x: a tile is a 32x16 px diamond; toScreen(tx, ty) is the tile's NORTH (top) corner.
 export const TILE_W = 32, TILE_H = 16, HALF_W = 16, HALF_H = 8;

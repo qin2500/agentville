@@ -1,5 +1,5 @@
 // Layout kit for mods (re-exported by mod/public.js): raster, routing, noise, floods, distance fields, rect helpers.
-// OWNER: MOD-READY P1. Pure, no DOM, no clock, no storage. Mechanism only: what a world looks like is the mod's.
+// Pure, no DOM, no clock, no storage. Mechanism only: what a world looks like is the mod's.
 // Moved out of world/sites.js (MOD-4a) with the arithmetic, draw keys and tie order unchanged, so a layout built on it
 // is byte-identical to the old built-in one.
 import { hash } from '../../core/rng.js';

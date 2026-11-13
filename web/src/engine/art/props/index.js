@@ -1,4 +1,4 @@
-// Engine-scale prop art (32x16 tile), for props the classic art does not have. OWNER: A1 (lead wires modules here).
+// Engine-scale prop art (32x16 tile), for props the classic art does not have.
 // Each module: { name, frames, extent(p, style) -> [x0,y0,x1,y1] about the foot point, draw(g, p, fx, fy, t, lit, style) }.
 import * as tree from './tree.js';
 import * as pine from './pine.js';

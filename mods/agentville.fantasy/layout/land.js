@@ -1,5 +1,5 @@
 // agentville.fantasy layout: one island round the town (specks and lakes cleaned up), the distance to land over the
-// sea, and the wave glints. OWNER: MOD-READY P1. Pure. Moved from the engine's world/sites.js (geoFast's buildLand on
+// sea, and the wave glints. Pure. Moved from the engine's world/sites.js (geoFast's buildLand on
 // the raster; classic world.js buildLand) unchanged, so the world is byte-identical.
 import { hash, noise, flood4, distance4 } from '#agentville/mod';
 import { E, LAND } from './roads.js';

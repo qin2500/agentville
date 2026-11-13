@@ -1,5 +1,5 @@
 // runLayout: runs a mod's `hooks.layout` (api.js LayoutResult), memoised and validated, and returns Sites; stampLayout
-// writes a LayoutResult into the grid. OWNER: MOD-READY P1. Pure, no DOM, no clock, no storage.
+// writes a LayoutResult into the grid. Pure, no DOM, no clock, no storage.
 // The engine keeps the mechanism (block placement: sites.js placeBlocks; this memo, the validation and the stamp); the
 // mod owns what the world looks like (fantasy: mods/agentville.fantasy/layout/).
 import { ROAD, LAYOUT_GROUND, LOT } from '../core/grid.js';

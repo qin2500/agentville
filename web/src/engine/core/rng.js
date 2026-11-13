@@ -1,4 +1,4 @@
-// Deterministic hashing and random numbers (design §1.4: no Math.random in build or sim). OWNER: A2.
+// Deterministic hashing and random numbers (design §1.4: no Math.random in build or sim).
 /** FNV-1a over the string, uint32. MUST equal classic world.js `hash` so seeds match the classic town. */
 export const hash = s => { let h = 2166136261; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
 

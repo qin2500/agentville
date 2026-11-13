@@ -1,4 +1,4 @@
-// Road graph: the coarse level of navigation (design §2.2). OWNER: N2. Pure, no DOM.
+// Road graph: the coarse level of navigation (design §2.2). Pure, no DOM.
 //
 // Built once per world version from the grid `road` layer (core/grid.js ROAD classes):
 //   1. mask   = road tiles that are walkable (road > 0, not blocked)

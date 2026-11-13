@@ -1,4 +1,4 @@
-// Validators for mod hook output (docs/village-mods.md §3.2). OWNER: MOD-1 (M1a). Pure; imports only mod/api.js.
+// Validators for mod hook output (docs/village-mods.md §3.2). Pure; imports only mod/api.js.
 // Mod output is untrusted: it is read through own data properties only (no getters run, nothing inherited), copied
 // into fresh engine-built objects, and anything bad is dropped with a lint entry. Lints never echo mod-supplied values.
 import { MOD_CODE_MAX } from './api.js';

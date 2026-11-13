@@ -1,4 +1,4 @@
-// Per-column depth slicing of static object sprites (design §3.2). OWNER: R2. Pure math, no DOM; `img` passes through.
+// Per-column depth slicing of static object sprites (design §3.2). Pure math, no DOM; `img` passes through.
 //
 // sliceSprite(obj, sprite) -> Slice[]  (left to right on screen)
 //   Slice = { key, col, depth, sx, sy, sw, sh, dx, dy, img }

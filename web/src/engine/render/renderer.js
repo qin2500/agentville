@@ -1,4 +1,4 @@
-// Renderer (design §3, §6.3). OWNER: R8. Composes depth/slice/sprites/ground/lighting/xray/raster/gfx.
+// Renderer (design §3, §6.3). Composes depth/slice/sprites/ground/lighting/xray/raster/gfx.
 // createRenderer({ canvas, gfx, mod, deps }) -> { setWorld(world), draw(frame) -> hits }.
 // `deps` overrides the module imports so tests can inject fakes. Static imports only: Vite cannot bundle computed
 // dynamic imports.

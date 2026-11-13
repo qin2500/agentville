@@ -1,5 +1,5 @@
 // agentville.fantasy object types: prop footprints/walk/anchors (was engine footprints.js FOOTPRINTS) and building heights
-// (was plan-adapter BUILDING_Z) (village-mods.md §6.1.5). OWNER: MOD0-Y. Pure data. Shape: ObjectTypeTable (api.js).
+// (was plan-adapter BUILDING_Z) (village-mods.md §6.1.5). Pure data. Shape: ObjectTypeTable (api.js).
 //
 // The table holds NO functions (M1b): it must survive structuredClone / JSON so it can cross into a mod sandbox.
 // props[kind] is an ObjectType. A city-plan prop is { kind, x, y, v, dir?, len? }. Direction-dependent kinds are

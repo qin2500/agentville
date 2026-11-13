@@ -1,4 +1,4 @@
-// Engine v2 Canvas2D backend (design 3.1, decision D1). OWNER: R5. Nothing outside render/ touches ctx.
+// Engine v2 Canvas2D backend (design 3.1, decision D1). Nothing outside render/ touches ctx.
 // Drawing coordinates after begin() are 1x world screen px (core/coords.js toScreen); the transform maps them to
 // device px using camera.js worldToCss conventions: css = (p - toScreen(cam)) * z + view/2.
 import { toScreen } from '../core/coords.js';

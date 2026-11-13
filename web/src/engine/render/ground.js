@@ -1,4 +1,4 @@
-// Ground layer (design §3.3 layer 1, §3.5): 16x16-tile chunks baked lazily to bitmaps at 1x. OWNER: R6.
+// Ground layer (design §3.3 layer 1, §3.5): 16x16-tile chunks baked lazily to bitmaps at 1x.
 // Pure apart from the injected canvas factory and gfx calls. Draws in 1x world-screen px (toScreen space);
 // gfx.begin(dpr, cam) is expected to have set the camera transform.
 import { toScreen } from '../core/coords.js';

@@ -1,4 +1,4 @@
-// Engine camera (design §6.3). OWNER: A1. Pure: node tests import it.
+// Engine camera (design §6.3). Pure: node tests import it.
 // A camera is { x, y, z }: x, y are FLOAT TILES at the view centre, z the zoom (CSS px per 1x world px).
 // Close-up zooms are the integers 1-4; Map levels are 1/2, 1/4, 1/8 (fit levels for the whole town).
 import { toScreen, toTile } from './core/coords.js';

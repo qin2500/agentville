@@ -1,4 +1,4 @@
-// The one file that knows the server's snapshot shape (design §6.2). OWNER: A1. Pure: node tests import it.
+// The one file that knows the server's snapshot shape (design §6.2). Pure: node tests import it.
 //
 // SnapshotView = {
 //   now: number,                 // ms; pinned by ?t= or the fixture

@@ -1,5 +1,5 @@
 // agentville.fantasy rules: growth, tiers, capacity, lots, crowns, planner, style, layout constants
-// (was engine sites.js planVillages + constants; village-mods.md §6.1.3). OWNER: MOD0-X. Pure: no DOM, no clock,
+// (was engine sites.js planVillages + constants; village-mods.md §6.1.3). Pure: no DOM, no clock,
 // no global RNG (ctx.time / ctx.rng only). Hooks read WorldInput objects (web/src/engine/mod/api.js).
 //
 // Classic → mod map (world.js plan(), re-synced with city4):

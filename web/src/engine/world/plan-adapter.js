@@ -1,4 +1,4 @@
-// Stamps one settlement plan into the grid and legalises its props (design §1.3 step 3). OWNER: A4. Pure.
+// Stamps one settlement plan into the grid and legalises its props (design §1.3 step 3). Pure.
 import { hash } from '../core/rng.js';
 import { ROAD } from '../core/grid.js';
 import { MOD_CODE_MAX } from '../mod/api.js';

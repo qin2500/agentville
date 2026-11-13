@@ -1,4 +1,4 @@
-// WorldObject typedef and the object store (design §1.2). OWNER: A2. Pure, no DOM.
+// WorldObject typedef and the object store (design §1.2). Pure, no DOM.
 /** @typedef {{
  *  id: string, kind: 'building'|'prop'|'tree'|'decal'|'venue'|'token', model: string,
  *  tx: number, ty: number, w: number, h: number, z: number,

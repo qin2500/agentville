@@ -1,4 +1,4 @@
-// The mod API, MOD0 subset (docs/village-mods.md §3, §6.1). OWNER: A1 (Engine Lead) until MOD-1 takes it.
+// The mod API, MOD0 subset (docs/village-mods.md §3, §6.1).
 // MOD0 = the seams only: bundled trusted mods run in-process; no sandbox, no data packs yet. Every world rule the
 // engine used to hard-code reaches it through a ResolvedMod.
 export const API_VERSION = 1;

@@ -1,4 +1,4 @@
-// Actor sprites for the engine renderer (agents, townsfolk, critters). OWNER: M2FIX.
+// Actor sprites for the engine renderer (agents, townsfolk, critters).
 // The classic village draws its people from the Ninja Adventure sheets (16x16 frames, columns = facing down/up/left/
 // right, rows 0-3 = walk cycle, row 4 = action) as "stickers" (1px ink outline + light rim, world.js rimmed()). This
 // module builds the same stickers once per (look, facing, row, selected), scaled 1.25x nearest-neighbour to the engine's

@@ -1,4 +1,4 @@
-// The visible-tile mask (design §2.4, R12). OWNER: A2. Pure.
+// The visible-tile mask (design §2.4, R12). Pure.
 // grid.cover[i] = percent (0..100) of a standing actor's 16x24 px box at the tile centre hidden by objects drawn in
 // front of it; 0 when under 35%. M1 estimates each building's silhouette from footprint + obj.z (a prism);
 // M2 passes boundsOf(obj) -> { x0, y0, x1, y1 } (1x screen px, true opaque bounds) instead.

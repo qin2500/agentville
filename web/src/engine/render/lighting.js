@@ -1,4 +1,4 @@
-// Day and night lighting (design §3.3 layer 5, §3.7). OWNER: R7. Pure except for the injected canvas factory.
+// Day and night lighting (design §3.3 layer 5, §3.7). Pure except for the injected canvas factory.
 // A quarter-resolution lightmap: a night-tint veil with light pools erased (destination-out), multiplied onto the
 // scene, then warm `lighter` pools on top. Positions are 1x world pixels (the renderer's gfx applies the camera).
 import { toScreen } from '../core/coords.js';

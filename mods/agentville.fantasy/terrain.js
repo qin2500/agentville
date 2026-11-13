@@ -1,5 +1,5 @@
 // agentville.fantasy terrain table: the city-plan GROUND codes with walk cost, tags and debug colour (village-mods.md §6.1.4).
-// OWNER: MOD0-Y. Pure data. Shape: TerrainTable (web/src/engine/mod/api.js).
+// Pure data. Shape: TerrainTable (web/src/engine/mod/api.js).
 // Tags: 'street' paved through-route, 'walk' actors may stand, 'water', 'over-water' stays walkable over sea terrain.
 // `road` (optional, engine road class 1 PATH / 2 LANE / 3 STREET) is what plan-adapter writes to the road layer;
 // a walkable type without it gets PATH.

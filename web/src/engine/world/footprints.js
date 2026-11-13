@@ -1,4 +1,4 @@
-// Footprint resolution for plan props (design §1.2). OWNER: A4 / MOD0-Y. Pure. The table itself is mod data
+// Footprint resolution for plan props (design §1.2). Pure. The table itself is mod data
 // (mod.objects.props, e.g. mods/agentville.fantasy/objects.js); this file keeps no fantasy knowledge.
 //
 // footprintFor(prop, objectTypes) takes a plan prop { kind, x, y, v, dir?, len? } and the ObjectTypeTable and returns

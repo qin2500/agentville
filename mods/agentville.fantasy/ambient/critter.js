@@ -1,7 +1,7 @@
 // Critters (design 4.4): chickens, a cat, pigeons and gulls. Behaviour module { init(a, ctx), update(a, dt, ctx) }.
 // Short local wanders only (nav path <= MAX_PATH tiles), never into buildings (occ/cover/cost checked on every tile).
 // The cat may sit beside a waiting agent (ctx.actors: Map id -> Actor); pigeons hop away from walkers within 1 tile.
-// OWNER: B6. Pure, no DOM. ctx.rand is called as rand(...keys) (stateless) or rand() (stream); both work.
+// Pure, no DOM. ctx.rand is called as rand(...keys) (stateless) or rand() (stream); both work.
 // Movement follows the engine rule (web/src/engine/sim/actor.js): set a.path, read a.arrived / a.stuck; the sim moves.
 // Facing uses ctx.faceFrom (sim/actor.js) so every actor kind shares one facing convention.
 export const MAX_PATH = 8;

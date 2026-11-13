@@ -1,4 +1,4 @@
-// Local grid A* (design §2.2, §2.5). OWNER: N1. Pure, no DOM.
+// Local grid A* (design §2.2, §2.5). Pure, no DOM.
 //
 // astar(grid, from, to, { maxNodes = 20000, costFn }) -> Float32Array | null
 //   grid      a WorldGrid (core/grid.js) with a baked `cost` layer (bakeCost/makeCostFn). Tile i is blocked when

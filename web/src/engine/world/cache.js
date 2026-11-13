@@ -1,4 +1,4 @@
-// Build cache for incremental world rebuilds (PERF, 2026-11-13). OWNER: wb-perf. Pure, no DOM, no storage.
+// Build cache for incremental world rebuilds (PERF, 2026-11-13). Pure, no DOM, no storage.
 // One cache lives as long as the engine instance (index.js) and is passed to buildWorld as opts.cache; buildWorld
 // hands it to placeBlocks (plan keys), runLayout (world/layout.js: the mod's layout result reused when no block moved;
 // kind 'layout') and stampPlan (each project's stamp replayed when its plan, origin, index, style and mod are unchanged). A build with cache = null computes everything

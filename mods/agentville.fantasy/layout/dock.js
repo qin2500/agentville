@@ -1,6 +1,6 @@
 // agentville.fantasy layout: the harbour. Its site (a cove under the square's column, cut for the biggest harbour from
 // the start), the waterfront clearing, the footpath from the harbour up to town and room to pan; and the `dock` venue
-// site the engine hands to the venue owner. OWNER: MOD-READY P1. Pure. Moved from the engine's world/sites.js
+// site the engine hands to the venue owner. Pure. Moved from the engine's world/sites.js
 // (classic world.js dockSite / dockShore) unchanged, so the world is byte-identical.
 import { routeOnRaster } from '#agentville/mod';
 import { PATH, FOOT, LAND, DOCKC, ROUTE } from './roads.js';

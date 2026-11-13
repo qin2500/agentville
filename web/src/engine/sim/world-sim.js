@@ -1,4 +1,4 @@
-// The world simulation (design §4.1, §4.2 transitions, §4.5; decision D4). OWNER: S1. Pure, no DOM.
+// The world simulation (design §4.1, §4.2 transitions, §4.5; decision D4). Pure, no DOM.
 // createSim({ world, nav, seed, mod, deps?, serverId?, onScreen?, t0? }) -> { applySnapshot, tick, actors, events, ... }
 //
 // Systems run in a fixed order on every fixed step (STEP = 50 ms):

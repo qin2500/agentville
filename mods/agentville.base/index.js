@@ -1,4 +1,4 @@
-// agentville.base: the tiny reference world and last-resort fallback (village-mods.md §2.3). OWNER: MOD0-W.
+// agentville.base: the tiny reference world and last-resort fallback (village-mods.md §2.3).
 // Every MOD0 hook has a minimal correct answer here, written to be read; copy it as a template.
 // Pure: no Math.random, no clock, no DOM. Imports only files in this folder.
 import { planGrid, GROUND } from './plan.js';

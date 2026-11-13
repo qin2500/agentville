@@ -1,6 +1,6 @@
 // Rules phase (MOD1 M1c, review B3): every mod hook a world rebuild needs, called ONCE per project, before any mechanics
 // run. The result is plain, structured-clonable data, so the hooks can later move into an async sandbox (one batched call
-// per rebuild) without the mechanics noticing. OWNER: M1c. Pure, no DOM, no storage; `persisted` is read only.
+// per rebuild) without the mechanics noticing. Pure, no DOM, no storage; `persisted` is read only.
 //
 //   runRules(input, persisted, mod, opts) -> RulesResult
 //   planSettlements(input, persisted, mod, opts, rules)   (sites.js)  consumes it

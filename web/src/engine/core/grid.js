@@ -1,4 +1,4 @@
-// WorldGrid: the one authoritative grid (design §1.1, R1). OWNER: A2. Pure, no DOM.
+// WorldGrid: the one authoritative grid (design §1.1, R1). Pure, no DOM.
 // Layers are flat typed arrays indexed i = (ty - oy) * w + (tx - ox).
 import { footprintTiles, edgeRunTiles } from './objects.js';
 

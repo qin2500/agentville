@@ -1,4 +1,4 @@
-// Engine v2 rasteriser (design §5.2, seam R3). OWNER: R3.
+// Engine v2 rasteriser (design §5.2, seam R3).
 // Draws one model (a building look or a prop) with the CLASSIC art code (iso.js isoBuilding, props-art.js
 // createPropArt) into an offscreen canvas that has a transparent margin, then measures the true opaque rect by an
 // alpha scan. Nothing here draws art of its own.

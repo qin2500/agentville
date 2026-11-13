@@ -1,4 +1,4 @@
-// WorldInput: the sanitised, allow-listed, deep-frozen view a mod sees (village-mods.md §3.1). OWNER: A1.
+// WorldInput: the sanitised, allow-listed, deep-frozen view a mod sees (village-mods.md §3.1).
 // Built field by field from SnapshotView: nothing is copied wholesale, so a new server field can never leak by default.
 // Never passes: conversation text, ask/reason/resume, cwd/paths, hrefs/URLs, account/model/spend, raw server ids.
 import { API_VERSION } from './api.js';

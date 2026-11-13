@@ -1,4 +1,4 @@
-// Persisted layout (design §1.4), one per mod (village-mods.md §3.4, §6.1.6). OWNER: A3. `store` is { get(k, d), set(k, v) }
+// Persisted layout (design §1.4), one per mod (village-mods.md §3.4, §6.1.6). `store` is { get(k, d), set(k, v) }
 // (ui.js store or a test fake).
 // Shape: { v: 1, seed, blocks: { [project]: { x, y, w, h, tier, gt, cap, acc, seen, away?, …city4: crowns, style } },
 //          lots: { [project]: { tier, cap, a: { itemId: lotId }, h: { itemId: goneSince } } } }

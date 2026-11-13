@@ -1,4 +1,4 @@
-// represent.pr and represent.project (MOD-READY P6; api.js PrSpec, ProjectSpec). OWNER: P6. Pure, no DOM.
+// represent.pr and represent.project (MOD-READY P6; api.js PrSpec, ProjectSpec). Pure, no DOM.
 // What a PR or a project is in a world, from mod data or a mod function, sanitised and linted like represent.js
 // cleanAppearance. A mod function sees only a frozen allow-listed view built field by field from WorldInput: a PR's
 // id, project, number, a cleaned title, state, checks, review and size; never an href/URL, a path, conversation text

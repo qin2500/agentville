@@ -1,4 +1,4 @@
-// Lot assignment (port of world.js placeVillage's lot section, design §1.3 step 4). OWNER: A4. Pure.
+// Lot assignment (port of world.js placeVillage's lot section, design §1.3 step 4). Pure.
 
 // Who wants which lot rank: each request names its rank (L, M or S) and falls back to the others. PRs fill what is left.
 // The rank rule itself (boss/pinned -> L, lead -> M, else S) is the mod's (mod.hooks.lots) and arrives in the requests.

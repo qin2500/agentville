@@ -1,4 +1,4 @@
-// Wild trees and bushes as objects (design §1.3 step 5). OWNER: A4. Pure.
+// Wild trees and bushes as objects (design §1.3 step 5). Pure.
 // MECHANISM only (MOD-4c): the BFS distance from built tiles, the lattice / 2x2-free / cover checks, the stateless draws and
 // object creation. WHAT grows (density curve, park, coast, recolour, models) is the mod's hooks.scatter(tile, draw, ctx).
 // A mod without hooks.scatter gets no scatter. Nothing wild grows in a plot (its plan fills it), on a road or on a venue site.

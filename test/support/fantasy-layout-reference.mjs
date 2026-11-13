@@ -1,6 +1,6 @@
 // TEST ONLY: the classic string-keyed fantasy layout (world.js route / buildRoads / dockSite / buildLand / dockShore and
 // the classic draw rule), kept verbatim from the engine's old world/sites.js as the parity reference for the raster
-// layout in mods/agentville.fantasy/layout/. OWNER: MOD-READY P1. Slow (string Sets): fixtures only.
+// layout in mods/agentville.fantasy/layout/. Slow (string Sets): fixtures only.
 //
 //   referenceLayout(input, { paths }?) → LayoutResult   the same contract and the same tiles rect as the fantasy hook
 //   geoSlow(settlements, square, walk: Set<number>) → W  the classic world record (string Sets: path, street, ring, lane,
