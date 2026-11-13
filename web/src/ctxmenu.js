@@ -49,8 +49,10 @@ export function createMenu(app, deps) {
       out.push({ act: 'open', label: `Open in ${deps.termName()}`, why: deps.openBlock(a) });
     }
     out.push({ act: 'showvillage', label: 'Show in village' });
+    if (!a.parentId && S.taskRows?.open?.some(r => r.agentId === a.id)) out.push({ act: 'taskdone', label: 'Check off task' });
     if (a.resume) out.push({ act: 'copy', label: /^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command', title: a.resume });
     if (a.harness === 'claude-code' && !sub && !a.neverStarted) out.push({ act: 'fork', label: 'Fork…', popup: true });
+    if (!sub && typeof a.permissionMode === 'string' && a.permissionMode !== 'bypassPermissions') out.push({ act: 'bypass', label: 'Switch to bypass permissions…', popup: true });
     if (!sub && (a.bucket !== 'resting' || a.live)) out.push({ act: 'stop', label: a.kind === 'job' ? 'Stop job…' : 'Stop…', popup: true });
     if (!sub) out.push({ act: 'important', label: a.important ? 'Unmark important' : 'Mark important', title: 'Important agents are never folded away or tidied out of view (only Hide removes them), and come back with Restore after crash' });
     out.push({ act: 'color' });
@@ -75,6 +77,7 @@ export function createMenu(app, deps) {
       <p class="cm-title">${icon(a.role in ROLE_NAME ? a.role : 'solo', 'px role')}<span class="cm-name" id="cm-name">${esc(a.name)}</span>${a.important ? '<span class="star" title="Important" aria-label="Important">★</span>' : ''}${a.hidden ? '<span class="htag">Hidden</span>' : ''}</p>
       <p class="cm-status"><span class="pill b-${err ? 'error' : a.bucket}">${icon(bucketIcon(a))}${err ? 'Error' : BUCKET_NAME[a.bucket]} · <span class="num">${ago(now - (a.since || now))}</span></span><span class="cm-why">${esc(status)}</span></p>
       <p class="cm-meta">${meta.map(esc).join(' · ')}</p>
+      ${typeof a.permissionMode === 'string' ? `<p class="cm-meta cm-mode">Mode: ${esc(a.permissionMode === '' ? 'default' : a.permissionMode)}</p>` : ''}
       ${stoppedNote(a) ? `<p class="cm-stop"><b>${esc(stoppedNote(a))}</b>. It isn't running; it stays in view because it's Important. ${S.data?.term?.available || deps.terminal() ? 'Open it in the terminal to resume it.' : ''}</p>` : ''}
       ${prs ? `<p class="cm-prs" aria-label="Pull requests">${prs}</p>` : ''}
     </div>`;
@@ -99,7 +102,7 @@ export function createMenu(app, deps) {
     if (!a) return close();
     el.style.setProperty('--agent-color', agentColor(a));
     const list = items(a);
-    const GROUP = { fork: 1, stop: 1, important: 2, color: 2, edit: 2, hide: 2, unhide: 2 };
+    const GROUP = { fork: 1, bypass: 1, stop: 1, important: 2, color: 2, edit: 2, hide: 2, unhide: 2 };
     let g = 0;
     const body = list.map((it, i) => { const k = GROUP[it.act] || 0, sep = i && k !== g ? '<div class="cm-sep" role="separator"></div>' : ''; g = k; return sep + (it.act === 'color' ? colorHTML(a) : itemHTML(it, i)); }).join('');
     const html = `${headHTML(a)}<div class="cm-items" role="menu" aria-labelledby="cm-name">${body}</div>`;
@@ -183,10 +186,11 @@ export function createMenu(app, deps) {
       case 'copy':
         try { await navigator.clipboard.writeText(a.resume); app.toast(`Copied: ${a.resume}`); } catch { app.toast("Couldn't copy to the clipboard."); }
         return;
-      case 'fork': case 'stop': case 'edit': return deps.sheet.open(act, a, opener);
+      case 'fork': case 'stop': case 'edit': case 'bypass': return deps.sheet.open(act, a, opener);
       case 'important':
         try { await app.patch(a.id, { important: a.important ? null : true }); app.say(a.important ? `${a.name} is no longer marked important` : `${a.name} marked important`); } catch (e) { app.toast(saveError(e)); }
         return;
+      case 'taskdone': return app.taskDoneFor(a.id);
       case 'hide': return deps.hide(a, true);
       case 'unhide': return deps.hide(a, false);
     }

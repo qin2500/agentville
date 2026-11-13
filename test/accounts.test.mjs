@@ -18,7 +18,9 @@ async function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-accounts-'))
   const home = makeAccountHome(root)
   const api = await fakeAnthropic(PEOPLE)
-  Object.assign(process.env, home.env, api.env)
+  Object.assign(process.env, home.env, api.env, { AGENTVILLE_ACCOUNT_POLL_MS: '30', AGENTVILLE_ACCOUNT_IDLE_MAX_MS: '2000' })
+  // Every job at a turn boundary (the fixture's aaaa0001 is mid turn).
+  fs.writeFileSync(home.files.aaaa0001, JSON.stringify({ ...JSON.parse(fs.readFileSync(home.files.aaaa0001, 'utf8')), tempo: 'idle' }))
   for (const k of ['FAKE_AUTH', 'FAKE_RESPAWN_FAIL', 'FAKE_RESPAWN_MS', 'FAKE_CLOBBER', 'FAKE_NO_LIVE', 'FAKE_REPLY', 'AGENTVILLE_TERMINAL']) delete process.env[k]
   const dataDir = path.join(root, 'data')
   const server = createServer({ dataDir })
@@ -236,7 +238,7 @@ test('an expired inactive account is refreshed and its rotated tokens saved; the
   } finally { await t.done() }
 })
 
-test('switch account -> account: swaps the credential, respawns only running jobs, settings untouched', async () => {
+test('switch account -> account: swaps the credential, restarts nothing, settings untouched', async () => {
   const t = await setup()
   try {
     const { a, b } = await withTwo(t)
@@ -255,9 +257,11 @@ test('switch account -> account: swaps the credential, respawns only running job
     r = await t.post('/api/account/switch', { to: UUID.B, confirm: (await status()).confirm })
     assert.equal(r.status, 200, r.text)
     assert.equal(r.json.restored, false)
-    assert.deepEqual(r.json.results.map((x) => [x.id, x.status]), [['aaaa0001', 'respawned'], ['aaaa0002', 'respawned']])
-    assert.deepEqual(t.respawns().slice(before).map((x) => x[1]), ['aaaa0001', 'aaaa0002'], 'the dormant job is never revived')
+    assert.deepEqual(r.json.results.map((x) => [x.id, x.status]), [['aaaa0001', 'unchanged'], ['aaaa0002', 'unchanged']])
+    assert.deepEqual(t.respawns().slice(before), [], 'running jobs pick the swapped login up themselves: no respawn')
     assert.equal(t.live(), b, "B's login is now Claude's")
+    const entry = fs.readFileSync(path.join(t.dataDir, 'account-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1)
+    assert.deepEqual([entry.action, entry.account, entry.auto, entry.restored], ['switch', UUID.B, false, false])
     assert.equal(JSON.parse(fs.readFileSync(t.configFile, 'utf8')).oauthAccount.accountUuid, UUID.B)
     assert.equal(t.slot('A'), a2, "A's rotated tokens were saved first")
     assert.equal(fs.readFileSync(path.join(t.home.home, 'settings.json'), 'utf8'), settings, 'settings unchanged')
@@ -299,7 +303,7 @@ test('account -> account cleans up a job that still carries pool settings, inste
     r = await t.post('/api/account/switch', { to: UUID.B, confirm: (await status()).confirm })
     assert.equal(r.status, 200, r.text)
     assert.equal(r.json.restored, false, JSON.stringify(r.json.results))
-    assert.deepEqual(r.json.results.map((x) => [x.id, x.status]), [['aaaa0001', 'respawned'], ['aaaa0002', 'respawned']])
+    assert.deepEqual(r.json.results.map((x) => [x.id, x.status]), [['aaaa0001', 'respawned'], ['aaaa0002', 'unchanged']], 'only the job whose settings changed is restarted')
     const now = JSON.parse(fs.readFileSync(file, 'utf8'))
     assert.deepEqual([now.respawnFlags, now.providerEnv], [['--name', 'API Lead', '--model', 'claude-opus-5-5'], { OTHER: '1' }])
     // Back to the pool: its pool settings come back.
@@ -325,33 +329,28 @@ test('pool -> an account that is not the stored login: its credential is written
   } finally { await t.done() }
 })
 
-test('a failed canary puts the previous credential back byte for byte; Undo does too', async () => {
+test('Undo after an account -> account switch puts the previous login back byte for byte', async () => {
   const t = await setup()
   try {
     const { a, b } = await withTwo(t)
     const status = async () => (await t.get('/api/account')).json
     assert.equal((await t.post('/api/account/switch', { to: UUID.A, confirm: (await status()).confirm })).status, 200)
     const config = fs.readFileSync(t.configFile, 'utf8')
-    const n = t.respawns().length
-    process.env.FAKE_RESPAWN_FAIL = String(n + 1)
+    const settings = fs.readFileSync(path.join(t.home.home, 'settings.json'), 'utf8')
     let r = await t.post('/api/account/switch', { to: UUID.B, confirm: (await status()).confirm })
-    delete process.env.FAKE_RESPAWN_FAIL
-    assert.equal(r.status, 200, r.text)
-    assert.equal(r.json.restored, true)
-    assert.deepEqual(r.json.results.map((x) => x.status), ['failed', 'skipped'])
-    assert.equal(t.live(), a, 'A is back, byte for byte')
-    assert.equal(fs.readFileSync(t.configFile, 'utf8'), config)
-    const sets = fs.readdirSync(path.join(t.dataDir, 'account-backups')).sort()
-    const cred = path.join(t.dataDir, 'account-backups', sets.at(-1), 'credential.json')
-    assert.equal(fs.statSync(cred).mode & 0o777, 0o600)
-
-    r = await t.post('/api/account/switch', { to: UUID.B, confirm: (await status()).confirm })
     assert.equal(r.json.restored, false, r.text)
     assert.equal(t.live(), b)
+    const sets = fs.readdirSync(path.join(t.dataDir, 'account-backups')).sort()
+    const dir = path.join(t.dataDir, 'account-backups', sets.at(-1))
+    assert.equal(fs.statSync(path.join(dir, 'credential.json')).mode & 0o777, 0o600)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')).changed, ['credential.json', 'oauth-account.json'], 'only the login changed')
+    // The user edits settings after the switch: Undo of an account switch must not revert that.
+    fs.writeFileSync(path.join(t.home.home, 'settings.json'), settings.replace('"opus"', '"sonnet"'))
     r = await t.post('/api/account/undo', {})
     assert.equal(r.status, 200, r.text)
-    assert.equal(t.live(), a, 'Undo restores the previous login too')
+    assert.equal(t.live(), a, 'Undo restores the previous login')
     assert.equal(fs.readFileSync(t.configFile, 'utf8'), config)
+    assert.match(fs.readFileSync(path.join(t.home.home, 'settings.json'), 'utf8'), /"sonnet"/, 'settings were not part of that switch')
     t.assertNoSecrets()
   } finally { await t.done() }
 })

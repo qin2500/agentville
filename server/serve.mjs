@@ -13,6 +13,10 @@ import { isLocalRequest } from './local-request.mjs'
 import { defaultDataDir } from './datadir.mjs'
 import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
+import { createLoops } from './loops.mjs'
+import { createTasks } from './tasks.mjs'
+import { createHelper } from './helper.mjs'
+import { createTaskNamer } from './task-names.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
 import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
@@ -20,9 +24,11 @@ import { createChanges } from './changes.mjs'
 import { fanOut, PER_MINUTE as BROADCASTS_PER_MINUTE, MAX_RECIPIENTS, recipientIds, sameSet, SELF_WHY, selfId, summarize, textProblem } from './broadcast.mjs'
 import { createPrStatus } from './prstatus.mjs'
 import { createDock } from './dock.mjs'
+import { createPrPoll } from './prpoll.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
+import { createPermSwitch } from './permmode.mjs'
 import { createRestore, restoreBlocked, MESSAGE as RESTORE_MESSAGE } from './restore.mjs'
 import { accountsBlocked } from './accounts.mjs'
 import { createSpend } from './spend.mjs'
@@ -74,6 +80,11 @@ export { defaultDataDir }
 
 export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {} } = {}) {
   const store = createStore(dataDir)
+  const loops = createLoops(dataDir)
+  const tasks = createTasks(dataDir)
+  const helper = createHelper({ dir: dataDir, claudeHome: claude.home })
+  // transcriptOf (below) maps agent id -> transcript .jsonl path; the namer reads it lazily.
+  const namer = createTaskNamer({ helper, tasks, transcriptFor: (agentId) => transcriptOf.get(agentId) || null })
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
   const termActs = []
@@ -99,18 +110,36 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   let titles = [] // server-private: conversation names for search (never prompt text)
   let quietIds = new Set() // removed by the last scan: quiet for over QUIET_REMOVE_DAYS
   const changes = createChanges()
-  const prStatus = createPrStatus(claude.home)
   const dock = createDock({ dataDir })
+  let lastAgents = [] // the latest snapshot's agents: the live PR poll asks about their open PRs
+  const testingEnv = process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
+  const prPoll = createPrPoll({
+    intervalMs: Number(process.env.AGENTVILLE_PR_POLL_MS ?? (testingEnv ? 0 : 120_000)) || 0,
+    targets: () => [
+      ...lastAgents.flatMap((a) => (a.prs || []).filter((p) => p.state === 'open' || p.state === 'draft').map((p) => p.href)),
+      ...dock.openHrefs(),
+    ],
+  })
+  const prStatus = createPrStatus(claude.home, prPoll)
   const projectStore = createProjectStore(dataDir)
   // Usage research log: tokens by model next to every usage reading (see research.mjs).
   const research = createResearch({ dataDir })
   const network = createNetwork({ dataDir })
   // Restore after crash (restore.mjs): the running-set snapshot and the lost crown/Important jobs.
   const restore = createRestore({ dataDir, claudeHome: claude.home })
-  const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network })
+  const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network,
+    // Switches refuse while a permission-mode switch runs; permSwitch is built just below, so ask it lazily.
+    permBusy: () => typeof permSwitch?.isBusy === 'function' && permSwitch.isBusy(),
+    permBusyJob: (short) => typeof permSwitch?.busyJob === 'function' && permSwitch.busyJob() === short })
+  // One background job to bypass-permissions mode, on the user's click (permmode.mjs).
+  const permSwitch = createPermSwitch({ dataDir, claudeHome: claude.home, busy: () => account.isBusy() })
   // Token spend is read when the page asks (every few seconds while it is open) and with each usage sample.
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
-  const sampler = createSampler({ dataDir, account, network, agents: async () => (await snapshot()).agents })
+  const sampler = createSampler({ dataDir, account, network,
+    // The scan's agents plus, privately, when each job's scheduler record last said the harness limit (claude-code.mjs).
+    agents: async () => (await snapshot()).agents.map((a) => ({ ...a, limitStopAt: limitStops.get(a.id)?.at || 0, limitText: limitStops.get(a.id)?.text || '' })),
+    nudge: (ids) => nudgeAgents(ids) })
+  let limitStops = new Map() // agent id -> { at: limitStopAt, text: the harness limit string }
   // Update check against GitHub's main (update.mjs); restarting needs `server`, so it's looked up late.
   const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, ...update })
   const startedAt = Date.now()
@@ -151,6 +180,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     transcriptOf = new Map(facts.map((f) => [f.id, f.transcriptFile || null]))
     modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null }]))
     forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
+    limitStops = new Map(facts.filter((f) => f.limitStopAt).map((f) => [f.id, { at: f.limitStopAt, text: f.limitDetail || '' }]))
     const keptIds = new Set(facts.map((f) => f.id))
     titles = results.flatMap((r) => (r.status === 'fulfilled' && r.value.titles) || [])
       .filter((t) => keptIds.has(t.id) || (!removed.has(t.id) && now - (t.at || 0) <= QUIET_REMOVE_MS))
@@ -172,6 +202,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     }
     changes.prune(dirs)
     await prStatus.annotate(agents)
+    lastAgents = agents
     const dockState = await dock.update(agents).catch(() => ({ loading: [], sailed: [], total: 0, level: 1 }))
     // Fleet sends to live Claude sessions; `blocked` says why it can't here ('' = it can).
     const fleet = { mode: 'send', blocked: sendingBlocked(), last: fleetData.last, pending: pending && { ...pending, rebootDetected: startedAt > pending.at } }
@@ -184,7 +215,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
-    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState }
+    const taskStore = await tasks.sync(agents, now)
+    try { Promise.resolve(namer.kick()).catch(() => {}) } catch {}
+    const taskList = Object.entries(taskStore.items).map(([id, e]) => ({ id, ...e }))
+    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList, helper: { enabled: (await helper.status()).enabled } }
   }
 
   function messageProblem(a) {
@@ -192,6 +226,32 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     if (['subagent', 'teammate', 'thread'].includes(a.kind)) return "Subagents can't be messaged. Message its lead instead."
     if (!a.live) return "Not running, so there's no session to message. Open it to resume it."
     return inboxProblem(inboxes.get(a.id))
+  }
+  /**
+   * After a limit-triggered account switch: send "continue" (the fleet "continue" text) to the jobs that
+   * stopped on the limit, once each. Same delivery as /api/fleet/send, with the same checks; a job whose
+   * session isn't reachable yet (respawning) gets one retry after a few seconds. Returns the delivered ids.
+   */
+  async function nudgeAgents(ids) {
+    if (sendingBlocked() || dryRun()) return []
+    const sent = new Set()
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 5000))
+      cached = null
+      const snap = await snapshot()
+      for (const id of ids) {
+        if (sent.has(id)) continue
+        if (!limitStops.get(id)) continue // resumed since: its limit stop is gone from the fresh scan
+        const a = snap.agents.find((x) => x.id === id)
+        const inbox = inboxes.get(id)
+        if (!a?.live || !inbox || inboxProblem(inbox)) continue
+        if ((await deliver(inbox, 'continue')).ok) sent.add(id)
+      }
+      if (sent.size === ids.length) break
+    }
+    if (sent.size) await logFleet({ at: Date.now(), action: 'continue', source: 'autoswitch', results: [...sent].map((id) => ({ id, status: 'sent' })) })
+    cached = null
+    return [...sent]
   }
   const logFleet = async (entry) => {
     await fsp.mkdir(dataDir, { recursive: true }).catch(() => {})
@@ -383,6 +443,48 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         cached = null
         return send(res, 200, { id, override })
       }
+      if (url.pathname === '/api/helper') {
+        if (req.method === 'GET') return send(res, 200, await helper.status())
+        if (req.method === 'POST') {
+          if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+          const status = await helper.setEnabled((await readBody(req))?.enabled)
+          cached = null
+          return send(res, 200, status)
+        }
+      }
+      const lm = /^\/api\/loops\/(.+)$/.exec(url.pathname)
+      if (lm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const entry = await loops.patch(decodeURIComponent(lm[1]), await readBody(req))
+        cached = null
+        return send(res, 200, entry)
+      }
+      if (url.pathname === '/api/tasks' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        const entry = await tasks.addIdea(body?.text)
+        cached = null
+        return send(res, 200, entry)
+      }
+      const tkm = /^\/api\/tasks\/(.+)$/.exec(url.pathname)
+      if (tkm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const entry = await tasks.patch(decodeURIComponent(tkm[1]), await readBody(req))
+        cached = null
+        return send(res, 200, entry)
+      }
+      // Switch one background job to bypass permissions. The job is looked up from the agent id here.
+      const bm = /^\/api\/agents\/([^/]+)\/bypass$/.exec(url.pathname)
+      if (bm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        await readBody(req) // the body carries nothing we use
+        const a = (await snapshot()).agents.find((x) => x.id === decodeURIComponent(bm[1]))
+        if (!a) return send(res, 404, { error: 'No such agent' })
+        if (a.harness !== 'claude-code' || a.kind !== 'job' || !a.jobId) return send(res, 409, { error: 'Only background jobs can be switched here' })
+        const out = await permSwitch.toBypass(a.jobId, { live: a.live, reopened: Boolean(a.reopened) })
+        cached = null
+        return send(res, 200, out)
+      }
       if (url.pathname === '/api/fleet/preview' && ['GET', 'POST'].includes(req.method)) {
         let action = url.searchParams.get('action')
         let text
@@ -431,7 +533,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         return send(res, 200, out)
       }
       // Saved Claude accounts (server/accounts.mjs). No response ever carries a token.
-      if (url.pathname === '/api/accounts' && req.method === 'GET') return send(res, 200, { ...(await account.accounts.list()), network: await network.status() })
+      if (url.pathname === '/api/accounts' && req.method === 'GET') return send(res, 200, { ...(await account.accounts.list()), network: await network.status(), autoSwitch: await sampler.info() })
       // The network this Mac is on, and marking it as the work Wi-Fi (network.mjs).
       if (url.pathname === '/api/network' && req.method === 'GET') return send(res, 200, await network.status({ fresh: true }))
       if (url.pathname === '/api/network/work' && req.method === 'POST') {
@@ -766,6 +868,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   }
   updater.start().catch(() => {})
   server.on('close', () => updater.stop())
+  prPoll.start(30_000) // after the first scans have filled in the PRs; no-op when the interval is 0 (the default under test)
+  server.on('close', () => prPoll.stop())
   server.on('upgrade', (req, socket, head) => terms.upgrade(req, socket, head))
   // Before close, not on 'close': open WebSockets would otherwise keep the server from closing.
   const close = server.close.bind(server)

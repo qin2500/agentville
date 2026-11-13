@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { decide, COOLDOWN_MS, OUT_AT, AVAILABLE_BELOW } from '../server/autoswitch.mjs'
+import { decide, COOLDOWN_MS, OUT_AT } from '../server/autoswitch.mjs'
 import { createServer } from '../server/serve.mjs'
 import { makeAccountHome } from './fixtures/account-home.mjs'
 import { fakeAnthropic, UUID, TOKEN_MARK } from './fixtures/fake-anthropic.mjs'
@@ -20,7 +20,7 @@ const base = {
   usage: new Map([
     ['B', { fiveHour: w(10, 3 * 3600e3), weekly: w(10) }],
     ['C', { fiveHour: w(50, 1 * 3600e3), weekly: w(20) }], // resets soonest
-    ['D', { fiveHour: w(5, 600e3), weekly: w(AVAILABLE_BELOW) }], // resets even sooner, but its week is used up
+    ['D', { fiveHour: w(5, 600e3), weekly: w(95) }], // resets even sooner, but its week is used up
   ]),
 }
 
@@ -31,12 +31,13 @@ test('decide: an account with no 5-hour limit is never out on it, and always has
   assert.deepEqual(decide({ ...base, usage: only }), { action: 'switch', to: 'B', why: 'five_hour' })
 })
 
-test('decide: the available account whose 5-hour window resets soonest', () => {
+test('decide: the available account whose 5-hour window resets soonest (weeks reset together)', () => {
   assert.deepEqual(decide(base), { action: 'switch', to: 'C', why: 'five_hour' })
   assert.deepEqual(decide({ ...base, activeUsage: { fiveHour: w(20), weekly: w(99.5) } }), { action: 'switch', to: 'C', why: 'weekly' })
   assert.deepEqual(decide({ ...base, activeUsage: { fiveHour: w(20), weekly: w(20) }, limitHit: true }), { action: 'switch', to: 'C', why: 'limit' })
   const errored = new Map([...base.usage, ['C', { error: 'Login expired — sign in again', fiveHour: null, weekly: null }]])
   assert.equal(decide({ ...base, usage: errored }).to, 'B', 'an account whose usage is unknown is not a target')
+  assert.equal(decide({ ...base, usage: new Map([...errored].filter(([k]) => k !== 'B')) }).to, 'pool')
 })
 
 test('decide: all exhausted goes to the pool, or nowhere without one', () => {
@@ -52,7 +53,7 @@ test('decide: guards — toggle off, on the pool, unsaved login, busy, cooldown,
   assert.equal(decide({ ...base, busy: true }).why, 'a switch is running')
   assert.equal(decide({ ...base, lastAutoAt: NOW - COOLDOWN_MS + 1000 }).why, 'cooldown')
   assert.equal(decide({ ...base, lastAutoAt: NOW - COOLDOWN_MS - 1 }).action, 'switch')
-  assert.equal(decide({ ...base, activeUsage: { fiveHour: w(98.9), weekly: w(10) } }).why, 'not out')
+  assert.equal(decide({ ...base, activeUsage: { fiveHour: w(94.9), weekly: w(10) } }).why, 'not out')
 })
 
 // ---------- the sampler, end to end against fakes ----------
@@ -115,15 +116,15 @@ test('projection: the binding window, and where auto-switch would go (cached rea
     assert.equal(calls(), n0, 'the projection makes no usage calls')
     // B and C not read yet: nothing known to switch to but the pool.
     assert.deepEqual(p.next, { to: 'pool', label: 'the pool' })
-    await t.req('GET', '/api/accounts/usage') // the menu reads every account: now the cache knows C resets soonest
+    await t.req('GET', '/api/accounts/usage') // the menu reads every account: now the cache knows B has the most weekly room
     p = (await t.req('GET', '/api/spend')).json.projection
-    assert.deepEqual(p.next, { to: UUID.C, label: 'c@example.com' })
+    assert.deepEqual(p.next, { to: UUID.B, label: 'b@example.com' })
     await t.req('POST', '/api/autoswitch', { enabled: false })
     assert.equal((await t.req('GET', '/api/spend')).json.projection.next, null, 'auto-switch off: no hint')
   } finally { await t.done() }
 })
 
-test('sampler: samples the active account only; when it runs out, switches to the soonest-reset account', async () => {
+test('sampler: samples the active account only; when it runs out, switches to an account with room', async () => {
   const t = await setup()
   try {
     const usageCalls = () => t.api.requests.filter((r) => r.path === '/api/oauth/usage').map((r) => r.account)
@@ -139,20 +140,20 @@ test('sampler: samples the active account only; when it runs out, switches to th
     const before = t.respawns()
     t.people.A.five = 99
     d = await t.server.sampler.sample()
-    assert.deepEqual([d.action, d.to, d.why], ['switch', UUID.C, 'five_hour'])
-    assert.equal(t.live(), t.creds.C, "C's login is now Claude's")
-    assert.equal(t.respawns() - before, 2, 'the running jobs were respawned (canary first)')
+    assert.deepEqual([d.action, d.to, d.why], ['switch', UUID.B, 'five_hour'])
+    assert.equal(t.live(), t.creds.B, "B's login is now Claude's")
+    assert.equal(t.respawns() - before, 0, 'an account-to-account switch restarts nothing')
     const log = fs.readFileSync(path.join(t.dataDir, 'account-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1)
-    assert.deepEqual([log.action, log.auto, log.account, log.restored], ['switch', true, UUID.C, false])
+    assert.deepEqual([log.action, log.auto, log.account, log.restored], ['switch', true, UUID.B, false])
     spend = (await t.req('GET', '/api/spend')).json
-    assert.deepEqual([spend.autoSwitch.last.to, spend.autoSwitch.last.toLabel, spend.autoSwitch.last.fromLabel, spend.autoSwitch.last.why, spend.autoSwitch.last.respawned], [UUID.C, 'c@example.com', 'a@example.com', 'five_hour', 2])
+    assert.deepEqual([spend.autoSwitch.last.to, spend.autoSwitch.last.toLabel, spend.autoSwitch.last.fromLabel, spend.autoSwitch.last.why, spend.autoSwitch.last.respawned], [UUID.B, 'b@example.com', 'a@example.com', 'five_hour', 0])
     assert.equal(fs.statSync(path.join(t.dataDir, 'autoswitch.json')).mode & 0o777, 0o600)
 
-    // C runs out too, inside the cooldown: nothing happens.
-    t.people.C.five = 100
+    // B runs out too, inside the cooldown: nothing happens.
+    t.people.B.five = 100
     d = await t.server.sampler.sample()
     assert.equal(d.why, 'cooldown')
-    assert.equal(t.live(), t.creds.C)
+    assert.equal(t.live(), t.creds.B)
   } finally { await t.done() }
 })
 
@@ -165,23 +166,23 @@ test('sampler: everything exhausted goes to the pool, and never back; the toggle
     assert.equal((await t.req('POST', '/api/autoswitch', { enabled: 'yes' })).status, 400)
     await t.req('POST', '/api/autoswitch', { enabled: true })
 
-    // A manual switch in progress: the sampler stands aside.
-    process.env.FAKE_RESPAWN_MS = '500'
-    const manual = t.req('POST', '/api/account/switch', { to: UUID.B, confirm: (await t.req('GET', '/api/account')).json.confirm })
-    await new Promise((r) => setTimeout(r, 100))
-    assert.equal((await t.server.sampler.sample()).why, 'a switch is running')
-    assert.equal((await manual).status, 200)
-    delete process.env.FAKE_RESPAWN_MS
-
-    // Now on B; every account is out: the pool.
-    t.people.B.five = 99.5
-    t.people.C.week = 97
+    // Every account is out: the pool, and never back.
+    t.people.A.five = 100; t.people.B.five = 99.5; t.people.C.week = 97
     const d = await t.server.sampler.sample()
     assert.deepEqual([d.action, d.to], ['switch', 'pool'])
     assert.equal((await t.req('GET', '/api/accounts')).json.active, 'pool')
     assert.equal((await t.req('GET', '/api/spend')).json.projection, null, 'no projection on the pool')
     t.people.B.five = 0
     assert.equal((await t.server.sampler.sample()).why, 'on the pool')
+
+    // A manual switch in progress: the sampler stands aside. Held open by a slow login check on B, which
+    // runs after the profile has left the pool (the sampler checks "on the pool" before "busy").
+    t.people.B.profileDelayMs = 800
+    const manual = t.req('POST', '/api/account/switch', { to: UUID.B, confirm: (await t.req('GET', '/api/account')).json.confirm })
+    for (let i = 0; i < 100 && (await t.req('GET', '/api/account')).json.profile !== 'personal'; i++) await new Promise((r) => setTimeout(r, 20))
+    t.people.B.five = 100
+    assert.equal((await t.server.sampler.sample()).why, 'a switch is running')
+    assert.equal((await manual).status, 200)
   } finally { await t.done() }
 })
 
@@ -254,10 +255,12 @@ test('network rule (every 10 s): off a quarantine account at once on the work Wi
   } finally { delete process.env.AGENTVILLE_NETWORK_ID; await t.done() }
 })
 
-test('decide: prefers the account whose weekly window resets soonest, then the 5-hour one', () => {
+test('decide: soonest weekly reset first only within 36 h, then the 5-hour one', () => {
   const usage = new Map([
     ['B', { fiveHour: w(10, 600e3), weekly: w(10, 7 * 86400e3) }], // 5-hour resets sooner, but its week resets in 7 days
     ['C', { fiveHour: w(10, 3 * 3600e3), weekly: w(30, 2 * 86400e3) }], // week resets in 2 days: use it first
   ])
-  assert.deepEqual(decide({ ...base, usage }), { action: 'switch', to: 'C', why: 'five_hour' })
+  assert.deepEqual(decide({ ...base, usage }), { action: 'switch', to: 'B', why: 'five_hour' }, 'neither week resets within 36 h: most weekly room')
+  const soon = new Map([['B', usage.get('B')], ['C', { fiveHour: w(10, 3 * 3600e3), weekly: w(30, 20 * 3600e3) }]])
+  assert.deepEqual(decide({ ...base, usage: soon }), { action: 'switch', to: 'C', why: 'five_hour' }, 'a week resetting within 36 h goes first')
 })

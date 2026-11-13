@@ -28,10 +28,11 @@ export function createAgentSheet(app, { descendants }) {
 
   function open(kind, a, from) {
     opener = from || null;
-    Object.assign(A, { kind, id: a.id, phase: kind === 'fork' ? 'form' : kind === 'stop' ? 'loading' : 'form', preview: null, result: null, err: '', name: '' });
+    Object.assign(A, { kind, id: a.id, phase: kind === 'stop' ? 'loading' : 'form', preview: null, result: null, err: '', name: '' });
     render();
     if (!sheet.open) sheet.showModal();
     if (kind === 'stop') review();
+    else if (kind === 'bypass') focus('[data-as="bypass"]');
     else focus(kind === 'fork' ? '#fork-name' : 'input[name="name"]');
   }
   const head = (title, lede) => `<header><div class="titlerow"><h2 id="as-title" tabindex="-1">${title}</h2></div>${lede ? `<p class="lede">${lede}</p>` : ''}</header>`;
@@ -43,6 +44,11 @@ export function createAgentSheet(app, { descendants }) {
     const name = esc(a.name);
     const cmd = A.preview ? `<pre class="cmd" id="act-cmd">${esc(A.preview.command)}</pre>` : '';
     const blocked = A.preview?.blocked ? `<p class="helper">${esc(A.preview.blocked)}.</p>` : '';
+    if (A.kind === 'bypass') {
+      sheet.innerHTML = `${head(`Switch ${name} to bypass permissions?`, `Restarts ${name} with permissions bypassed. It picks its conversation back up, but anything it's doing right now is interrupted.`)}<div class="body">${errHTML()}</div>
+        <footer><span class="spacer"></span><button class="ghost" type="button" data-as="close">Cancel</button><button class="primary danger" type="button" data-as="bypass" ${A.phase === 'running' ? 'disabled aria-busy="true"' : ''}>${A.phase === 'running' ? 'Switching…' : 'Switch'}</button></footer>`;
+      return;
+    }
     if (A.kind === 'stop') {
       if (A.phase === 'done') {
         sheet.innerHTML = `${head(`Stopped ${name}`)}<div class="body"><p class="msgstat ok" role="status"><b>Stopped</b> · Its conversation is kept: <code>claude attach ${esc(A.result.jobId || a.jobId)}</code> opens it again.</p></div>
@@ -135,6 +141,25 @@ export function createAgentSheet(app, { descendants }) {
     focus('[data-as="run"], [data-as="close"]');
   }
 
+  async function bypass() {
+    const a = agent();
+    if (!a || A.phase === 'running') return;
+    A.phase = 'running'; A.err = '';
+    render();
+    try {
+      await post(`/api/agents/${encodeURIComponent(a.id)}/bypass`, {});
+      sheet.close();
+      app.toast(`${a.name} now bypasses permissions`);
+      app.refresh();
+    } catch (e) {
+      A.phase = 'form';
+      A.err = e instanceof TypeError ? "The server isn't reachable." : e.message;
+      if (!A.kind) return;
+      render();
+      focus('[data-as="bypass"]');
+    }
+  }
+
   sheet.addEventListener('click', e => {
     const t = e.target.closest('[data-as]');
     if (!t) return;
@@ -142,6 +167,7 @@ export function createAgentSheet(app, { descendants }) {
       case 'close': return sheet.close();
       case 'review': return review();
       case 'run': return runAct();
+      case 'bypass': return bypass();
       case 'goto': { const id = t.dataset.id; sheet.close(); return app.select(id, { reveal: true }); }
     }
   });
