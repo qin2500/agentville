@@ -1,6 +1,7 @@
 // Dock walkers (owner, 2026-11-11: "the NPCs in the village physically walk all the way to the port").
-// Crates reach the ships on foot: villagers walk out of town along the roads to the pier, down the
-// pier to their ship, set a crate down, and walk back. Who walks keeps each agent's bucket readable:
+// Crates reach the ships on foot: villagers walk out of town along the roads to the harbour (from
+// tier 2, by way of the crate yard to pick a crate up), along the quay to their ship's pier, down the
+// pier to the ship, set the crate down, and walk back. Who walks keeps each agent's bucket readable:
 //   - a RESTING agent with PRs loading is the porter (the work is done; it is shipping it): from its PR
 //     building (or home) to the dock and back, one ship per trip, rotating when it has several;
 //   - building agents keep hammering, waiting and stalled ones stay home so their badges show; their
@@ -15,6 +16,7 @@ import { folds } from './important.js';
 export const CAP = 6;          // walkers out at once
 const SPEED = 20;              // world px/s
 const DROP = 1.2;              // s, setting a crate down on deck
+const PICK = 0.9;              // s, picking a crate up in the yard
 const REST = [5, 4];           // s at home between trips: base + up to this much more
 const OFF_ROAD = 6, TURN = 0.6; // route costs (a road tile is 1)
 const rnd = s => (hash(s) % 10000) / 10000;
@@ -64,7 +66,7 @@ export function roadRoute(W, from, to) {
 }
 
 /** A polyline (world px) with its running lengths; `at(s)` is the point s px along and the heading there. */
-function line(pts) {
+export function line(pts) {
   const p = pts.filter((q, i) => !i || q[0] !== pts[i - 1][0] || q[1] !== pts[i - 1][1]), acc = [0];
   for (let i = 1; i < p.length; i++) acc.push(acc[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]));
   const len = acc[acc.length - 1];
@@ -81,10 +83,10 @@ function line(pts) {
 
 // ---------- who walks, and where they are ----------
 /**
- * createWalkers() → step(env) each frame. env: { W, G (dockGeom), agents (the placed villagers Map),
- * ships: [{ p, berth }] loading at a berth (oldest first), t (s), still }. Returns the walkers out of
- * doors this frame: { id, agentId?, agent? (its agent record), href, look, x, y (world px feet), onPier, dx, dy (heading),
- * carry, moving }.
+ * createWalkers() → step(env) each frame. env: { W, G (harbourGeom), agents (the placed villagers Map),
+ * ships: [{ p, berth (its slot key), slot, cy (the ship's middle) }] loading at a berth (oldest first), t (s), still }.
+ * Returns the walkers out of doors this frame: { id, agentId?, agent? (its agent record), href, look, x, y (world px feet),
+ * z (the deck or quay it stands on), dx, dy (heading), carry, moving }.
  */
 export function createWalkers() {
   const walkers = new Map(); // id → state
@@ -101,12 +103,21 @@ export function createWalkers() {
     const x = SQUARE.x + (SQUARE.w >> 1), y = SQUARE.y + SQUARE.h - 1;
     return { pt: [(x + 0.5) * T, (y + 0.5) * T], tile: [x, y] };
   }
-  // The whole trip: origin → roads → the pier foot → down its side of the pier to the ship's middle.
-  function tripLine(W, G, origin, berth) {
-    const D = W.dock, b = G.berths[berth], lane = b.side < 0 ? G.X0 + 9 : G.X1 - 9;
+  // The whole trip: origin → roads → (the crate yard, where it picks its crate up; `sp` is how far along
+  // that is) → along the quay → down its side of the pier to the ship's middle. Tier 1 has no yard or
+  // quay: it carries the crate from home, down the jetty from its foot.
+  function tripLine(W, G, origin, ship) {
+    const D = W.dock, lane = ship && G.laneById.get(ship.slot.lane), C = ([x, y]) => [(x + 0.5) * T, (y + 0.5) * T];
+    if (!lane) return null;
+    if (G.yard) {
+      const tiles = roadRoute(W, origin.tile, G.yardTile);
+      if (!tiles.length) return null;
+      const head = [origin.pt, ...tiles.map(C), G.yardPick];
+      return { ...line([...head, [G.yardPick[0], G.QL], [lane.walk, G.QL], [lane.walk, ship.cy]]), sp: line(head).len };
+    }
     const tiles = roadRoute(W, origin.tile, [D.cx, D.foot]);
     if (!tiles.length) return null;
-    return line([origin.pt, ...tiles.map(([x, y]) => [(x + 0.5) * T, (y + 0.5) * T]), [lane, D.foot * T + 8], [lane, b.y + 18]]);
+    return { ...line([origin.pt, ...tiles.map(C), [lane.walk, D.foot * T + 8], [lane.walk, ship.cy]]), sp: 0 };
   }
 
   function step({ W, G, agents, ships, t, still }) {
@@ -138,7 +149,7 @@ export function createWalkers() {
       });
     }
     // Move everyone.
-    const berthOf = new Map(ships.map(s => [s.p.href, s.berth]));
+    const berthOf = new Map(ships.map(s => [s.p.href, s.berth])), shipOf = new Map(ships.map(s => [s.p.href, s]));
     const out = [];
     for (const [id, w] of walkers) {
       const atBerth = w.href != null && berthOf.get(w.href) === w.berth;
@@ -148,12 +159,16 @@ export function createWalkers() {
         if (w.wait > 0) continue;
         const p = w.ships[w.n++ % w.ships.length]; // one ship per trip, in turn
         w.origin = originOf(W, w.v, p);
-        w.line = tripLine(W, G, w.origin, berthOf.get(p.href));
+        w.line = tripLine(W, G, w.origin, shipOf.get(p.href));
         if (!w.line) { w.wait = 10; continue; } // no way there (shouldn't happen): try again later
-        Object.assign(w, { state: 'out', s: 0, carry: true, href: p.href, berth: berthOf.get(p.href) });
+        Object.assign(w, { state: 'out', s: 0, carry: !w.line.sp, picked: !w.line.sp, href: p.href, berth: berthOf.get(p.href) });
       } else if (w.state === 'out') {
         if (!atBerth) { w.carry = false; w.state = 'back'; } // its ship sailed: drop the crate, head home
+        else if (!w.picked && w.s + SPEED * dt >= w.line.sp) { w.s = w.line.sp; w.state = 'pick'; w.wait = PICK; }
         else if ((w.s += SPEED * dt) >= w.line.len) { w.s = w.line.len; w.state = 'drop'; w.wait = DROP; }
+      } else if (w.state === 'pick') {
+        if (!atBerth) { w.state = 'back'; }
+        else if ((w.wait -= dt) <= 0) { w.picked = true; w.carry = true; w.state = 'out'; }
       } else if (w.state === 'drop') {
         if ((w.wait -= dt) <= 0 || !atBerth) { w.carry = false; w.state = 'back'; }
       } else if (w.state === 'back' && (w.s -= SPEED * dt) <= 0) {
@@ -161,10 +176,10 @@ export function createWalkers() {
         continue;
       }
       if (w.state === 'home') continue;
-      const q = w.line.at(w.s), back = w.state === 'back', D = W.dock;
+      const q = w.line.at(w.s), back = w.state === 'back';
       out.push({
         id, agentId: w.v?.a.id ?? null, agent: w.v?.a ?? null, href: w.href, look: w.look, x: q.x, y: q.y, dx: back ? -q.dx : q.dx, dy: back ? -q.dy : q.dy,
-        onPier: q.y >= D.foot * T + 2 && q.x >= G.X0 && q.x <= G.X1, carry: w.carry, moving: w.state !== 'drop',
+        z: G.zAt(q.x, q.y), carry: w.carry, moving: w.state !== 'drop' && w.state !== 'pick',
       });
     }
     return out;
