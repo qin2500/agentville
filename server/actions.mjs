@@ -22,7 +22,8 @@ const SUB_KINDS = ['subagent', 'teammate', 'thread']
 /** Allowlists. '' means "leave it to Claude Code's default" (the flag is left out). */
 export const MODELS = ['', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'fable']
 export const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
-// bypassPermissions is deliberately not offered: it can't be started from a web page here.
+// bypassPermissions is deliberately not offered for new launches from the web form. A running
+// background job can be switched to it explicitly, one at a time: POST /api/agents/<id>/bypass (permmode.mjs).
 export const MODES = ['', 'acceptEdits', 'auto', 'plan', 'manual', 'dontAsk']
 export const PROMPT_MAX = 8000
 export const NAME_MAX = 80
