@@ -23,19 +23,30 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (data flow, bucket rules) and
 | `server/claude-code.mjs`, `server/codex.mjs` | Harness adapters: files on disk become per-agent facts. |
 | `server/classify.mjs` | Pure: facts to buckets, reasons, boss/lead/sub tree. |
 | `server/accounts.mjs`, `account.mjs`, `autoswitch.mjs` | Claude account switcher. |
+| `server/permmode.mjs` | Switches one Claude Code background job to bypass-permissions mode on an explicit click (backs up and rewrites its respawn flags). |
+| `server/prpoll.mjs` | Live PR state (open, merged, checks) from one batched `gh` GraphQL query per interval; overrides the PR cache. |
+| `server/tasks.mjs`, `loops.mjs` | `tasks.json` (follow-up Tasks list) and `loops.json` (seen, done and snooze times per agent for the "For you" strip). |
+| `server/helper.mjs`, `task-names.mjs` | The Haiku helper (off by default; see Data handling) and the task naming job that uses it. |
 | `server/terminal.mjs`, `pty.mjs`, `term-screen.mjs` | External and built-in terminals. |
 | `server/dock.mjs`, `projects.mjs`, `prstatus.mjs` | Village data: PR buildings, ships, per-project history. |
 | `server/fleet.mjs`, `restore.mjs`, `update.mjs`, `models.mjs`, `spend.mjs` | Fleet messages, restore after crash, self-update, Models view, token spend. |
 | `web/src/main.js` | Page entry. |
 | `web/src/village.js`, `world.js`, `iso.js` | Village rendering, world layout and persisted plan, isometric projection. |
-| `web/src/dock.js`, `dock-art.js`, `dock-walk.js`, `agentsheet.js` | Dock scene, code-drawn art, villager walking, sprites. |
+| `web/src/city-plan.js`, `styles-pool.js` | Pure planner that grows a project into a hamlet, village, town or city on a tile plot, and the curated pool of per-project architecture, street and folk styles. |
+| `web/src/ground-art.js`, `props-art.js`, `ambient.js` | Code-drawn ground tiles, procedural props, and ambient life (strollers, vendors, birds, sails). |
+| `web/src/city-demo.js` | `?citydemo=1`: a showcase town of made-up projects, one per growth tier. |
+| `web/src/dock.js`, `dock-art.js`, `dock-walk.js`, `agentsheet.js` | Dock scene, code-drawn art, villagers walking crates to the pier, sprites. |
+| `web/src/bubbles.js` | Button that shows or hides the labels and status bubbles on the village canvas. |
+| `web/src/tasks-model.js`, `loops-model.js` | Pure display models for the Team view Tasks list and the "For you" strip. |
 | `web/src/panel.js`, `tree.js`, `models.js`, `ctxmenu.js`, `term.js`, `mux-model.js` | Side panel, Tree view, Models view, agent menu, terminal and splits. |
 | `web/src/dev/mock.js` | Dev-only fake API, loaded with `?mock` (`?mock=big`, `empty`, `down`). |
+| `web/src/dev/art-sheet.js` | Dev-only sprite sheet (`?artsheet`, with `?mock`): every building look and prop drawn in isolation. |
 | `desktop/` | Electron shell (`main.cjs`, `build.mjs`). |
 | `test/` | Unit tests (`*.test.mjs`) and `test/fixtures/`. |
 | `e2e/`, `e2e-app/` | Playwright specs for the page and for the desktop app. |
 | `tools/icon/` | Pixel-art app icon drawn in code. |
-| `docs/` | Architecture and design notes. |
+| `tools/artpass/` | Art-audit capture harness: headless close-up screenshots of the village (mock data only). |
+| `docs/` | Architecture and design notes; `docs/art-audit.md` is the village art audit. |
 
 ## Commands
 
@@ -115,16 +126,17 @@ runs headless by default; keep it that way. Desktop tests set `AGENTVILLE_HEADLE
   in `test/fixtures/make-home.mjs`).
 - Server routes accept loopback requests with a matching Host/Origin only (`server/local-request.mjs`).
   The page never chooses what command runs; the server does.
-- Personal or opt-in features default to off in code (for example anything that calls a model, such as
-  a Haiku helper). Turn on only through an explicit setting.
+- Personal or opt-in features default to off in code. The Haiku helper (`server/helper.mjs`) is the example:
+  it is off unless `helper.json` in the data directory says `{"enabled": true}`. Turn such features on only
+  through an explicit setting.
 
 ## The village is a game
 
 - Fun over utility. A tidy table is the panel's job; the village should feel alive.
 - Keep villagers visible: no hiding, overlap that buries them, or off-screen parking.
 - Layouts must be stable across polls and visits. Positions are planned once and persisted
-  (`web/src/world.js` stores its plan under a versioned `localStorage` key, currently `va.world5`).
-  When the plan format changes, bump the store key so old saved plans are not misread.
+  (`web/src/world.js` stores its plan under a versioned `localStorage` key, the `va.worldN` key in that
+  file). When the plan format changes, bump the key so old saved plans are not misread.
 - Original art only. Sprites and buildings are drawn in code (`agentsheet.js`, `dock-art.js`,
   `tools/icon/`). Do not copy or trace assets from existing games.
 - Rendering has a budget (see DESIGN.md, "Rendering budget"): keep hundreds of agents smooth.
@@ -140,5 +152,6 @@ Planned, nothing below exists in the repo today:
 
 Do not invent APIs or create these directories ahead of the engine. Until it lands, coordinate with the
 other owner before large changes to the current village files (`web/src/world.js`, `iso.js`, `village.js`,
-`dock.js`, `dock-art.js`, `dock-walk.js`, `agentsheet.js`). Once the engine lands, its documentation
+`city-plan.js`, `styles-pool.js`, `dock.js`, `dock-art.js`, `dock-walk.js`, `agentsheet.js`) and to the
+account, bypass and autoswitch server modules (`server/account.mjs`, `accounts.mjs`, `autoswitch.mjs`, `permmode.mjs`). Once the engine lands, its documentation
 will be under `docs/`.
