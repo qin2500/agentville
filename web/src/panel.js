@@ -124,7 +124,7 @@ export function createPanel(app) {
       btn._bucket = a.bucket;
       btn._sig = sig;
     }
-    btn.className = `row ${a.role} b-${a.bucket}${isError(a) ? ' sev-error' : isPrompt(a) ? ' sev-prompt' : ''}${a.hidden ? ' is-hidden' : ''}${ctx ? ' ctx' : ''}${btn.classList.contains('flash') ? ' flash' : ''}`;
+    btn.className = `row ${a.role} b-${a.bucket}${isError(a) ? ' sev-error' : isPrompt(a) ? ' sev-prompt' : ''}${a.hidden ? ' is-hidden' : ''}${ctx ? ' ctx' : ''}${agentColor(a) ? ' has-color' : ''}${btn.classList.contains('flash') ? ' flash' : ''}`;
     btn.style.setProperty('--depth', depth);
     btn.style.setProperty('--agent-color', agentColor(a));
     if (S.selected === a.id) btn.setAttribute('aria-current', 'true'); else btn.removeAttribute('aria-current');
