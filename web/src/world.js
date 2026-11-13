@@ -1,7 +1,7 @@
 // World v3 (docs/ARCHITECTURE.md, "The village"): one compact town of project neighbourhoods around a central square, drawn
 // with the v2 value structure (muted terrain, toned buildings, outlined agents, loud badges). Two halves:
 //   layout()        pure placement: plots, homes, PR sites, streets, the land and the forest ring.
-//                   Positions persist in localStorage (`va.world7`) and never move. Needs no images.
+//                   Positions persist in localStorage (`va.world8`) and never move. Needs no images.
 //   createRenderer  the sprite renderer (Ninja Adventure, CC0). village.js falls back to its own
 //                   procedural drawing of the same layout if the sheets don't load.
 // "Growing towns" (va-city-spec): each project's plot is a planned settlement (city-plan.js) whose
@@ -130,7 +130,7 @@ export function itemBox(it) {
   const b = isoItem(it, false);
   return [b.ox + b.box[0], b.oy + b.box[1], b.box[2], b.box[3]];
 }
-const KEY = 'va.world7'; // va.world6 was v1 of the planned settlements (walls, tight rows): v2 re-plans once
+const KEY = 'va.world8'; // va.world7 was v2 (tighter spacing): v3 spreads buildings out, so plots re-plan once
 
 export const hash = s => { let h = 2166136261; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
 const rnd = s => (hash(s) % 10000) / 10000;
