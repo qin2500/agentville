@@ -39,7 +39,8 @@ export function createVillage(app) {
 
   // ?dockdemo=1: fake PRs at the dock for the whole page (the click panel reads S.dock too); the
   // server's own S.dock is ignored meanwhile.
-  if (dockDemo()) Object.defineProperty(S, 'dock', { configurable: true, enumerable: true, get: () => demoDock(), set() {} });
+  // The demo's PRs belong to resting agents when there are some, so their villagers walk crates down too.
+  if (dockDemo()) Object.defineProperty(S, 'dock', { configurable: true, enumerable: true, get: () => demoDock(Date.now(), (S.agents || []).filter(a => a.bucket === 'resting' && !a.hidden)), set() {} });
 
   // ---------- model ----------
   function build() {
@@ -365,7 +366,7 @@ export function createVillage(app) {
     const [x, y] = toWorld(e);
     for (let i = hits.length - 1; i >= 0; i--) { const h = hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) return { id: h.id }; }
     const dk = !W ? null : artState === 'ready' ? renderer.dockHit(x, y) : simpleDock.find(h => x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h);
-    if (dk) return { dock: dk.key };
+    if (dk) return dk.key.startsWith('agent:') ? { id: dk.key.slice(6) } : { dock: dk.key }; // a walking villager is that agent
     for (const h of houseHits) if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) return { id: h.ids[0], house: true };
     if (zoom < 1 && W) { // Map: a click on a village zooms into it
       const [wx, wy] = isoInv(x, y);
