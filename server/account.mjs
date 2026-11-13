@@ -2,14 +2,23 @@
  * Switch every agent between the shared "pool" gateway and the user's Claude accounts.
  *
  * The pool lives in `<claude home>/settings.json` → `env` (gateway URL, token, model aliases).
- * Switching to personal moves those keys into `<data>/pool-profile.json` (0600), strips the
- * gateway-only `cc/` model alias from each running background job's saved respawn flags and
- * provider env, then `claude respawn`s the jobs one at a time; switching back restores exactly
- * what was stashed. Switching between saved accounts (server/accounts.mjs) swaps the login in
- * Claude's credential store and respawns the running jobs; settings don't change. Every edit is
- * preceded by a backup set (including Claude's credential), the first respawn is a canary that
- * rolls everything back on failure, and no env value or token is ever returned or logged.
- * Interactive sessions are never touched: they are listed for the user to restart.
+ * Switching to personal moves those keys into `<data>/pool-profile.json` (0600) and strips the
+ * gateway-only `cc/` model alias from each background job's saved respawn flags and provider env;
+ * switching back restores exactly what was stashed. Either way the running jobs must be restarted
+ * to pick the new settings up, and each one is, but only at a turn boundary: a busy job is polled
+ * until it is idle (up to 10 minutes), then left "restart pending" rather than killed mid tool call.
+ *
+ * Switching between saved accounts (server/accounts.mjs) swaps the login in Claude's credential
+ * store and restarts nothing: a running job reads the swapped login on its next request. The swap
+ * is checked directly (the live login read back and confirmed against the API) and rolled back if
+ * it is another account or missing; a check that can't decide (expired token, no network) leaves
+ * the switch in place, logged as unverified. Only a job that still carries leftover pool settings
+ * is changed, and only that job is restarted (when idle).
+ *
+ * Every edit is preceded by a backup set (including Claude's credential; newest 10 kept). A
+ * rollback or Undo puts back only what that switch changed, and for job files only the
+ * `respawnFlags` and `providerEnv` fields. No env value, token, flag value or prompt is ever
+ * returned or logged. Interactive sessions are never touched: they are listed for the user.
  */
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -30,9 +39,11 @@ const TERMINAL = ['done', 'stopped', 'failed']
 const HOME = os.homedir()
 const CLAUDE_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.claude', 'local'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
 const RESPAWN_MS = 120_000
-/** How long the canary gets to come back, then to show its first reply (tests shorten both). */
-const verifyMs = () => Number(process.env.AGENTVILLE_ACCOUNT_VERIFY_MS) || 60_000
-const replyMs = () => Number(process.env.AGENTVILLE_ACCOUNT_REPLY_MS) || 20_000
+/** How long a busy job is waited for before it is left "restart pending", and how often it is polled. */
+const idleMaxMs = () => Number(process.env.AGENTVILLE_ACCOUNT_IDLE_MAX_MS) || 600_000
+const pollMs = () => Number(process.env.AGENTVILLE_ACCOUNT_POLL_MS) || 3_000
+/** Backup sets kept in `<data>/account-backups`. */
+export const KEEP_BACKUPS = 10
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const fail = (status, message) => Object.assign(new Error(message), { status })
 const testing = () => process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
@@ -69,6 +80,22 @@ const modelOf = (flags) => {
 export const stripPoolModel = (flags) => (flags || []).map((f, i, all) =>
   all[i - 1] === '--model' && f.startsWith('cc/') ? f.slice(3) : f.startsWith('--model=cc/') ? `--model=${f.slice(11)}` : f)
 
+/**
+ * `flags` with its `--model` value (either form, its own form kept) set to the one in `saved`.
+ * Every other argument is kept; flags without a model, or a `saved` without one, are left as they are.
+ */
+export function withModel(flags, saved) {
+  const has = (saved || []).includes('--model') || (saved || []).some((f) => typeof f === 'string' && f.startsWith('--model='))
+  if (!has) return flags
+  const want = modelOf(saved)
+  const out = [...flags]
+  const i = out.indexOf('--model')
+  if (i >= 0) { if (i + 1 < out.length) out[i + 1] = want; return out }
+  const j = out.findIndex((f) => typeof f === 'string' && f.startsWith('--model='))
+  if (j >= 0) out[j] = `--model=${want}`
+  return out
+}
+
 /** A registry entry for job `short` (or its sessions) written after `since` whose process is alive. */
 export async function liveSince(home, short, state, since) {
   const ids = new Set([state.sessionId, state.resumeSessionId].filter(Boolean))
@@ -86,8 +113,87 @@ export async function liveSince(home, short, state, since) {
   return false
 }
 
-/** `network`: createNetwork(), so a quarantine account is never switched to on the work Wi-Fi. */
-export function createAccount({ dataDir, claudeHome, onReading, network }) {
+/** Registry statuses that mean the session is mid turn or sitting in a dialog (claude-code.mjs). */
+// 'shell': waiting on a background shell; the turn resumes when it finishes, so a respawn would cut it off.
+const NOT_IDLE = new Set(['busy', 'waiting', 'needs_user', 'blocked', 'needs_trust', 'shell'])
+
+/**
+ * Is job `short` at a turn boundary? 'idle' | 'busy' | 'gone' (no live process, or no job file).
+ * Busy when the scheduler says the job is active (`tempo: 'active'`) or a live registry entry for it
+ * says busy or is in a dialog; a respawn then would cut a tool call off. Only those fields are read.
+ */
+export async function jobActivity(home, short) {
+  let state
+  try { state = JSON.parse(await fsp.readFile(path.join(home, 'jobs', short, 'state.json'), 'utf8')) } catch { return 'gone' }
+  const ids = new Set([state?.sessionId, state?.resumeSessionId].filter(Boolean))
+  let live = false
+  let busy = state?.tempo === 'active'
+  const dir = path.join(home, 'sessions')
+  for (const f of await fsp.readdir(dir).catch(() => [])) {
+    if (!f.endsWith('.json')) continue
+    let s
+    try { s = JSON.parse(await fsp.readFile(path.join(dir, f), 'utf8')) } catch { continue }
+    if (!s?.pid || (s.jobId !== short && !ids.has(s.sessionId))) continue
+    try { process.kill(s.pid, 0) } catch (e) { if (e.code !== 'EPERM') continue }
+    live = true
+    if (NOT_IDLE.has(s.status)) busy = true
+  }
+  if (!live) return 'gone'
+  return busy ? 'busy' : 'idle'
+}
+
+/**
+ * Poll `check()` ('idle' | 'busy' | 'gone') every `pollMs` until it isn't 'busy' or `maxMs` passes.
+ * -> `{ state: 'idle' | 'gone' | 'timeout', waited }` (`waited`: it was busy at least once).
+ */
+export async function waitForIdle(check, { maxMs, pollMs: every, now = Date.now, sleep: nap = sleep }) {
+  const until = now() + maxMs
+  let waited = false
+  for (;;) {
+    const st = await check()
+    if (st !== 'busy') return { state: st === 'gone' ? 'gone' : 'idle', waited }
+    if (now() >= until) return { state: 'timeout', waited: true }
+    waited = true
+    await nap(every)
+  }
+}
+
+/**
+ * The first non-empty line of a command's stderr, safe to log: flag values, quoted text and
+ * anything token-like (long runs of key characters) are replaced with "…", and it is kept short.
+ */
+export function stderrLine(text) {
+  const line = String(text || '').split('\n').map((l) => l.trim()).find(Boolean) || ''
+  return line
+    .replace(/(["'`]).*?\1/g, '"…"')
+    .replace(/(--?[A-Za-z][\w-]*)(=|\s+)(?!-)\S+/g, '$1 …')
+    .replace(/[A-Za-z0-9_\-+/=.:]{24,}/g, '…')
+    .replace(/\b(sk-|ant-|Bearer\s)\S*/gi, '…')
+    .slice(0, 160)
+}
+
+/** Keep `why` (from autoswitch) to plain JSON, bounded, for the audit log. */
+function plainWhy(why) {
+  if (!why || typeof why !== 'object') return undefined
+  try {
+    const text = JSON.stringify(why)
+    return text.length <= 4000 ? JSON.parse(text) : { truncated: true, reason: typeof why.reason === 'string' ? why.reason.slice(0, 200) : undefined }
+  } catch { return undefined }
+}
+
+/**
+ * `network`: createNetwork(), so a quarantine account is never switched to on the work Wi-Fi.
+ * `permBusy()`: true while a permission-mode switch (permmode.mjs) runs; a switch or Undo is then
+ * refused. `permBusyJob(short)`: true for the job that switch is working on; its queued restart waits.
+ * Tests may inject `accounts` (a fake of createAccounts()), `run`, `bin`, `blocked`, `activity`
+ * (short -> 'idle' | 'busy' | 'gone'), `now`, `sleep`, `idleMs` and `everyMs`.
+ */
+export function createAccount({
+  dataDir, claudeHome, onReading, network,
+  accounts: injectedAccounts, run: runCmd = run, bin: findBin = claudeBin, blocked: isBlocked = switchingBlocked,
+  activity, now: clock = Date.now, sleep: nap = sleep, idleMs = idleMaxMs, everyMs = pollMs,
+  permBusy = () => false, permBusyJob = () => false,
+}) {
   const stashFile = path.join(dataDir, 'pool-profile.json')
   const backupRoot = path.join(dataDir, 'account-backups')
   const plans = new Map()
@@ -102,10 +208,11 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     busy = true
     try { return await fn() } finally { busy = false }
   }
-  const accounts = createAccounts({
+  const accounts = injectedAccounts || createAccounts({
     dataDir, claudeHome, exclusive, onReading,
     poolState: async () => ({ active: profileOf(await readSettings()) === 'pool', available: fs.existsSync(stashFile) }),
   })
+  const jobState = activity || ((short) => jobActivity(claudeHome(), short))
 
   async function readSettings() {
     const text = await fsp.readFile(settingsFile(), 'utf8').catch(() => '{}\n')
@@ -166,9 +273,9 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
    * and the canary verification is what protects the switch.
    */
   async function personalReady(profile) {
-    const bin = await claudeBin()
+    const bin = await findBin()
     if (!bin) return false
-    const r = await run(bin, ['auth', 'status', '--json'], 15_000)
+    const r = await runCmd(bin, ['auth', 'status', '--json'], 15_000)
     let s = {}
     try { s = JSON.parse(r.stdout) } catch { /* not JSON */ }
     if (r.code === 0 && s.loggedIn === true && s.authMethod === 'claude.ai') return true
@@ -185,13 +292,13 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
   async function storedLogin() {
     if (fs.existsSync(path.join(claudeHome(), '.credentials.json'))) return true
     if (process.platform !== 'darwin' || testing()) return false
-    const r = await run('/usr/bin/security', ['find-generic-password', '-s', 'Claude Code-credentials'], 5_000)
+    const r = await runCmd('/usr/bin/security', ['find-generic-password', '-s', 'Claude Code-credentials'], 5_000)
     return r.code === 0
   }
 
   /** What a switch would do. `agents` (from the scan) supply names, liveness and interactive sessions. */
   async function status(agents) {
-    const blocked = switchingBlocked()
+    const blocked = isBlocked()
     const settings = await readSettings()
     const byJob = new Map(agents.filter((a) => a.jobId).map((a) => [a.jobId, a]))
     // Only jobs whose process is running now are restarted; dormant ones stay dormant.
@@ -212,10 +319,17 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
       blocked,
       plan,
       confirm,
+      // Jobs a switch is still waiting on to reach a turn boundary, or gave up on (restart by hand).
+      restarts: [...restartQueue.values()].map((q) => ({ id: q.short, status: 'waiting' })).concat(pendingRestarts),
     }
   }
 
-  /** `cred`: Claude's live credential now `{ text, id }`, kept 0600 so a rollback or Undo restores it. */
+  /**
+   * `cred`: Claude's live credential now `{ text, id }`, kept 0600 so a rollback or Undo restores it.
+   * Returns the set's folder and `touch(name)`, which records in its meta that the switch is about
+   * to change that file (a rollback or Undo puts back only those). Older sets beyond the newest
+   * KEEP_BACKUPS are removed.
+   */
   async function backup(jobs, reason, cred = {}) {
     const dir = path.join(backupRoot, new Date().toISOString().replace(/[:.]/g, '-'))
     await fsp.mkdir(path.join(dir, 'jobs'), { recursive: true, mode: 0o700 })
@@ -236,24 +350,100 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
       await fsp.writeFile(path.join(dir, 'oauth-account.json'), JSON.stringify(await accounts.readOauthAccount()), { mode: 0o600 })
       files.push('credential.json', 'oauth-account.json')
     }
-    await fsp.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ at: Date.now(), reason, files, credentialAccount: cred.id || null }) + '\n', { mode: 0o600 })
-    return dir
+    const meta = { at: Date.now(), reason, files, changed: [], credentialAccount: cred.id || null }
+    const writeMeta = () => fsp.writeFile(path.join(dir, 'meta.json'), JSON.stringify(meta) + '\n', { mode: 0o600 })
+    await writeMeta()
+    await prune()
+    /** Record (before writing it) that this switch changes `name` ('settings.json', 'jobs/<short>.json', …). */
+    const touch = async (...names) => {
+      const add = names.filter((n) => !meta.changed.includes(n))
+      if (!add.length) return
+      meta.changed.push(...add)
+      await writeMeta()
+    }
+    return { dir, touch }
   }
 
-  /** Put every file in a backup set back exactly; a stash that didn't exist then is removed. */
+  /** Does backup set `name` hold pool gateway settings (its settings.json env has ANTHROPIC_BASE_URL)? */
+  async function holdsPool(name) {
+    try {
+      const env = JSON.parse(await fsp.readFile(path.join(backupRoot, name, 'settings.json'), 'utf8'))?.env
+      return Boolean(env && typeof env === 'object' && Object.hasOwn(env, 'ANTHROPIC_BASE_URL'))
+    } catch { return false }
+  }
+
+  /**
+   * Keep the newest KEEP_BACKUPS sets. While there is no pool stash, the newest set holding the pool
+   * gateway settings is never removed: it may be the only copy of them left.
+   */
+  async function prune() {
+    const sets = (await fsp.readdir(backupRoot).catch(() => [])).sort()
+    const old = sets.slice(0, Math.max(0, sets.length - KEEP_BACKUPS))
+    if (!old.length) return
+    let keep = null
+    if (!fs.existsSync(stashFile)) {
+      for (const name of [...sets].reverse()) if (await holdsPool(name)) { keep = name; break }
+    }
+    for (const name of old) {
+      if (name === keep) continue
+      await fsp.rm(path.join(backupRoot, name), { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  /**
+   * Put back what a backup set's switch changed (`meta.changed`; a set from before that was
+   * recorded puts back everything it holds). Settings, stash and credential are restored as they
+   * were; a stash that didn't exist then is removed. A job file is never overwritten whole: Claude
+   * rewrites it as the job runs, so only `respawnFlags` and `providerEnv` are put back into the
+   * current file (read-modify-write).
+   */
   async function restore(dir) {
     const meta = JSON.parse(await fsp.readFile(path.join(dir, 'meta.json'), 'utf8'))
-    for (const f of meta.files) {
+    const scope = Array.isArray(meta.changed) ? meta.changed : [...meta.files, 'pool-profile.json']
+    for (const f of scope) {
+      const has = meta.files.includes(f)
+      if (f === 'pool-profile.json') {
+        if (has) await writeAtomic(stashFile, await fsp.readFile(path.join(dir, f), 'utf8'), 0o600)
+        else await fsp.rm(stashFile, { force: true })
+        continue
+      }
+      if (!has) continue
       const text = await fsp.readFile(path.join(dir, f), 'utf8')
       if (f === 'credential.json') { await accounts.restoreLive(text, meta.credentialAccount); continue }
       if (f === 'oauth-account.json') { await accounts.writeOauthAccount(JSON.parse(text)); continue }
-      const target = f === 'settings.json' ? settingsFile()
-        : f === 'pool-profile.json' ? stashFile
-        : path.join(jobsDir(), path.basename(f, '.json'), 'state.json')
-      await writeAtomic(target, text, f === 'pool-profile.json' ? 0o600 : undefined)
+      if (f === 'settings.json') { await writeAtomic(settingsFile(), text); continue }
+      if (f.startsWith('jobs/')) await restoreJobFields(path.join(jobsDir(), path.basename(f, '.json'), 'state.json'), JSON.parse(text))
     }
-    if (!meta.files.includes('pool-profile.json')) await fsp.rm(stashFile, { force: true })
     return meta
+  }
+
+  /**
+   * Put back into the job file as it is now only what a switch changes there: the `--model` value
+   * of `respawnFlags` and the pool keys of `providerEnv`, from `saved`. Anything else changed since
+   * (a later bypass-permissions switch, another env key) is kept.
+   */
+  async function restoreJobFields(file, saved) {
+    const text = await fsp.readFile(file, 'utf8').catch(() => null)
+    if (text === null) return // the job is gone: nothing to put back
+    const state = JSON.parse(text)
+    if (Array.isArray(state.respawnFlags)) state.respawnFlags = withModel(state.respawnFlags, saved.respawnFlags)
+    else if (Array.isArray(saved.respawnFlags)) state.respawnFlags = saved.respawnFlags
+    const was = saved.providerEnv && typeof saved.providerEnv === 'object' ? saved.providerEnv : {}
+    const cur = state.providerEnv && typeof state.providerEnv === 'object' ? state.providerEnv : null
+    if (cur || POOL_KEYS.some((k) => Object.hasOwn(was, k))) {
+      // The saved key order first (so an untouched round trip is byte-identical), then keys added since.
+      const now = cur || {}
+      const pool = (k) => POOL_KEYS.includes(k)
+      const env = {}
+      for (const k of Object.keys(was)) {
+        if (pool(k)) env[k] = was[k]
+        else if (Object.hasOwn(now, k)) env[k] = now[k]
+      }
+      for (const [k, v] of Object.entries(now)) if (!pool(k) && !Object.hasOwn(env, k)) env[k] = v
+      state.providerEnv = env
+    }
+    const out = serializeLike(text, state)
+    if (out !== text) await writeAtomic(file, out)
   }
 
   // When Claude's account last changed here (a switch that wasn't rolled back, or an Undo).
@@ -274,7 +464,8 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     await fsp.appendFile(path.join(dataDir, 'account-log.jsonl'), JSON.stringify({ at: Date.now(), ...entry }) + '\n', { mode: 0o600 })
   }
 
-  async function applyToPersonal(jobs) {
+  /** Move the pool keys into the stash and strip pool settings from every job. -> jobs changed. */
+  async function applyToPersonal(jobs, touch) {
     const settings = await readSettings() // re-read just before writing
     const env = settings.json.env || {}
     const stash = { savedAt: Date.now(), envOrder: Object.keys(env), env: {}, jobs: {} }
@@ -284,47 +475,59 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
       stash.jobs[j.short] = { respawnFlags: fresh.respawnFlags, providerEnv: fresh.providerEnv }
     }
     await fsp.mkdir(dataDir, { recursive: true })
+    await touch('pool-profile.json', 'settings.json')
     await writeAtomic(stashFile, JSON.stringify(stash, null, 2) + '\n', 0o600)
     await writeAtomic(settingsFile(), serializeLike(settings.text, { ...settings.json, env }))
-    await stripJobs(jobs)
+    return stripJobs(jobs, touch)
   }
 
-  /** Remove the pool model flag and pool env from each job's saved settings (a no-op when clean). */
-  async function stripJobs(jobs) {
+  const hasPool = (s) => {
+    const flags = Array.isArray(s.respawnFlags) ? s.respawnFlags : []
+    return JSON.stringify(stripPoolModel(flags)) !== JSON.stringify(flags) || POOL_KEYS.some((k) => Object.hasOwn(s.providerEnv || {}, k))
+  }
+
+  /** Remove the pool model flag and pool env from each job's saved settings. -> the jobs that changed. */
+  async function stripJobs(jobs, touch) {
+    const changed = []
     for (const j of jobs) {
       const text = await fsp.readFile(j.file, 'utf8')
       const state = JSON.parse(text)
+      if (!hasPool(state)) continue
       if (Array.isArray(state.respawnFlags)) state.respawnFlags = stripPoolModel(state.respawnFlags)
       if (state.providerEnv && typeof state.providerEnv === 'object') {
         for (const k of POOL_KEYS) delete state.providerEnv[k]
       }
+      await touch(`jobs/${j.short}.json`)
       await writeAtomic(j.file, serializeLike(text, state))
+      changed.push(j.short)
     }
+    return changed
   }
 
   /**
    * Already on a personal login, switching to another: a job can still carry pool settings (it was
    * not running at the first switch, or was added since). Stash its originals next to the others so
-   * going back to the pool restores them, then clean it like the rest.
+   * going back to the pool restores them, then clean it like the rest. -> the jobs that changed.
    */
-  async function catchUpToPersonal(jobs) {
+  async function catchUpToPersonal(jobs, touch) {
     const left = []
     for (const j of jobs) {
       const s = JSON.parse(await fsp.readFile(j.file, 'utf8'))
-      const flags = Array.isArray(s.respawnFlags) ? s.respawnFlags : []
-      if (JSON.stringify(stripPoolModel(flags)) !== JSON.stringify(flags) || POOL_KEYS.some((k) => Object.hasOwn(s.providerEnv || {}, k))) left.push({ j, s })
+      if (hasPool(s)) left.push({ j, s })
     }
-    if (!left.length) return
+    if (!left.length) return []
     const stash = JSON.parse(await fsp.readFile(stashFile, 'utf8').catch(() => 'null'))
     if (stash) {
       stash.jobs ||= {}
       for (const { j, s } of left) stash.jobs[j.short] ??= { respawnFlags: s.respawnFlags, providerEnv: s.providerEnv }
+      await touch('pool-profile.json')
       await writeAtomic(stashFile, JSON.stringify(stash, null, 2) + '\n', 0o600)
     }
-    await stripJobs(left.map((x) => x.j))
+    return stripJobs(left.map((x) => x.j), touch)
   }
 
-  async function applyToPool(jobs) {
+  /** Put the stashed pool env and each job's stashed settings back. */
+  async function applyToPool(jobs, touch) {
     const stash = JSON.parse(await fsp.readFile(stashFile, 'utf8'))
     const settings = await readSettings()
     const current = settings.json.env || {}
@@ -336,95 +539,218 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     }
     for (const [k, v] of Object.entries(current)) if (!Object.hasOwn(env, k)) env[k] = v
     for (const [k, v] of Object.entries(stash.env)) if (!Object.hasOwn(env, k)) env[k] = v
+    await touch('settings.json', 'pool-profile.json')
     await writeAtomic(settingsFile(), serializeLike(settings.text, { ...settings.json, env }))
     for (const j of jobs) {
       const saved = stash.jobs?.[j.short]
       if (!saved) continue
-      const text = await fsp.readFile(j.file, 'utf8')
-      const state = JSON.parse(text)
-      if (saved.respawnFlags === undefined) delete state.respawnFlags; else state.respawnFlags = saved.respawnFlags
-      if (saved.providerEnv === undefined) delete state.providerEnv; else state.providerEnv = saved.providerEnv
-      await writeAtomic(j.file, serializeLike(text, state))
+      await touch(`jobs/${j.short}.json`)
+      await restoreJobFields(j.file, saved)
     }
     await fsp.rm(stashFile, { force: true })
   }
 
-  const backSince = (job, state, since) => liveSince(claudeHome(), job.short, state, since)
-
-  async function transcriptFor(sid) {
-    const projects = path.join(claudeHome(), 'projects')
-    for (const d of await fsp.readdir(projects).catch(() => [])) {
-      const f = path.join(projects, d, `${sid}.jsonl`)
-      if (fs.existsSync(f)) return f
-    }
-    return null
-  }
-
   /**
-   * After the canary's respawn: (1) it comes back live, (2) its saved flags still carry our edit,
-   * (3) its first new reply, if one arrives, is not a synthetic API-error message (the sign that the
-   * new account can't serve it). Only `message.model` is read from the transcript. The model id
-   * can't tell pool from personal (the gateway reports plain ids too), so it isn't compared.
-   * Returns '' when verified, else which check failed; `note` says whether a reply was seen.
+   * The direct check after a credential swap: is Claude's live login `expectedId`? Uses
+   * accounts.checkActive (reads the stored login back and asks the API whose it is; never throws,
+   * never refreshes a token). -> `{ ok }` | `{ ok: false, wrong, reason }`. Only `wrong` (a
+   * different account, or no login stored, or 'login rejected' while the stored token's `expiresAt`
+   * is more than a minute away: revoked) means the swap failed. Anything else ('login rejected' on
+   * an expired token Claude refreshes on its next request; no network; rate limited) leaves the
+   * switch in place, unverified. Without
+   * checkActive, the stored login is read back and identified.
    */
-  async function verifyCanary(job, to, since, poolFlags) {
-    const wantPool = to === 'pool'
-    let state = JSON.parse(await fsp.readFile(job.file, 'utf8'))
-    const until = Date.now() + verifyMs()
-    while (!(await backSince(job, state, since))) {
-      if (Date.now() > until) return { failed: "Verification failed: the first job didn't come back within the time limit" }
-      await sleep(300)
-    }
-    state = JSON.parse(await fsp.readFile(job.file, 'utf8'))
-    const flags = state.respawnFlags || []
-    const models = flags.flatMap((f, i) => (flags[i - 1] === '--model' ? [f] : f.startsWith('--model=') ? [f.slice(8)] : []))
-    const poolEnvLeft = POOL_KEYS.some((k) => Object.hasOwn(state.providerEnv || {}, k))
-    if (!wantPool && (models.some((m) => m.startsWith('cc/')) || poolEnvLeft)) {
-      return { failed: "Verification failed: the job's saved settings were changed back" }
-    }
-    if (wantPool && poolFlags && JSON.stringify(poolFlags) !== JSON.stringify(state.respawnFlags)) {
-      return { failed: "Verification failed: the job's saved settings were changed back" }
-    }
-    const file = await transcriptFor(state.resumeSessionId || state.sessionId)
-    const replyUntil = Date.now() + replyMs()
-    while (file && Date.now() < replyUntil) {
-      const text = await fsp.readFile(file, 'utf8').catch(() => '')
-      for (const line of text.split('\n')) {
-        if (!line.includes('"assistant"')) continue
-        let r
-        try { r = JSON.parse(line) } catch { continue }
-        if (r.type !== 'assistant' || r.isSidechain || (Date.parse(r.timestamp) || 0) < since) continue
-        if (r.message?.model === '<synthetic>' || r.isApiErrorMessage === true) return { failed: 'Verification failed: the first reply after the restart was an API error' }
-        return { failed: '', note: 'reply seen' }
+  async function checkLogin(expectedId) {
+    const WRONG = new Set(['signed in to a different account', 'no login stored'])
+    try {
+      if (typeof accounts.checkActive === 'function') {
+        const r = await accounts.checkActive(expectedId)
+        if (r?.ok === true) return { ok: true }
+        const reason = typeof r?.reason === 'string' ? r.reason.slice(0, 200) : 'unexpected response from Anthropic'
+        // Rejected although its access token is not about to expire: revoked, not merely stale.
+        if (reason === 'login rejected' && Number(r?.expiresAt) > Date.now() + 60_000) return { ok: false, wrong: true, reason: 'login rejected (revoked)' }
+        return { ok: false, wrong: WRONG.has(reason), reason }
       }
-      await sleep(300)
+      let text
+      // An unreadable store (Keychain error) is unknown, never "no login stored".
+      try { text = await accounts.readLive() } catch { return { ok: false, wrong: false, reason: 'could not read the login' } }
+      if (!text) return { ok: false, wrong: true, reason: 'no login stored' }
+      const id = await accounts.identify(text, { network: true })
+      if (id === expectedId) return { ok: true }
+      return id ? { ok: false, wrong: true, reason: 'signed in to a different account' } : { ok: false, wrong: false, reason: 'unexpected response from Anthropic' }
+    } catch {
+      return { ok: false, wrong: false, reason: 'could not reach Anthropic' }
     }
-    return { failed: '', note: 'no reply yet (job idle)' }
+  }
+
+  // Restarts waiting for their job to reach a turn boundary: short -> { short, deadline, why }.
+  const restartQueue = new Map()
+  // Jobs given up on (still busy at the deadline): restart by hand. Cleared when restarted or switched again.
+  let pendingRestarts = []
+  let draining = null
+
+  /** Respawn one job now. -> a result `{ id, status, detail? }`; a failure never throws. */
+  async function respawn(bin, short) {
+    const r = await runCmd(bin, ['respawn', short], RESPAWN_MS)
+    if (r.code === 0) return { id: short, status: 'respawned' }
+    if (/another terminal/i.test(`${r.stderr}\n${r.stdout}`)) return { id: short, status: 'skipped', detail: 'Open in a terminal: restart it there' }
+    const line = stderrLine(r.stderr)
+    const detail = r.timedOut ? 'Respawn timed out' : `Respawn failed (exit ${r.code})${line ? `: ${line}` : ''}`
+    console.warn(`[account] respawn ${short} failed: ${detail}`)
+    return { id: short, status: 'failed', detail }
   }
 
   /**
-   * `{ to, confirm }` -> `{ to, results: [{id, status, detail?}], restored, sessions }`. `to` is
-   * 'pool', 'personal' (whatever login Claude has stored) or a saved account id.
+   * One pass over the queue: restart each job that is idle now, drop the ones no longer running,
+   * and give up on the ones past their deadline (left "restart pending"). -> results of this pass.
    */
-  async function switchTo(body, agents, { auto = false } = {}) {
-    const blocked = switchingBlocked()
+  async function restartPass(bin, { inSwitch = false } = {}) {
+    const out = []
+    for (const q of [...restartQueue.values()]) {
+      // From the background: stop at once if a switch or Undo started, or took this job off the queue.
+      if ((!inSwitch && busy) || !restartQueue.has(q.short)) continue
+      // A permission-mode switch is restarting this job itself: treat it as busy until that is done.
+      const st = permBusyJob(q.short) ? 'busy' : await jobState(q.short)
+      if (st === 'busy') {
+        if (clock() < q.deadline) continue
+        restartQueue.delete(q.short)
+        const r = { id: q.short, status: 'pending', detail: `Still busy after ${Math.round(idleMs() / 60_000)} min: restart pending, restart it when it finishes` }
+        pendingRestarts = pendingRestarts.filter((p) => p.id !== q.short).concat(r)
+        out.push(r)
+        continue
+      }
+      restartQueue.delete(q.short)
+      if (st === 'gone') { out.push({ id: q.short, status: 'skipped', detail: 'No longer running: it picks the new settings up when it next starts' }); continue }
+      out.push(await respawn(bin, q.short))
+    }
+    return out
+  }
+
+  /** Keep polling the queue in the background until it is empty; one restart log entry at the end. */
+  function drain(bin) {
+    if (draining || !restartQueue.size) return draining
+    draining = (async () => {
+      const results = []
+      try {
+        while (restartQueue.size) {
+          await nap(everyMs())
+          if (busy) continue // a switch is writing files: never restart in the middle of one
+          results.push(...await restartPass(bin))
+        }
+      } catch (e) {
+        console.warn(`[account] restart queue stopped: ${e?.message ? stderrLine(e.message) : 'error'}`)
+        restartQueue.clear()
+      } finally {
+        draining = null
+        if (results.length) await audit({ action: 'restart', results }).catch(() => {})
+      }
+      return results
+    })()
+    return draining
+  }
+
+  /** restore(dir) that never throws: `{ ok, extra }` (`extra` goes into the audit entry). */
+  async function safeRestore(dir) {
+    try { await restore(dir); return { ok: true, extra: {} } } catch (e) {
+      const detail = e?.message ? stderrLine(e.message) : 'error'
+      console.warn(`[account] restore failed: ${detail}`)
+      return { ok: false, extra: { restoreFailed: detail } }
+    }
+  }
+
+  // The last switch that went through: `{ at, kind: 'account' | 'profile', target, respawned, drift }`
+  // (`target`: the account it landed on, null for the pool). Cleared by Undo.
+  let lastSwitch = null
+  let lastAgents = []
+  const STALE_MS = 10 * 60_000
+
+  /**
+   * Claude's live login is `liveId`: if that isn't the account the last switch landed on, someone
+   * or something changed it since (a `claude auth login`, a refresh gone wrong). Logged once per
+   * switch and live account. -> true when it differs.
+   */
+  async function noteDrift(liveId) {
+    if (!lastSwitch?.target || !liveId || liveId === lastSwitch.target) return false
+    if (lastSwitch.drift === liveId) return true
+    lastSwitch.drift = liveId
+    await audit({ action: 'drift', expected: lastSwitch.target, live: liveId, switchAt: lastSwitch.at }).catch(() => {})
+    return true
+  }
+
+  /**
+   * Jobs that stopped on the usage limit soon after an account -> account switch, while the new
+   * account still has room, most likely still hold the old login in memory. Call this (autoswitch's
+   * sampler) with those agents' ids: each live background job among them is put on the idle-gated
+   * restart queue (restarted at its next turn boundary, like any switch restart), once per switch.
+   * Only within STALE_MS of an account -> account switch; a limit stop recorded (`limitStopAt`)
+   * before the switch doesn't count. `agents`: the scan's agents (default: the ones the switch saw).
+   * -> `{ queued: [short], reason? }`.
+   */
+  async function respawnStale(agentIds, agents = lastAgents) {
+    if (isBlocked()) return { queued: [], reason: 'blocked' }
+    if (!lastSwitch || lastSwitch.kind !== 'account' || clock() - lastSwitch.at > STALE_MS) return { queued: [], reason: 'no recent account switch' }
+    if (busy || permBusy()) return { queued: [], reason: 'busy' }
+    const want = new Set(Array.isArray(agentIds) ? agentIds : [])
+    const picked = (agents || []).filter((a) => a && want.has(a.id) && a.jobId && a.live && !((a.limitStopAt || 0) && a.limitStopAt <= lastSwitch.at))
+    if (!picked.length) return { queued: [] }
+    const bin = await findBin()
+    if (!bin) return { queued: [], reason: 'Claude Code CLI not found' }
+    const sw = lastSwitch
+    const { jobs } = await splitLive(picked, await activeJobs(new Set(picked.map((a) => a.jobId))))
+    // A switch or Undo may have started while the files were read: it decides the restarts then.
+    if (busy || permBusy() || lastSwitch !== sw) return { queued: [], reason: 'busy' }
+    const queued = []
+    for (const j of jobs) {
+      if (lastSwitch.respawned.has(j.short) || restartQueue.has(j.short) || permBusyJob(j.short)) continue
+      lastSwitch.respawned.add(j.short)
+      pendingRestarts = pendingRestarts.filter((p) => p.id !== j.short)
+      restartQueue.set(j.short, { short: j.short, deadline: clock() + idleMs() })
+      queued.push(j.short)
+    }
+    if (!queued.length) return { queued }
+    await audit({ action: 'stale-respawn', queued, switchAt: lastSwitch.at }).catch(() => {})
+    drain(bin)
+    return { queued }
+  }
+
+  /**
+   * `{ to, confirm }` -> `{ to, results: [{id, status, detail?}], restored, sessions, reason? }`. `to`
+   * is 'pool', 'personal' (whatever login Claude has stored) or a saved account id. Result statuses:
+   * 'respawned', 'waiting' (busy now: restarted at its next turn boundary, see `settled()`),
+   * 'unchanged' (an account switch that left the job alone: it picks the new login up itself),
+   * 'skipped', 'failed' (its respawn failed; the switch went on). `meta`: `{ auto, why }` from
+   * autoswitch, written to the audit log (`why`: reason, readings, limit-hit agent ids).
+   */
+  async function switchTo(body, agents, { auto = false, why } = {}) {
+    const blocked = isBlocked()
     if (blocked) throw fail(501, blocked)
     const saved = await accounts.load()
     if (!body || !(['pool', 'personal'].includes(body.to) || saved.some((a) => a.id === body.to))) throw fail(400, 'to must be "pool", "personal" or a saved account id')
     const target = saved.find((a) => a.id === body.to)
     if (target?.quarantine && (await network?.onWork())) throw fail(409, `${target.label} is a quarantine account, and quarantine accounts can't be used on the work Wi-Fi.`)
     if (busy) throw fail(409, 'A switch is already running')
+    if (permBusy()) throw fail(409, 'A permission-mode switch is running')
     const now = Date.now()
     while (switches.length && now - switches[0] > 60_000) switches.shift()
     if (switches.length >= 3) throw fail(429, 'Too many switches; wait a minute')
     busy = true
+    const meta = { auto: auto === true, ...(plainWhy(why) && { why: plainWhy(why) }) }
     try {
       const settings = await readSettings()
       const from = profileOf(settings)
       const toProfile = body.to === 'pool' ? 'pool' : 'personal'
       // Which saved account Claude's stored login is (it may have rotated since it was saved).
-      const liveText = await accounts.readLive()
+      // readLive throws (503 'unreadable') when the store can't be read: that is not "no login".
+      // Without the current login there is nothing to back up or roll back to, so no switch runs.
+      let liveText
+      try { liveText = await accounts.readLive() } catch (e) {
+        if (auto) throw fail(409, 'Current login not recognised')
+        throw Object.assign(fail(e?.status || 503, "Couldn't read Claude's current login; nothing was changed"), { code: e?.code || 'unreadable' })
+      }
       const liveId = liveText ? await accounts.identify(liveText, { network: true }).catch(() => null) : null
+      // An automatic switch never runs on a login it can't name: the backup and Undo would be guesses.
+      if (auto && liveText && !liveId) throw fail(409, 'Current login not recognised')
+      if (liveId) await noteDrift(liveId)
       // A saved account that isn't the stored login needs its credential written in.
       const toAccount = toProfile === 'personal' && body.to !== 'personal' && body.to !== liveId ? body.to : null
       if (toProfile === from && !toAccount) throw fail(409, body.to === 'personal' || from === 'pool' ? `Already on the ${from === 'pool' ? 'pool' : 'personal account'}` : 'Already on that account')
@@ -440,70 +766,73 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
       }
       if (body.to === 'personal' && from === 'pool' && (await personalReady(from)) === false) throw fail(409, 'Run `claude auth login` with your personal account first')
       if (body.to === 'pool' && !fs.existsSync(stashFile)) throw fail(409, 'No saved pool profile to restore')
-      const bin = await claudeBin()
+      const bin = await findBin()
       if (!bin) throw fail(409, 'Claude Code CLI not found')
       if (!auto) plans.delete(body.confirm)
       switches.push(now)
 
-      const stashCopy = body.to === 'pool' ? JSON.parse(await fsp.readFile(stashFile, 'utf8')) : null
-      const stashedJob = (short) => stashCopy?.jobs?.[short] || null
-      const dir = await backup(allJobs, `switch to ${toAccount ? 'account' : body.to}`, { text: liveText, id: liveId })
+      const { dir, touch } = await backup(allJobs, `switch to ${toAccount ? 'account' : body.to}`, { text: liveText, id: liveId })
+      let changedJobs
       try {
         // The stored login's tokens may have rotated since it was saved: keep its slot current.
         await accounts.syncSlot(liveId, liveText)
-        if (toAccount) await accounts.activate(toAccount)
-        if (toProfile !== from) await (toProfile === 'personal' ? applyToPersonal(allJobs) : applyToPool(allJobs))
-        else if (toProfile === 'personal') await catchUpToPersonal(allJobs)
+        if (toAccount) { await touch('credential.json', 'oauth-account.json'); await accounts.activate(toAccount) }
+        if (toProfile !== from) changedJobs = toProfile === 'personal' ? await applyToPersonal(allJobs, touch) : (await applyToPool(allJobs, touch), null)
+        else changedJobs = await catchUpToPersonal(allJobs, touch)
       } catch (e) {
-        await restore(dir)
-        await audit({ action: 'switch', from, to: toProfile, account: toAccount, restored: true, results: [] })
-        throw fail(500, `Couldn't change the login, nothing was restarted (${e.status ? e.message : 'write failed'})`)
+        // activate refused before writing anything (the target's token expired and couldn't be refreshed).
+        const untouched = e?.code === 'login_expired' || e?.code === 'refresh_failed'
+        const back = untouched ? { ok: true, extra: {} } : await safeRestore(dir)
+        await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...meta, restored: back.ok, ...back.extra, ...(typeof e?.code === 'string' && { code: e.code }), results: [] })
+        const err = fail(e?.status || 500, `Couldn't change the login, nothing was restarted (${e?.status ? e.message : 'write failed'})${back.ok ? '' : '; putting it back also failed, use Undo'}`)
+        // A coded error (login_expired, refresh_failed, too_big with size/max) keeps its fields for autoswitch.
+        if (typeof e?.code === 'string') Object.assign(err, { code: e.code }, e.size !== undefined && { size: e.size }, e.max !== undefined && { max: e.max })
+        throw err
       }
 
-      const results = []
-      let tested = false // the first job actually restarted is the canary
-      for (const j of jobs) {
-        const since = Date.now()
-        const r = await run(bin, ['respawn', j.short], RESPAWN_MS)
-        // Reopened in a terminal since the preview: the user restarts it there; not a failure.
-        if (r.code !== 0 && /another terminal/i.test(r.stderr + r.stdout)) {
-          results.push({ id: j.short, status: 'skipped', detail: 'Open in a terminal: restart it there' })
-          continue
-        }
-        const i = tested ? 1 : 0
-        tested = true
-        let detail = r.code === 0 ? '' : r.timedOut ? 'Respawn timed out' : `Respawn failed (exit ${r.code})`
-        let verified
-        if (!detail && i === 0) {
-          verified = await verifyCanary(j, toProfile, since, stashedJob(j.short)?.respawnFlags)
-          detail = verified.failed
-        }
-        if (!detail) { results.push({ id: j.short, status: 'respawned', ...(verified?.note && { verified: verified.note }) }); continue }
-        results.push({ id: j.short, status: 'failed', detail })
-        if (i === 0) {
-          // The canary failed: put every file back as it was and stop. If its respawn itself had
-          // succeeded (only verification failed), it is now running on the new settings, so it is
-          // respawned once more onto the restored ones (best effort, no retry).
-          await restore(dir)
-          if (r.code === 0) {
-            const again = await run(bin, ['respawn', j.short], RESPAWN_MS)
-            results.at(-1).restarted = again.code === 0 ? 'back on the previous settings' : 'could not be restarted; restart it by hand'
-          }
-          for (const rest of jobs.slice(jobs.indexOf(j) + 1)) results.push({ id: rest.short, status: 'skipped', detail: 'Not attempted after the first respawn failed' })
-          await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...(auto && { auto }), restored: true, results })
-          return { to: body.to, restored: true, results, sessions: [] }
+      // The direct check, before anything is restarted: the live login is the account asked for.
+      const expected = toAccount || (toProfile === 'personal' ? liveId : null)
+      let verified = null
+      if (expected) {
+        const check = await checkLogin(expected)
+        verified = check.ok ? { verified: true } : { verified: false, note: check.reason }
+        if (!check.ok && check.wrong) {
+          const back = await safeRestore(dir)
+          const reason = back.ok ? `The new login couldn't be confirmed (${check.reason}); everything was put back`
+            : `The new login couldn't be confirmed (${check.reason}), and putting it back failed: use Undo`
+          await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...meta, ...verified, restored: back.ok, ...back.extra, reason, results: [] })
+          return { to: body.to, restored: back.ok, reason, results: [], sessions: [] }
         }
       }
-      await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...(auto && { auto }), restored: false, results })
-      return { to: body.to, restored: false, results, sessions }
+
+      // What needs a restart: a pool <-> personal change restarts every live job (the process read
+      // its env at start); an account -> account switch only the jobs whose settings changed.
+      const restartIds = new Set(toProfile !== from ? jobs.map((j) => j.short) : jobs.filter((j) => changedJobs.includes(j.short)).map((j) => j.short))
+      pendingRestarts = pendingRestarts.filter((p) => !restartIds.has(p.id))
+      for (const id of restartIds) restartQueue.set(id, { short: id, deadline: clock() + idleMs() })
+      const first = await restartPass(bin, { inSwitch: true })
+      const byId = new Map(first.map((r) => [r.id, r]))
+      const results = jobs.map((j) => byId.get(j.short)
+        || (restartQueue.has(j.short) ? { id: j.short, status: 'waiting', detail: `Busy: restarts at its next turn boundary (up to ${Math.round(idleMs() / 60_000)} min)` }
+          : { id: j.short, status: 'unchanged', detail: 'Not restarted: it uses the new login on its next request' }))
+      await audit({ action: 'switch', from, to: toProfile, account: toAccount, ...meta, ...verified, restored: false, results })
+      lastAgents = agents
+      lastSwitch = { at: clock(), kind: toProfile === from ? 'account' : 'profile', target: expected, respawned: new Set(), drift: null }
+      busy = false
+      drain(bin)
+      return { to: body.to, restored: false, results, sessions, ...verified }
     } finally { busy = false }
   }
 
-  /** Put back the newest backup set (files only; nothing is respawned). */
+  /** Resolves when no restart is waiting any more, with that background pass's results ([] if none). */
+  const settled = async () => (draining ? draining : [])
+
+  /** Put back what the newest backup set's switch changed (files only; nothing is respawned). */
   async function undo() {
-    const blocked = switchingBlocked()
+    const blocked = isBlocked()
     if (blocked) throw fail(501, blocked)
     if (busy) throw fail(409, 'A switch is already running')
+    if (permBusy()) throw fail(409, 'A permission-mode switch is running')
     const sets = (await fsp.readdir(backupRoot).catch(() => [])).sort()
     if (!sets.length) throw fail(409, 'Nothing to undo')
     // Undo would put a quarantine account's login back: not on the work Wi-Fi.
@@ -512,6 +841,10 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     if (q && (await network?.onWork())) throw fail(409, `Undo would switch back to ${q.label}, a quarantine account, and quarantine accounts can't be used on the work Wi-Fi.`)
     busy = true
     try {
+      // The switch being undone no longer needs its restarts.
+      restartQueue.clear()
+      pendingRestarts = []
+      lastSwitch = null
       const meta = await restore(path.join(backupRoot, sets.at(-1)))
       const profile = profileOf(await readSettings())
       await audit({ action: 'undo', backup: sets.at(-1), profile })
@@ -519,5 +852,5 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     } finally { busy = false }
   }
 
-  return { status, switchTo, undo, accounts, isBusy: () => busy, lastChangeAt, poolAvailable: () => fs.existsSync(stashFile), profile: async () => profileOf(await readSettings()) }
+  return { status, switchTo, undo, settled, respawnStale, noteDrift, accounts, isBusy: () => busy, lastChangeAt, poolAvailable: () => fs.existsSync(stashFile), profile: async () => profileOf(await readSettings()) }
 }

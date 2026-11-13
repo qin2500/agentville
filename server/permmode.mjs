@@ -4,19 +4,23 @@
  * A job's permission mode lives in `<claude home>/jobs/<short>/state.json` → `respawnFlags`.
  * The switch backs that file up (0600, under `<data>/perm-backups`, apart from the account
  * switch's backups so its Undo never picks one up), rewrites the flags atomically, and
- * `claude respawn`s the job if it is running now, then checks it came back on the new flags. A
- * failed respawn puts the file back. One switch at a time, never during an account switch.
+ * `claude respawn`s the job if it is running now, then checks it came back on the new flags. The
+ * user asked for this one job and confirmed the interruption, but the respawn still waits up to two
+ * minutes for the job to reach a turn boundary first, then goes ahead. A failed respawn puts the
+ * file back. One switch at a time, never during an account switch.
  * Flag values are never returned or logged: respawn flags can hold prompt text.
  */
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import { claudeBin as findClaude, liveSince, run as runClaude, serializeLike, switchingBlocked } from './account.mjs'
+import { claudeBin as findClaude, jobActivity, liveSince, run as runClaude, serializeLike, switchingBlocked, waitForIdle } from './account.mjs'
 import { writeAtomic } from './accounts.mjs'
 
 export const BYPASS = 'bypassPermissions'
 const SHORT = /^[0-9a-f]{8}$/
 const MODE = /^[A-Za-z]{1,32}$/
 const RESPAWN_MS = 120_000
+/** How long the respawn waits for the job to go idle before it goes ahead anyway. */
+const IDLE_WAIT_MS = 120_000
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const fail = (status, message) => Object.assign(new Error(message), { status })
 
@@ -71,10 +75,19 @@ export function withBypass(flags) {
 
 /**
  * `claudeHome()`: the Claude home dir. `run(bin, args, timeoutMs)` -> `{ code, timedOut, stdout, stderr }`.
- * `bin()`: the claude executable. `busy()`: true while an account switch runs.
+ * `bin()`: the claude executable. `busy()`: true while an account switch runs. `activity(short)`:
+ * 'idle' | 'busy' | 'gone' (default: the job file and registry); `idleMs`, `pollMs`, `now`, `sleep`
+ * steer the wait for a turn boundary (tests use a fake clock).
  */
-export function createPermSwitch({ claudeHome, dataDir, run = runClaude, bin = findClaude, blocked = switchingBlocked, busy = () => false, verifyMs = () => Number(process.env.AGENTVILLE_PERM_VERIFY_MS) || 60_000 }) {
+export function createPermSwitch({
+  claudeHome, dataDir, run = runClaude, bin = findClaude, blocked = switchingBlocked, busy = () => false,
+  verifyMs = () => Number(process.env.AGENTVILLE_PERM_VERIFY_MS) || 60_000,
+  activity, idleMs = () => Number(process.env.AGENTVILLE_PERM_IDLE_MS) || IDLE_WAIT_MS, pollMs = () => Number(process.env.AGENTVILLE_PERM_POLL_MS) || 2_000,
+  now: clock = Date.now, sleep: nap = sleep,
+}) {
+  const jobState = activity || ((short) => jobActivity(claudeHome(), short))
   let switching = false
+  let working = null // the job the running switch is changing (account.mjs holds its restart meanwhile)
   const stateFile = (short) => path.join(claudeHome(), 'jobs', short, 'state.json')
 
   /** short -> mode for every job with a readable state.json. */
@@ -100,7 +113,8 @@ export function createPermSwitch({ claudeHome, dataDir, run = runClaude, bin = f
   /**
    * Switch job `short` to bypass mode. `live`: restart it now so the mode applies (a job that isn't
    * running only gets its saved flags changed). `reopened`: it is open in a terminal, so refused.
-   * Resolves `{ ok, mode, restarted }`; throws an Error with `.status` otherwise.
+   * Resolves `{ ok, mode, restarted, waited? }` (`waited`: the job was busy, so the restart waited
+   * for its turn to end, up to two minutes, before going ahead); throws an Error with `.status` otherwise.
    */
   async function toBypass(short, { live = false, reopened = false } = {}) {
     const why = blocked()
@@ -110,6 +124,7 @@ export function createPermSwitch({ claudeHome, dataDir, run = runClaude, bin = f
     if (switching) throw fail(409, 'A mode switch is already running')
     if (busy()) throw fail(409, 'An account switch is running; try again when it finishes')
     switching = true
+    working = short
     try {
       const file = stateFile(short)
       const text = await fsp.readFile(file, 'utf8').catch(() => null)
@@ -129,6 +144,12 @@ export function createPermSwitch({ claudeHome, dataDir, run = runClaude, bin = f
       await writeAtomic(file, serializeLike(fresh, now))
       if (!live) return { ok: true, mode: BYPASS, restarted: false }
 
+      // Let a turn in progress finish (up to the cap), then restart: the user confirmed the interruption.
+      const idle = await waitForIdle(() => jobState(short), { maxMs: idleMs(), pollMs: pollMs(), now: clock, sleep: nap })
+      const waited = idle.waited
+      // It stopped while we waited for its turn to end: its saved flags already say bypass, which it
+      // uses when it next starts. Respawning it now would revive a job that has finished.
+      if (idle.waited && idle.state === 'gone') return { ok: true, mode: BYPASS, restarted: false }
       const since = Date.now()
       const r = await run(exe, ['respawn', short], RESPAWN_MS)
       if (r.code !== 0) {
@@ -144,9 +165,10 @@ export function createPermSwitch({ claudeHome, dataDir, run = runClaude, bin = f
       }
       const after = JSON.parse(await fsp.readFile(file, 'utf8').catch(() => '{}'))
       if (modeOf(after.respawnFlags) !== BYPASS) throw fail(500, "Restarted, but its saved mode was changed back")
-      return { ok: true, mode: BYPASS, restarted: true }
-    } finally { switching = false }
+      return { ok: true, mode: BYPASS, restarted: true, waited }
+    } finally { switching = false; working = null }
   }
 
-  return { modes, toBypass, isBusy: () => switching }
+  /** `busyJob()`: the job short a running switch is working on, or null. */
+  return { modes, toBypass, isBusy: () => switching, busyJob: () => working }
 }
