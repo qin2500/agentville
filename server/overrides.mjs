@@ -13,7 +13,11 @@ const FIELDS = {
   // Important: Restore after crash brings it back (with the crown agents). Keyed, like every
   // override, by agent id: a job's id is its first session id, which a respawn keeps.
   important: (v) => v === true,
+  // Agentville-side colour (one of Claude Code's /color names); null falls back to the transcript's.
+  color: (v) => COLOR_NAMES.includes(v),
 }
+
+export const COLOR_NAMES = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink']
 
 export function createStore(dir) {
   const file = path.join(dir, 'overrides.json')

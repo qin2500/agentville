@@ -777,6 +777,16 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .cm-note { font-size: 11px; line-height: 1.3; color: var(--text-muted); white-space: normal; }
 .cm-item.danger { color: var(--error); }
 .cm-item.danger:hover, .cm-item.danger:focus { background: color-mix(in srgb, var(--error) 14%, transparent); }
+/* Colour row in the agent menu (ctxmenu.js): swatches in a radio group; the current one is ringed. */
+.cm-color { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; font-size: 13px; color: var(--text); }
+.cm-swatches { display: flex; gap: 5px; }
+.cm-swatch { width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--sw, transparent); cursor: pointer; }
+.cm-swatch.none { background: linear-gradient(135deg, transparent 45%, var(--text-muted) 45% 55%, transparent 55%); }
+.cm-swatch:hover { transform: scale(1.15); }
+.cm-swatch:focus { outline: none; }
+.cm-swatch:focus-visible { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 4px var(--focus); }
+.cm-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 3.5px var(--text); }
+.cm-swatch[aria-checked="true"]:focus-visible { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 3.5px var(--text), 0 0 0 5.5px var(--focus); }
 /* What the open menu is for. */
 .cm-target { box-shadow: inset 0 0 0 2px var(--agent-color, var(--accent)); }
 /* Claude Code's /color (ui.js agentColor sets --agent-color; nothing when none): a soft wash fading in

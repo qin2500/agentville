@@ -11,6 +11,7 @@
  */
 import { currentWait } from './waiting.mjs'
 import { PAUSED, PREP_MS } from './fleet.mjs'
+import { COLOR_NAMES } from './overrides.mjs'
 
 /** Rule 7's "old". One global threshold. */
 export const REST_MS = 24 * 60 * 60 * 1000
@@ -98,7 +99,7 @@ export function classify(a, now = Date.now()) {
 
 /**
  * Facts + overrides -> the `GET /api/agents` agents (hidden ones flagged, not dropped).
- * `overrides` is `{ [id]: { role?, parentId?, name?, hidden?, important? } }`; `parentId: ''` forces top-level.
+ * `overrides` is `{ [id]: { role?, parentId?, name?, hidden?, important?, color? } }`; `parentId: ''` forces top-level.
  * `prep` is the pending fleet prep `{ kind, at, ids }` the user marked as sent, or null.
  */
 export function build(facts, overrides = {}, now = Date.now(), prep = null) {
@@ -198,7 +199,7 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       lastActivityAt: Math.round(a.lastActivityAt || 0),
       sizeBytes: a.sizeBytes || 0,
       // Claude Code's `/color` name ('purple'…), or null (none set, Codex, subagents).
-      color: a.color || null,
+      color: COLOR_NAMES.includes(o.color) ? o.color : a.color || null,
       live: Boolean(a.live),
       prs: a.prs || [],
       // A job that needs you: what it asks for and the scheduler's suggested reply (short strings).

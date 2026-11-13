@@ -6,7 +6,7 @@
 //
 // Actions keep their old rules and confirm steps: Fork, Stop job and Edit open a sheet (agentsheet.js)
 // that shows the exact command or form first. No conversation text is shown here.
-import { BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, bucketIcon, icon, ago, esc, safeHref, agentColor } from './ui.js';
+import { AGENT_COLOR, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, bucketIcon, icon, ago, esc, safeHref, agentColor } from './ui.js';
 import { prTone } from './prs.js';
 import { stoppedNote } from './important.js';
 
@@ -53,6 +53,7 @@ export function createMenu(app, deps) {
     if (a.harness === 'claude-code' && !sub && !a.neverStarted) out.push({ act: 'fork', label: 'Fork…', popup: true });
     if (!sub && (a.bucket !== 'resting' || a.live)) out.push({ act: 'stop', label: a.kind === 'job' ? 'Stop job…' : 'Stop…', popup: true });
     if (!sub) out.push({ act: 'important', label: a.important ? 'Unmark important' : 'Mark important', title: 'Important agents are never folded away or tidied out of view (only Hide removes them), and come back with Restore after crash' });
+    out.push({ act: 'color' });
     out.push({ act: 'edit', label: 'Edit…', popup: true });
     out.push(a.hidden ? { act: 'unhide', label: 'Show in village again' } : { act: 'hide', label: 'Hide in village', danger: true });
     return out;
@@ -82,21 +83,32 @@ export function createMenu(app, deps) {
     const why = it.why ? `<span class="cm-note" id="cm-why-${i}">${esc(it.why)}</span>` : '';
     return `<button type="button" role="menuitem" class="cm-item${it.danger ? ' danger' : ''}" data-cm="${it.act}" tabindex="-1"${it.why ? ` aria-disabled="true" aria-describedby="cm-why-${i}"` : ''}${it.popup ? ' aria-haspopup="dialog"' : ''}${it.pressed ? ' aria-current="true"' : ''}${it.title ? ` title="${esc(it.title)}"` : ''}><span class="cm-label">${esc(it.label)}</span>${why}</button>`;
   }
+  const cap = s => s[0].toUpperCase() + s.slice(1);
+  /** The Colour row: a radio group of swatches (arrow keys move, Enter/Space picks); "None" clears the override. */
+  function colorHTML(a) {
+    const cur = a.color || '';
+    const names = ['', ...Object.keys(AGENT_COLOR)];
+    const sw = names.map(n => {
+      const label = n ? cap(n) : 'None';
+      return `<button type="button" class="cm-swatch${n ? '' : ' none'}" role="radio" data-color="${n}" aria-checked="${n === cur}" aria-label="${label}" title="${label}" tabindex="${n === cur ? 0 : -1}"${n ? ` style="--sw:${AGENT_COLOR[n]}"` : ''}></button>`;
+    }).join('');
+    return `<div class="cm-color"><span class="cm-colorlabel" id="cm-colorlabel">Colour</span><div class="cm-swatches" role="radiogroup" aria-labelledby="cm-colorlabel">${sw}</div></div>`;
+  }
   function render() {
     const a = S.byId.get(M.id) || S.data?.agents?.find(x => x.id === M.id);
     if (!a) return close();
     el.style.setProperty('--agent-color', agentColor(a));
     const list = items(a);
-    const GROUP = { fork: 1, stop: 1, important: 2, edit: 2, hide: 2, unhide: 2 };
+    const GROUP = { fork: 1, stop: 1, important: 2, color: 2, edit: 2, hide: 2, unhide: 2 };
     let g = 0;
-    const body = list.map((it, i) => { const k = GROUP[it.act] || 0, sep = i && k !== g ? '<div class="cm-sep" role="separator"></div>' : ''; g = k; return sep + itemHTML(it, i); }).join('');
+    const body = list.map((it, i) => { const k = GROUP[it.act] || 0, sep = i && k !== g ? '<div class="cm-sep" role="separator"></div>' : ''; g = k; return sep + (it.act === 'color' ? colorHTML(a) : itemHTML(it, i)); }).join('');
     const html = `${headHTML(a)}<div class="cm-items" role="menu" aria-labelledby="cm-name">${body}</div>`;
     if (html === M.sig) return;
-    const focused = el.contains(document.activeElement) ? (document.activeElement.dataset.cm || (document.activeElement.matches('[data-cmpr]') ? `pr:${document.activeElement.getAttribute('href')}` : null)) : null;
+    const focused = el.contains(document.activeElement) ? (document.activeElement.dataset.cm || (document.activeElement.matches('.cm-swatch') ? `sw:${document.activeElement.dataset.color}` : null) || (document.activeElement.matches('[data-cmpr]') ? `pr:${document.activeElement.getAttribute('href')}` : null)) : null;
     M.sig = html;
     el.innerHTML = html;
     el.setAttribute('aria-label', `${a.name}: actions`);
-    if (focused) (focused.startsWith('pr:') ? [...el.querySelectorAll('[data-cmpr]')].find(x => `pr:${x.getAttribute('href')}` === focused) : el.querySelector(`[data-cm="${CSS.escape(focused)}"]`))?.focus();
+    if (focused) (focused.startsWith('sw:') ? el.querySelector(`.cm-swatch[data-color="${CSS.escape(focused.slice(3))}"]`) : focused.startsWith('pr:') ? [...el.querySelectorAll('[data-cmpr]')].find(x => `pr:${x.getAttribute('href')}` === focused) : el.querySelector(`[data-cm="${CSS.escape(focused)}"]`))?.focus();
   }
 
   // ---------- open / close / place ----------
@@ -179,15 +191,37 @@ export function createMenu(app, deps) {
       case 'unhide': return deps.hide(a, false);
     }
   }
+  /** Picks a colour: optimistic (row, header tint), then the patch refreshes from the server. */
+  async function pickColor(name) {
+    const a = S.byId.get(M.id) || S.data?.agents?.find(x => x.id === M.id);
+    if (!a) return close();
+    const prev = a.color || null, next = name || null;
+    if (prev === next) return;
+    a.color = next;
+    render();
+    try {
+      await app.patch(a.id, { color: next });
+      app.say(next ? `${a.name} colour set to ${cap(next)}` : `${a.name} colour cleared`);
+    } catch (e) { a.color = prev; render(); app.toast(saveError(e)); }
+  }
   const saveError = e => (e instanceof TypeError ? "Couldn't save: the server isn't reachable." : `Couldn't save: ${e.message}`);
 
   el.addEventListener('click', e => {
+    const sw = e.target.closest('.cm-swatch');
+    if (sw) { e.preventDefault(); pickColor(sw.dataset.color); return; }
     const b = e.target.closest('.cm-item');
     if (b) { e.preventDefault(); run(b); return; }
     if (e.target.closest('[data-cmpr]')) setTimeout(() => close(), 0); // the link opens on its own
   });
   el.addEventListener('keydown', e => {
-    const its = menuItems(), i = its.indexOf(document.activeElement);
+    const sws = [...el.querySelectorAll('.cm-swatch')], si = sws.indexOf(document.activeElement);
+    if (si >= 0 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      const n = sws[(si + (e.key === 'ArrowRight' ? 1 : sws.length - 1)) % sws.length];
+      for (const s of sws) s.tabIndex = s === n ? 0 : -1;
+      n.focus(); e.preventDefault(); e.stopPropagation(); return;
+    }
+    // Up/Down walk the menu items and the Colour row (one stop) in order.
+    const its = [...el.querySelectorAll('.cm-item, .cm-swatch[tabindex="0"]')], i = its.indexOf(document.activeElement);
     const go = j => its[(j + its.length) % its.length]?.focus();
     switch (e.key) {
       case 'ArrowDown': go(i < 0 ? 0 : i + 1); break;
