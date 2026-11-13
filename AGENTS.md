@@ -71,7 +71,7 @@ npm run icon                     # redraw the app icon
 
 ### Privacy (this repo is public)
 
-Never commit personal data: real names, emails, usernames, home paths (`/Users/...`), employer or client
+Never commit personal data: real names, emails, usernames, absolute home-directory paths, employer or client
 names, real agent or project names from your own machine, tokens, account details, or conversation text.
 Use neutral examples (`my-app`, `payments-service`, `example/demo-app`). This applies to code, tests,
 fixtures, docs, screenshots and commit messages.
@@ -80,7 +80,7 @@ Before opening a PR, scrub your diff. Replace the last alternatives with your ow
 company:
 
 ```sh
-git diff origin/main | grep -nEi '/Users/|/home/[a-z]|@[a-z0-9.-]+\.(com|org|io)|your-name|your-company'
+git diff origin/main | grep -nEi '/[U]sers/|/home/[a-z]|@[a-z0-9.-]+\.(com|org|io)|your-name|your-company'
 ```
 
 Screenshots must show only fixture or mock data (`?mock`, `npm run fixtures`).
