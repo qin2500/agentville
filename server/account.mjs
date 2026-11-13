@@ -45,9 +45,9 @@ export function switchingBlocked() {
 }
 
 /** The real `claude` executable (never a shell function), or the test fake. */
-const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutable('claude', CLAUDE_DIRS)
+export const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutable('claude', CLAUDE_DIRS)
 
-function run(bin, args, timeout) {
+export function run(bin, args, timeout) {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout, maxBuffer: 256 * 1024, env: process.env }, (err, stdout, stderr) => {
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), stdout: String(stdout || ''), stderr: String(stderr || '') })
@@ -56,7 +56,7 @@ function run(bin, args, timeout) {
 }
 
 /** Rewrite JSON with the original's indentation and trailing newline, so an untouched round trip is byte-identical. */
-function serializeLike(original, value) {
+export function serializeLike(original, value) {
   const indent = /^[{[]\r?\n([ \t]+)/.exec(original)?.[1]
   return JSON.stringify(value, null, indent) + (original.endsWith('\n') ? '\n' : '')
 }
@@ -68,6 +68,23 @@ const modelOf = (flags) => {
 /** `--model cc/x` -> `--model x`; `--model=cc/x` -> `--model=x`. Everything else untouched. */
 export const stripPoolModel = (flags) => (flags || []).map((f, i, all) =>
   all[i - 1] === '--model' && f.startsWith('cc/') ? f.slice(3) : f.startsWith('--model=cc/') ? `--model=${f.slice(11)}` : f)
+
+/** A registry entry for job `short` (or its sessions) written after `since` whose process is alive. */
+export async function liveSince(home, short, state, since) {
+  const ids = new Set([state.sessionId, state.resumeSessionId].filter(Boolean))
+  const dir = path.join(home, 'sessions')
+  for (const f of await fsp.readdir(dir).catch(() => [])) {
+    if (!f.endsWith('.json')) continue
+    const file = path.join(dir, f)
+    const st = await fsp.stat(file).catch(() => null)
+    if (!st || st.mtimeMs < since) continue
+    let s
+    try { s = JSON.parse(await fsp.readFile(file, 'utf8')) } catch { continue }
+    if (s.jobId !== short && !ids.has(s.sessionId)) continue
+    try { process.kill(s.pid, 0); return true } catch (e) { if (e.code === 'EPERM') return true }
+  }
+  return false
+}
 
 /** `network`: createNetwork(), so a quarantine account is never switched to on the work Wi-Fi. */
 export function createAccount({ dataDir, claudeHome, onReading, network }) {
@@ -332,22 +349,7 @@ export function createAccount({ dataDir, claudeHome, onReading, network }) {
     await fsp.rm(stashFile, { force: true })
   }
 
-  /** A registry entry for this job written after `since` whose process is alive. */
-  async function backSince(job, state, since) {
-    const ids = new Set([state.sessionId, state.resumeSessionId].filter(Boolean))
-    const dir = path.join(claudeHome(), 'sessions')
-    for (const f of await fsp.readdir(dir).catch(() => [])) {
-      if (!f.endsWith('.json')) continue
-      const file = path.join(dir, f)
-      const st = await fsp.stat(file).catch(() => null)
-      if (!st || st.mtimeMs < since) continue
-      let s
-      try { s = JSON.parse(await fsp.readFile(file, 'utf8')) } catch { continue }
-      if (s.jobId !== job.short && !ids.has(s.sessionId)) continue
-      try { process.kill(s.pid, 0); return true } catch (e) { if (e.code === 'EPERM') return true }
-    }
-    return false
-  }
+  const backSince = (job, state, since) => liveSince(claudeHome(), job.short, state, since)
 
   async function transcriptFor(sid) {
     const projects = path.join(claudeHome(), 'projects')
