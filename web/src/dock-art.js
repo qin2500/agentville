@@ -18,7 +18,8 @@ const LEN = [4, 5, 6, 8, 9];             // pier length per level, in tiles past
 const DECK = 4;                          // the pier's deck height above the water
 const SHIP_L = 46, SHIP_HALF = 9, SHIP_Z = 8;
 const SAIL_MS = 7500;                    // casting off to out of view
-const FRESH_MS = 10 * 60e3;              // a sail older than this when first seen isn't animated
+const FRESH_MS = 10 * 60e3;              // a sail older than this when first seen isn't animated; a queued one waits at most this long
+const STAGGER_MS = 6000;                 // several sails at once cast off one by one, this far apart
 const DEMO = typeof location !== 'undefined' && new URLSearchParams(location.search).get('dockdemo') === '1';
 
 export const clampLevel = l => Math.min(5, Math.max(1, Math.round(+l) || 1));
@@ -251,7 +252,7 @@ export function createDockArt(H) {
   const KEY = DEMO ? 'va.dock.sailed.demo' : 'va.dock.sailed';
   const seen = new Set(store.get(KEY, []));
   const berthOf = new Map(), lastBerth = new Map(); // href → berth: loading now / when last seen loading
-  let sails = [];
+  let sails = [], nextCast = 0;
   const arts = new Map(), art = (k, make) => { if (!arts.has(k)) arts.set(k, make()); return arts.get(k); };
   let hits = [], lights = [], tags = [], parts = [], ground = [], wakes = [], walking = [];
   const walkers = createWalkers();
@@ -274,11 +275,11 @@ export function createDockArt(H) {
     }
     if (dirty) store.set(KEY, [...seen].slice(-400));
     if (still) sails = [];
-    sails = sails.filter(s => (s.t0 == null ? now - s.queued < 30e3 : now - s.t0 < SAIL_MS));
+    sails = sails.filter(s => (s.t0 == null ? now - s.queued < FRESH_MS : now - s.t0 < SAIL_MS));
     const used = new Set(berthOf.values());
     for (const s of sails) if (s.t0 != null) used.add(s.berth);
     const free = want => (want != null && want < n && !used.has(want) ? want : [...Array(n).keys()].find(b => !used.has(b)) ?? null);
-    for (const s of sails) if (s.t0 == null) { const b = free(s.want); if (b == null) continue; s.berth = b; s.t0 = now; used.add(b); }
+    for (const s of sails) if (s.t0 == null) { if (now < nextCast) break; const b = free(s.want); if (b == null) continue; s.berth = b; s.t0 = now; nextCast = now + STAGGER_MS; used.add(b); }
     for (const p of loading) if (!berthOf.has(p.href)) { const b = free(lastBerth.get(p.href)); if (b == null) break; berthOf.set(p.href, b); used.add(b); }
     for (const [h, b] of berthOf) { lastBerth.delete(h); lastBerth.set(h, b); }
     while (lastBerth.size > 200) lastBerth.delete(lastBerth.keys().next().value);

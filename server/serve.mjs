@@ -22,6 +22,7 @@ import { createChanges } from './changes.mjs'
 import { fanOut, PER_MINUTE as BROADCASTS_PER_MINUTE, MAX_RECIPIENTS, recipientIds, sameSet, SELF_WHY, selfId, summarize, textProblem } from './broadcast.mjs'
 import { createPrStatus } from './prstatus.mjs'
 import { createDock } from './dock.mjs'
+import { createPrPoll } from './prpoll.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
@@ -103,8 +104,17 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   let titles = [] // server-private: conversation names for search (never prompt text)
   let quietIds = new Set() // removed by the last scan: quiet for over QUIET_REMOVE_DAYS
   const changes = createChanges()
-  const prStatus = createPrStatus(claude.home)
   const dock = createDock({ dataDir })
+  let lastAgents = [] // the latest snapshot's agents: the live PR poll asks about their open PRs
+  const testingEnv = process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
+  const prPoll = createPrPoll({
+    intervalMs: Number(process.env.AGENTVILLE_PR_POLL_MS ?? (testingEnv ? 0 : 120_000)) || 0,
+    targets: () => [
+      ...lastAgents.flatMap((a) => (a.prs || []).filter((p) => p.state === 'open' || p.state === 'draft').map((p) => p.href)),
+      ...dock.openHrefs(),
+    ],
+  })
+  const prStatus = createPrStatus(claude.home, prPoll)
   const projectStore = createProjectStore(dataDir)
   // Usage research log: tokens by model next to every usage reading (see research.mjs).
   const research = createResearch({ dataDir })
@@ -176,6 +186,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     }
     changes.prune(dirs)
     await prStatus.annotate(agents)
+    lastAgents = agents
     const dockState = await dock.update(agents).catch(() => ({ loading: [], sailed: [], total: 0, level: 1 }))
     // Fleet sends to live Claude sessions; `blocked` says why it can't here ('' = it can).
     const fleet = { mode: 'send', blocked: sendingBlocked(), last: fleetData.last, pending: pending && { ...pending, rebootDetected: startedAt > pending.at } }
@@ -793,6 +804,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   }
   updater.start().catch(() => {})
   server.on('close', () => updater.stop())
+  prPoll.start(30_000) // after the first scans have filled in the PRs; no-op when the interval is 0 (the default under test)
+  server.on('close', () => prPoll.stop())
   server.on('upgrade', (req, socket, head) => terms.upgrade(req, socket, head))
   // Before close, not on 'close': open WebSockets would otherwise keep the server from closing.
   const close = server.close.bind(server)
