@@ -23,6 +23,7 @@ import { createDock } from './dock.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
+import { createPermSwitch } from './permmode.mjs'
 import { createRestore, restoreBlocked, MESSAGE as RESTORE_MESSAGE } from './restore.mjs'
 import { accountsBlocked } from './accounts.mjs'
 import { createSpend } from './spend.mjs'
@@ -108,6 +109,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // Restore after crash (restore.mjs): the running-set snapshot and the lost crown/Important jobs.
   const restore = createRestore({ dataDir, claudeHome: claude.home })
   const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network })
+  // One background job to bypass-permissions mode, on the user's click (permmode.mjs).
+  const permSwitch = createPermSwitch({ dataDir, claudeHome: claude.home, busy: () => account.isBusy() })
   // Token spend is read when the page asks (every few seconds while it is open) and with each usage sample.
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
   const sampler = createSampler({ dataDir, account, network, agents: async () => (await snapshot()).agents })
@@ -382,6 +385,18 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const override = await store.patch(id, body)
         cached = null
         return send(res, 200, { id, override })
+      }
+      // Switch one background job to bypass permissions. The job is looked up from the agent id here.
+      const bm = /^\/api\/agents\/([^/]+)\/bypass$/.exec(url.pathname)
+      if (bm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        await readBody(req) // the body carries nothing we use
+        const a = (await snapshot()).agents.find((x) => x.id === decodeURIComponent(bm[1]))
+        if (!a) return send(res, 404, { error: 'No such agent' })
+        if (a.harness !== 'claude-code' || a.kind !== 'job' || !a.jobId) return send(res, 409, { error: 'Only background jobs can be switched here' })
+        const out = await permSwitch.toBypass(a.jobId, { live: a.live, reopened: Boolean(a.reopened) })
+        cached = null
+        return send(res, 200, out)
       }
       if (url.pathname === '/api/fleet/preview' && ['GET', 'POST'].includes(req.method)) {
         let action = url.searchParams.get('action')

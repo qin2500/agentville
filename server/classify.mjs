@@ -178,6 +178,8 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       harness: a.harness,
       kind: a.kind,
       jobId: a.jobId || null,
+      // Background jobs only: 'bypassPermissions', another mode, or '' (default). permmode.mjs.
+      ...(a.kind === 'job' && typeof a.permissionMode === 'string' && { permissionMode: a.permissionMode }),
       name: cap((typeof o.name === 'string' && o.name) || a.name || a.title || 'Untitled', NAME_MAX),
       // The same name, unless it would come from the first prompt ('' then). Safe to store.
       safeName: cap((typeof o.name === 'string' && o.name) || a.name || a.titleName || '', NAME_MAX),
