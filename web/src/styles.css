@@ -869,3 +869,36 @@ body.village-only .main > .village { position: fixed !important; inset: 0 !impor
 .zenpill.out { opacity: 0; transition-duration: .5s; }
 @media (prefers-reduced-motion: reduce) { .zenpill { transition: none; } }
 body:has(.app.reduce-motion) .zenpill { transition: none; }
+
+/* Tasks list and unseen dots */
+.udot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent, var(--focus)); display: inline-block; }
+.tk-strip { border-bottom: 1px solid var(--line); padding-bottom: var(--space-1); }
+.tk-row { position: relative; display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 var(--space-3); cursor: pointer; font-size: 12px; border-left: 3px solid transparent; color: var(--text); }
+.tk-row:hover, .tk-row:focus-within { background: var(--surface-2); }
+.tk-row.cur { background: var(--surface-3); border-left-color: var(--agent-color, var(--focus)); }
+.tk-row.idea .tk-t { font-style: italic; color: var(--text-muted); }
+.tk-row.gone .tk-t { text-decoration: line-through; opacity: .6; }
+.tk-row.done .tk-t { color: var(--text-dim); text-decoration: line-through; }
+.tk-chk { flex: none; box-sizing: border-box; width: 13px; height: 13px; padding: 0; border: 1.5px solid var(--text-dim); border-radius: 3px; background: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; color: var(--bg); }
+.tk-chk:hover { border-color: var(--building); background: var(--surface-3); }
+.tk-chk.on { background: var(--text-dim); border-color: var(--text-dim); cursor: default; }
+.tk-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-st { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.tk-st.tone-needs { color: var(--prompt); }
+.tk-st.tone-error { color: var(--error); }
+.tk-st.tone-working, .tk-st.tone-finished { color: var(--building); }
+.tk-st.tone-merged { color: var(--waiting); }
+.tk-acts { display: none; flex: none; gap: 2px; }
+.tk-row:hover .tk-acts, .tk-row:focus-within .tk-acts { display: inline-flex; }
+.tk-b { font: inherit; font-size: 11px; line-height: 1; padding: 2px 4px; border-radius: var(--radius); background: none; color: var(--text-muted); border: 0; cursor: pointer; }
+.tk-b:hover { background: var(--surface-3); color: var(--text); }
+.tk-re { text-decoration: underline; }
+.tk-in { flex: 1; min-width: 0; font-size: 12px; padding: 1px 4px; background: var(--bg); border: 1px solid var(--focus); border-radius: var(--radius); color: var(--text); }
+.tk-add { display: flex; padding: 2px var(--space-3); }
+.tk-head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 6px; width: 100%; cursor: pointer; }
+.tk-head:focus-visible { outline: 1px solid var(--focus); }
+.tk-car { width: 10px; color: var(--text-muted); }
+.tk-sum { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tk-more, .tk-addb, .tk-donehead { display: block; margin: 0 var(--space-3); padding: 2px 0; font-size: 11px; text-decoration: none; }
+.tk-addb:hover, .tk-donehead:hover { color: var(--text); }
+@media (hover: none) { .tk-acts { display: inline-flex; } }
