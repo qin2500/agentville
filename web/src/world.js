@@ -994,7 +994,7 @@ function createRenderer(IMG) {
     const up = a.role === 'boss' ? 6 : 0;
     const img = a.bucket === 'stalled' ? BADGE[a.severity === 'error' ? 'error' : a.prompt ? 'click' : 'need'] : a.bucket === 'waiting' ? BADGE.wait[still ? 0 : Math.floor((t + v.phase * 3) / 3) % 2]
       : a.bucket === 'building' ? BADGE.build[d.row === 4 ? 1 : 0] : null;
-    if (img) {
+    if (img && (f.bubbles !== false || a.id === f.hover || a.id === f.selected || a.id === f.cursor)) {
       const bob = a.bucket === 'stalled' && !still ? Math.round(Math.sin((t + v.phase) * 4) * 0.8 + 0.8) : 0;
       const wy = y - 2 - up - bob;
       badges.push([d.left + 8, wy, img]);

@@ -856,6 +856,10 @@ li > .openbtn, .tw > .openbtn { right: 92px; }
 
 /* ===== village only (zen.js): body.village-only hides all UI; the village fills the window ===== */
 .zenbtn { font-size: 14px; }
+.bubblesbtn .off { display: none; }
+.bubblesbtn.is-off .off { display: block; }
+.bubblesbtn.is-off { color: var(--text-muted); opacity: 0.7; }
+.bubblesbtn[aria-pressed="true"] { color: var(--text); }
 body.village-only .app > .top, body.village-only .nudge, body.village-only .panel, body.village-only .stage,
 body.village-only .splitter, body.village-only .peekgrip, body.village-only .peekhead { visibility: hidden !important; } /* hidden, not removed: layout/terminal size stay put */
 body.village-only .zoom, body.village-only .quiet-note, body.village-only .peekbtn, body.village-only .toast,
