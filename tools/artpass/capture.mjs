@@ -7,6 +7,11 @@
 //   node tools/artpass/capture.mjs --q 'mock&citydemo=1' --tag demo --zoom 3 [--night] [--anim]
 //        [--only Town] [--region x0,y0,x1,y1 (view px)] [--dock] [--labels] [--bubbles] [--out /tmp/artpass]
 //        [--frames N --every ms]   (with --anim: N shots of the region's centre, a time-lapse)
+//   Engine v2 (adds engine=2; classic behaviour is unchanged without --engine):
+//   node tools/artpass/capture.mjs --engine 2 --fixture busy [--t sec] [--seed n] [--grid ground|walk|cover|lot]
+//        [--zoom 0.25|0.5|1|2|3|4] [--only <village name>] [--tag busy] [--out /tmp/artpass] [--night]
+//     Output <out>/<tag>/: overview.png (grid centre, largest z<=1 that fits), <village-slug>-z<zoom>.png per
+//     settlement (block centre), index.json (files, cameras, villageDebug summary).
 //   node tools/artpass/capture.mjs --sheet [--night]        the sprite sheet page (?artsheet)
 //
 // Output: <out>/<tag>/overview.png (zoom 1, whole town) and r<row>c<col>.png tiles at --zoom, plus
@@ -44,6 +49,48 @@ if (flag('sheet')) {
     fs.writeFileSync(path.join(out, `${name}.png`), Buffer.from(data.split(',')[1], 'base64'));
   }
   console.log(`${n} sheet pages → ${out}`);
+  await browser.close();
+  process.exit(0);
+}
+
+const engine = opt('engine') === '2';
+if (engine) {
+  const ez = +opt('zoom', 1);
+  if (![0.25, 0.5, 1, 2, 3, 4].includes(ez)) throw new Error(`--zoom must be one of 0.25 0.5 1 2 3 4 (got ${opt('zoom')})`);
+  const eq = ['mock', 'engine=2', 'debug', flag('night') ? 'night=1' : 'night=0'];
+  for (const k of ['fixture', 't', 'seed', 'grid']) if (opt(k) !== undefined) eq.push(`${k}=${encodeURIComponent(opt(k))}`);
+  if (opt('q')) eq.push(opt('q'));
+  const q = eq.join('&'), slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'village';
+  await page.addInitScript(bubbles => { try { if (!bubbles) localStorage.setItem('va.bubbles', '0'); } catch { /* fine */ } }, flag('bubbles'));
+  // village-only before the first frame: the engine draws only while the village is on screen, and the default panel may hide it
+  await page.addInitScript(() => document.addEventListener('DOMContentLoaded', () => document.body.classList.add('village-only')));
+  await page.goto(`${BASE}?${q}`);
+  await page.waitForFunction(() => document.getElementById('cv')?.dataset.engine === 'ready' && window.villageDebug?.().engine === 2, null, { timeout: 60000 });
+  await page.evaluate(labels => {
+    document.body.classList.add('village-only');
+    if (!labels) { const s = document.createElement('style'); s.textContent = '#labels, .zenpill, .zoom, #quiet-note { display: none !important; }'; document.head.append(s); }
+  }, flag('labels'));
+  const settle = () => page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 60)))));
+  await settle();
+  const dbg = await page.evaluate(() => window.villageDebug());
+  const shot = async (file, cam) => {
+    await page.evaluate(c => window.villageSetCamera(c), { v: 2, ...cam });
+    await settle();
+    await page.screenshot({ path: path.join(out, file) });
+    return { file, cam };
+  };
+  const g = dbg.grid, files = [];
+  // Overview: grid centre, largest allowed z <= 1 whose screen bounds (tile (tx,ty) -> ((tx-ty)*16, (tx+ty)*8)) fit the viewport.
+  const gw = (g.w + g.h) * 16, gh = (g.w + g.h) * 8;
+  const oz = [1, 0.5, 0.25].find(z => gw * z <= VW && gh * z <= VH) ?? 0.25;
+  files.push(await shot('overview.png', { x: g.ox + g.w / 2, y: g.oy + g.h / 2, z: oz }));
+  const vs = opt('only') ? dbg.villages.filter(v => v.name === opt('only')) : dbg.villages;
+  if (opt('only') && !vs.length) throw new Error(`no settlement ${opt('only')}: ${dbg.villages.map(v => v.name)}`);
+  for (const v of vs) files.push({ village: v.name, tier: v.tier, ...await shot(`${slug(v.name)}-z${ez}.png`, { x: v.block.x + v.block.w / 2, y: v.block.y + v.block.h / 2, z: ez }) });
+  const after = await page.evaluate(() => window.villageDebug());
+  fs.writeFileSync(path.join(out, 'index.json'), JSON.stringify({ q, zoom: ez, viewport: [VW, VH], files,
+    debug: { engine: after.engine, lint: (after.lint || []).length, objects: after.objects, grid: after.grid, villages: after.villages } }, null, 1));
+  console.log(`engine: ${files.length} shots → ${out}`);
   await browser.close();
   process.exit(0);
 }

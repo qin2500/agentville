@@ -24,3 +24,5 @@ coverage/
 .idea/
 dist-app/
 desktop/.build/
+out/
+mods/index.js

@@ -1,0 +1,22 @@
+name: mods
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  mods:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # --ignore-scripts skips the electron download and the node-pty native build.
+      # None of the tests below import them.
+      - run: npm ci --ignore-scripts
+      - run: npm run mods
+      - run: npm run lint:mods
+      - run: node --test test/mod-*.test.mjs test/engine-*.test.mjs test/mods-index.test.mjs test/worlds.test.mjs test/mod-tool.test.mjs
