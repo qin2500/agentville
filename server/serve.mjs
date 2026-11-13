@@ -15,6 +15,8 @@ import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
 import { createLoops } from './loops.mjs'
 import { createTasks } from './tasks.mjs'
+import { createHelper } from './helper.mjs'
+import { createTaskNamer } from './task-names.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
 import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
@@ -79,6 +81,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const store = createStore(dataDir)
   const loops = createLoops(dataDir)
   const tasks = createTasks(dataDir)
+  const helper = createHelper({ dir: dataDir, claudeHome: claude.home })
+  // transcriptOf (below) maps agent id -> transcript .jsonl path; the namer reads it lazily.
+  const namer = createTaskNamer({ helper, tasks, transcriptFor: (agentId) => transcriptOf.get(agentId) || null })
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
   const termActs = []
@@ -200,8 +205,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
     const taskStore = await tasks.sync(agents, now)
+    try { Promise.resolve(namer.kick()).catch(() => {}) } catch {}
     const taskList = Object.entries(taskStore.items).map(([id, e]) => ({ id, ...e }))
-    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList }
+    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList, helper: { enabled: (await helper.status()).enabled } }
   }
 
   function messageProblem(a) {
@@ -399,6 +405,15 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const override = await store.patch(id, body)
         cached = null
         return send(res, 200, { id, override })
+      }
+      if (url.pathname === '/api/helper') {
+        if (req.method === 'GET') return send(res, 200, await helper.status())
+        if (req.method === 'POST') {
+          if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+          const status = await helper.setEnabled((await readBody(req))?.enabled)
+          cached = null
+          return send(res, 200, status)
+        }
       }
       const lm = /^\/api\/loops\/(.+)$/.exec(url.pathname)
       if (lm && req.method === 'POST') {

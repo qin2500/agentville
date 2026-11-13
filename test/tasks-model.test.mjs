@@ -46,3 +46,10 @@ test('ideas, titles, unseen, ordering, done', () => {
   assert.deepEqual(done.map(r => r.id), ['t4', 't3']);
   assert.deepEqual(taskCounts(open), { total: 3, needs: 0, followUp: 1 });
 });
+
+test('title prefers rename, then aiName, then the agent title', () => {
+  const a = [ag('a', { title: 'Raw title' })];
+  assert.equal(one(a).title, 'Raw title');
+  assert.equal(one(a, { aiName: 'Fix login bug' }).title, 'Fix login bug');
+  assert.equal(one(a, { aiName: 'Fix login bug', rename: 'Mine' }).title, 'Mine');
+});
