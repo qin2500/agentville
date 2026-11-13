@@ -12,6 +12,7 @@ import { createLaunch } from './launch.js';
 import { createBroadcast } from './broadcast.js';
 import { createDock } from './dock.js';
 import { createPeek } from './peek.js';
+import { createZen } from './zen.js';
 import { transitions } from './notify.js';
 import { viewsFrom, nextView } from './views.js';
 
@@ -134,6 +135,7 @@ const launch = createLaunch(app);
 const broadcast = createBroadcast(app);
 const dock = createDock(app);
 const peek = createPeek(app, { store, village });
+createZen(); // "Show only the village" (zen.js)
 
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) compresses to a column on the
@@ -767,6 +769,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') return escape(e, inField);
   if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key;
+  if (document.body.classList.contains('village-only') && !'+=-0'.includes(k)) return; // village only: just zoom keys
   if (k === '/') { e.preventDefault(); focusSearch(); }
   else if (k === '\\') setPanel(S.panel === 'collapsed' ? 'docked' : S.panel === 'docked' ? 'collapsed' : 'docked');
   else if (k === 'f' || k === 'F') toggleFull();
@@ -776,7 +779,7 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'v' || k === 'V') setView(nextView(S.view));
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
-  else if ((k === '+' || k === '=' || k === '-' || k === '0') && (S.panel !== 'full' || S.peek) && !e.target.closest('.panel')) village.key(k);
+  else if ((k === '+' || k === '=' || k === '-' || k === '0') && (S.panel !== 'full' || S.peek || document.body.classList.contains('village-only')) && !e.target.closest('.panel')) village.key(k);
 });
 document.addEventListener('keyup', e => { if (e.key === 'Alt') { altDown = false; village.showAllTags(false); } });
 addEventListener('blur', () => { if (altDown) { altDown = false; village.showAllTags(false); } });
