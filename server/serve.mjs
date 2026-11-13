@@ -13,6 +13,8 @@ import { isLocalRequest } from './local-request.mjs'
 import { defaultDataDir } from './datadir.mjs'
 import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
+import { createLoops } from './loops.mjs'
+import { createTasks } from './tasks.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
 import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
@@ -75,6 +77,8 @@ export { defaultDataDir }
 
 export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {} } = {}) {
   const store = createStore(dataDir)
+  const loops = createLoops(dataDir)
+  const tasks = createTasks(dataDir)
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
   const termActs = []
@@ -195,7 +199,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
-    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState }
+    const taskStore = await tasks.sync(agents, now)
+    const taskList = Object.entries(taskStore.items).map(([id, e]) => ({ id, ...e }))
+    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList }
   }
 
   function messageProblem(a) {
@@ -393,6 +399,27 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const override = await store.patch(id, body)
         cached = null
         return send(res, 200, { id, override })
+      }
+      const lm = /^\/api\/loops\/(.+)$/.exec(url.pathname)
+      if (lm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const entry = await loops.patch(decodeURIComponent(lm[1]), await readBody(req))
+        cached = null
+        return send(res, 200, entry)
+      }
+      if (url.pathname === '/api/tasks' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        const entry = await tasks.addIdea(body?.text)
+        cached = null
+        return send(res, 200, entry)
+      }
+      const tkm = /^\/api\/tasks\/(.+)$/.exec(url.pathname)
+      if (tkm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const entry = await tasks.patch(decodeURIComponent(tkm[1]), await readBody(req))
+        cached = null
+        return send(res, 200, entry)
       }
       if (url.pathname === '/api/fleet/preview' && ['GET', 'POST'].includes(req.method)) {
         let action = url.searchParams.get('action')
