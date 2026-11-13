@@ -41,35 +41,26 @@ test('selecting a row puts the marker on its villager; clicking a villager selec
   await expect(page.locator('#list .row[aria-current="true"]')).toHaveCount(0)
 })
 
-test('the isometric (2.5D) view: same village, villagers still clickable, and the choice sticks', async ({ page }, testInfo) => {
+test('the isometric (2.5D) view, the only one: no black patches, villagers still clickable, no view toggle', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'village is behind the panel on mobile')
   await page.goto('/?night=0&debug')
   await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
+  await expect.poll(() => page.evaluate(() => window.villageDebug().iso)).toBe(true)
+  // The top-down view and its toggle were removed (owner, 2026-11-11).
+  await expect(page.locator('#view-toggle')).toHaveCount(0)
   // Nothing drawn black behind the buildings (a bug once stacked dark patches there): ink outlines
   // and shadows are ~1.5% of the canvas, the black patches made it ~3.5%.
   const dark = () => page.evaluate(() => { const c = document.getElementById('cv'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] < 80) n++; return n / (d.length / 4) })
   await page.waitForTimeout(500)
   expect(await dark()).toBeLessThan(0.025)
-  const btn = page.locator('#view-toggle')
-  await expect(btn).toHaveText('2D') // automation opens top-down unless asked
-  await btn.click()
-  await expect(btn).toHaveText('2.5D')
-  await expect(btn).toHaveAttribute('aria-pressed', 'true')
-  await expect.poll(() => page.evaluate(() => window.villageDebug().iso)).toBe(true)
-  await page.waitForTimeout(500)
-  expect(await dark()).toBeLessThan(0.025)
-  // Every villager is still drawn, and a click on one still selects its row.
+  // Every villager is drawn, and a click on one still selects its row.
   const p = await villagerPoint(page, claudeId('leadBlocked'))
   await page.mouse.click(p.x, p.y)
   await expect(row(page, claudeId('leadBlocked'))).toHaveAttribute('aria-current', 'true')
   await page.screenshot({ path: `${SHOTS}/desktop-village-iso.png` })
   await page.goto('/?night=1&debug')
-  await expect(page.locator('#view-toggle')).toHaveText('2.5D') // remembered
+  await expect.poll(() => page.evaluate(() => window.villageDebug().iso)).toBe(true)
   await page.screenshot({ path: `${SHOTS}/desktop-village-iso-night.png` })
-  await page.locator('#cv').focus()
-  await page.keyboard.press('i') // I toggles back
-  await expect(page.locator('#view-toggle')).toHaveText('2D')
-  await page.evaluate(() => localStorage.removeItem('va.iso'))
 })
 
 // The 2.5D view's depth and placement: nobody stands on a roof, nobody stands inside a building, no
@@ -93,7 +84,7 @@ async function checkIsoPlacement(page) {
 }
 
 test('the isometric view: nobody on a roof or inside a building, every building on land', async ({ page }) => {
-  await page.goto('/?view=iso&night=0&debug')
+  await page.goto('/?night=0&debug')
   await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
   await page.waitForTimeout(400)
   const d = await checkIsoPlacement(page)
@@ -124,7 +115,7 @@ test('a saved lot from another neighbourhood is not reused: the home moves into 
     sessionStorage.setItem('seeded', '1')
     localStorage.setItem('va.world5', JSON.stringify({ blocks: { 'renamed-away': { x: 70, y: 70, w: 10, h: 8, acc: 0, seen: Date.now() } }, pos: { [`home:${id}`]: [72, 72, 4, 3, 1, 'renamed-away'] } }))
   }, id)
-  await page.goto('/?view=iso&night=0&debug')
+  await page.goto('/?night=0&debug')
   await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
   await layoutReady(page)
   const d = await page.evaluate(() => window.villageDebug())
@@ -139,7 +130,7 @@ test('big home in the isometric view: depth and land hold at every zoom', async 
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
   await startDocked(page)
   try {
-    await page.goto(`${s.url}/?view=iso&night=0&debug`)
+    await page.goto(`${s.url}/?night=0&debug`)
     await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
     await page.waitForTimeout(400)
     for (let i = 0; i < 3; i++) {

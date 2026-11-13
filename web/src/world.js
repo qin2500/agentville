@@ -31,11 +31,8 @@ export const R = {
   treeBig: ['nature', 48, 288, 48, 48], treePink: ['nature', 0, 288, 48, 48], sapling: ['nature', 96, 128, 32, 32],
   bush: ['nature', 0, 160, 16, 16], bush2: ['nature', 16, 160, 16, 16], sunflower: ['nature', 0, 176, 16, 16],
   redflower: ['nature', 16, 176, 16, 16], clover: ['nature', 32, 176, 16, 16], tulip: ['nature', 48, 176, 16, 16], rock: ['nature', 240, 144, 16, 16],
-  fenceH: ['house', 176, 112, 16, 16], fenceV: ['house', 176, 96, 16, 16], banner: ['house', 352, 320, 16, 32],
+  banner: ['house', 352, 320, 16, 32],
 };
-// How much of each building's height is roof (tinted with its neighbourhood's accent).
-const ROOF = { hall: 0.56, houseA: 0.6, houseD: 0.6, houseC: 0.6, houseB: 0.6, houseH: 0.58, houseG: 0.58, houseE: 0.5, houseF: 0.5, cabin: 0.5,
-  towerWood: 0.4, towerGreen: 0.4, towerSand: 0.4, towerDome: 0.45, towerRed: 0.4, towerWhite: 0.4 };
 export const LOOKS = ['Villager2', 'Woman', 'OldMan', 'Villager4', 'Hunter', 'Princess', 'Villager3', 'Boy', 'Monk2', 'Villager5', 'OldMan3'];
 export const NINJAS = ['NinjaBlue', 'NinjaRed', 'NinjaYellow', 'NinjaGreen', 'NinjaMasked', 'NinjaDark', 'NinjaLeaf', 'NinjaGray'];
 const PR_LOOKS = ['houseE', 'cabin', 'towerWood', 'houseF', 'towerSand', 'houseG', 'towerDome', 'houseH', 'towerRed', 'towerWhite', 'towerGreen'];
@@ -55,16 +52,17 @@ const DAY = 864e5;
 const HOLD_MS = DAY / 2;     // a building that vanished holds its ground this long, then frees it
 const RESERVE_MS = 14 * DAY; // a hidden neighbourhood keeps its block this long before a newcomer may take it
 export const SEA_MID = '#2a7fae', SEA_DEEP = '#1b4a7a';
-// The isometric view (2.5D): the ground is the same tile map turned 45° and squashed 2:1; buildings are
-// boxes with walls and roofs drawn in that projection (iso.js); trees, lamps and villagers stand upright
-// on their spot like the sprites they are. ISO is view px per world px along the ground.
+// The village is drawn isometric (2.5D) only (owner, 2026-11-11: the top-down view is gone): the ground is
+// the tile map turned 45° and squashed 2:1; buildings are boxes with walls and roofs drawn in that
+// projection (iso.js); trees, lamps and villagers stand upright on their spot like the sprites they are.
+// ISO is view px per world px along the ground. Layout stays in world px; "view px" are isoP of them.
 export const ISO = 0.8;
 export const isoP = (x, y) => [(x - y) * ISO, (x + y) * ISO / 2];
 export const isoInv = (X, Y) => { const a = X / ISO, b = 2 * Y / ISO; return [(a + b) / 2, (b - a) / 2]; };
 /** An upright thing standing on world point (x, y): its offset in iso. */
-export const pointOffset = (x, y, iso) => { if (!iso) return [0, 0]; const [X, Y] = isoP(x, y); return [Math.round(X - x), Math.round(Y - y)]; };
+export const pointOffset = (x, y) => { const [X, Y] = isoP(x, y); return [Math.round(X - x), Math.round(Y - y)]; };
 /** A villager stands on its own spot (its feet; the door when it is indoors or in the crowd). */
-export const agentOffset = (v, iso) => pointOffset(v.x ?? v.door, v.y ?? v.base + 12, iso);
+export const agentOffset = v => pointOffset(v.x ?? v.door, v.y ?? v.base + 12);
 /** A building in the iso view: its drawing, and where it goes in view px. */
 export function isoItem(it, lit) {
   it.doorX ??= R[it.look][5];
@@ -114,8 +112,7 @@ export function isoSort(list) {
   return out;
 }
 /** The box a building covers on screen, in view px: [x, y, w, h]. */
-export function itemBox(it, iso) {
-  if (!iso) { const [, , , w, h] = R[it.look]; return [it.x * T, (it.y + it.h) * T - h, w, h]; }
+export function itemBox(it) {
   const b = isoItem(it, false);
   return [b.ox + b.box[0], b.oy + b.box[1], b.box[2], b.box[3]];
 }
@@ -174,7 +171,7 @@ const decorTier = growth => Math.min(DECOR_CAP, DECOR.filter(([, at]) => growth 
 export function layout(P, now = Date.now()) {
   const S = P.saved;
   const W = { villages: [], items: [], occ: new Map(), fp: new Set(), path: new Set(), street: new Set(), land: new Set(), seaDist: new Map(),
-    props: [], groundDecor: [], fences: [], square: SQUARE, inBlock: new Map(), box: null, bounds: null, town: null };
+    props: [], groundDecor: [], square: SQUARE, inBlock: new Map(), box: null, bounds: null, town: null };
   const shown = new Set(P.villages.map(v => v.name));
   const B = S.blocks;
   // A block is held while its project shows, or for RESERVE_MS after it was last shown. A lapsed block
@@ -515,8 +512,8 @@ function scatter(W) {
       at('lantern', x * T, (y + 1) * T, { light: 1 });
     }
   }
-  // District boundary: a low rail fence on each block's outer ring of tiles, open wherever a lane
-  // crosses it and wherever something stands on it.
+  // District boundary: each block's outer ring of tiles, open wherever a lane crosses it and wherever
+  // something stands on it, stays clear of trees (the iso ground draws it as a faint kerb line).
   const fence = new Set();
   for (const v of W.villages) {
     const b = v.block;
@@ -524,7 +521,6 @@ function scatter(W) {
       const edgeX = x === b.x || x === b.x + b.w - 1, edgeY = y === b.y || y === b.y + b.h - 1, k = key(x, y);
       if ((!edgeX && !edgeY) || W.path.has(k) || W.fp.has(k) || lamps.has(k)) continue;
       fence.add(k);
-      W.fences.push([edgeX ? 'fenceV' : 'fenceH', x * T, y * T]);
     }
   }
   // Forest: denser the further from anything built or walked, so the town sits in a ring of woods.
@@ -699,17 +695,6 @@ function createRenderer(IMG) {
     const out = canvas(w, h), o = out.getContext('2d'); o.filter = 'brightness(1.3) saturate(1.1)'; o.drawImage(c, 0, 0);
     dyes.set(k, out); return out;
   };
-  // A toned sheet recoloured toward an accent ('color' keeps each pixel's lightness, so shading and
-  // the ink edges survive). Only the roof rows of a building are drawn from it.
-  const roofs = new Map();
-  const roofSheet = (sh, accent) => {
-    const k = `${sh}|${accent}`;
-    if (roofs.has(k)) return roofs.get(k);
-    const src = TONED[sh] || IMG[sh], c = canvas(src.width, src.height), g = c.getContext('2d');
-    g.drawImage(src, 0, 0); g.globalCompositeOperation = 'color'; g.globalAlpha = 0.7; g.fillStyle = accent; g.fillRect(0, 0, c.width, c.height);
-    g.globalAlpha = 1; g.globalCompositeOperation = 'destination-in'; g.drawImage(src, 0, 0);
-    roofs.set(k, c); return c;
-  };
   // Agents: sprite + 1px ink outline + 2px light rim (a "sticker"), cached per frame. A white
   // outline variant marks the selected agent / keyboard cursor.
   const rims = new Map();
@@ -744,7 +729,7 @@ function createRenderer(IMG) {
     W.lights = W.props.filter(p => p.light);
     // Each upright prop's iso offset (it stands on the middle of its bottom edge), and the wild ones in
     // iso draw order (by where their feet land on screen).
-    for (const p of W.props) p.io = pointOffset(p.x + R[p.r][3] / 2, p.base, true);
+    for (const p of W.props) p.io = pointOffset(p.x + R[p.r][3] / 2, p.base);
     // Wild trees and bushes that could overlap a building on screen join the iso depth sort; the rest
     // are drawn first, in order of where their feet land.
     const rects = W.items.filter(it => it.kind === 'home' || it.kind === 'pr').map(it => { const [ox, oy] = isoP(it.x * T, it.y * T), e = isoExtent(it, T); return [ox + e[0], oy + e[1], ox + e[2], oy + e[3]]; });
@@ -755,13 +740,13 @@ function createRenderer(IMG) {
     W.wildIso = W.wild.filter(p => !p.nearBuilding).sort((a, b) => a.base + a.io[1] - b.base - b.io[1]);
     W.wildNear = W.wild.filter(p => p.nearBuilding);
   }
-  // In iso the ground is baked without anything that stands up (wild trees and fences are drawn upright).
-  function chunkAt(cx, cy, iso) {
-    const id = `${iso ? 'i' : 'f'}${cx},${cy}`;
-    if (!chunks.has(id)) chunks.set(id, bake(Wcur, cx * C, cy * C, iso));
+  // The ground is baked without anything that stands up (wild trees are drawn upright).
+  function chunkAt(cx, cy) {
+    const id = `${cx},${cy}`;
+    if (!chunks.has(id)) chunks.set(id, bake(Wcur, cx * C, cy * C));
     return chunks.get(id);
   }
-  function bake(W, x0, y0, iso) {
+  function bake(W, x0, y0) {
     let shore = false;
     for (let y = y0; y < y0 + C && !shore; y++) for (let x = x0; x < x0 + C; x++) if ((W.seaDist.get(key(x, y)) ?? 99) < 5) { shore = true; break; }
     if (!shore) return null; // open sea: the frame's SEA_DEEP fill is the ground
@@ -790,7 +775,6 @@ function createRenderer(IMG) {
       }
     }
     g.fillStyle = 'rgba(20, 16, 30, 0.32)';
-    if (!iso) for (const it of W.items) if ((it.kind === 'home' || it.kind === 'pr') && hit(it.x * T - 2, (it.y + it.h) * T - 6, R[it.look][3] + 4, 8)) g.fillRect(it.x * T - ox - 2, (it.y + it.h) * T - oy - 6, R[it.look][3] + 4, 8);
     for (const p of W.trees) { const w = R[p.r][3]; if (!hit(p.x, p.base - 10, w, 14)) continue; g.beginPath(); g.ellipse(p.x + w / 2 - ox, p.base - 3 - oy, w * 0.42, 5, 0, 0, 7); g.fill(); }
     const out = canvas(S, S), o = out.getContext('2d');
     o.filter = 'hue-rotate(14deg) saturate(1.25) contrast(0.68) brightness(0.82)'; o.drawImage(raw, 0, 0);
@@ -809,7 +793,7 @@ function createRenderer(IMG) {
       }
     }
     o.globalCompositeOperation = 'source-over'; o.globalAlpha = 1;
-    if (!iso) { for (const [r, x, y] of W.fences) if (hit(x, y, T, T)) blit(o, r, x - ox, y - oy); } else { // iso: a district's edge is a faint kerb line, and each building casts a soft shadow east
+    { // a district's edge is a faint kerb line, and each building casts a soft shadow east
       o.strokeStyle = 'rgba(20, 16, 30, 0.22)'; o.lineWidth = 2;
       for (const v of W.villages) { const b = v.block; if (hit(b.x * T - 4, b.y * T - 4, b.w * T + 8, b.h * T + 8)) o.strokeRect(b.x * T - ox + 1.5, b.y * T - oy + 1.5, b.w * T - 3, b.h * T - 3); }
       for (const it of W.items) {
@@ -823,32 +807,27 @@ function createRenderer(IMG) {
       if (d < 3.2) continue;
       o.fillStyle = d < 5.5 ? SEA_MID : SEA_DEEP; o.fillRect((x - x0) * T, (y - y0) * T, T, T);
     }
-    // Wild trees and flowers never share space with villagers: bake them (y-sorted) too.
-    if (!iso) for (const p of W.wild) if (hit(p.x, p.y, R[p.r][3], R[p.r][4])) blit(o, p.r, p.x - ox, p.y - oy);
     return out;
   }
 
   // ---------- frame ----------
   let smoke = [], leaves = [], lastT = 0, veil = null, walkers = [], flagsDrawn = [], lastView = null, drawOrder = [];
   // f: { ctx, k (world→canvas scale), vx, vy, bw, bh (the view, in view px), zoom, t, night, still,
-  //      agents (vill Map), selected, cursor, iso }. View px are world px in the top-down view and
-  //      projected px (isoP) in the isometric one; everything returned (hits, badges) is in view px.
+  //      agents (vill Map), selected, cursor }. View px are projected px (isoP); everything returned
+  //      (hits, badges) is in view px.
   function draw(f) {
-    const { ctx, k, vx, vy, bw, bh, zoom, t, still, iso } = f, W = Wcur, f8 = Math.floor(t * 8);
+    const { ctx, k, vx, vy, bw, bh, zoom, t, still } = f, W = Wcur, f8 = Math.floor(t * 8);
     walkers = []; flagsDrawn = []; lastView = f;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = SEA_DEEP; ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    // The ground: world px straight through, or turned into iso diamonds by the same transform.
-    let gx0 = vx, gy0 = vy, gx1 = vx + bw, gy1 = vy + bh;
-    if (iso) {
-      const cs = [isoInv(vx, vy), isoInv(vx + bw, vy), isoInv(vx, vy + bh), isoInv(vx + bw, vy + bh)];
-      gx0 = Math.min(...cs.map(c => c[0])); gx1 = Math.max(...cs.map(c => c[0])); gy0 = Math.min(...cs.map(c => c[1])); gy1 = Math.max(...cs.map(c => c[1]));
-      ctx.setTransform(k * ISO, k * ISO / 2, -k * ISO, k * ISO / 2, -vx * k, -vy * k);
-      ctx.imageSmoothingEnabled = true; // a turned, shrunk tile is cleaner smoothed; the sprites stay crisp
-    } else { ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k); ctx.imageSmoothingEnabled = false; }
+    // The ground: world px turned into iso diamonds by the transform.
+    const cs = [isoInv(vx, vy), isoInv(vx + bw, vy), isoInv(vx, vy + bh), isoInv(vx + bw, vy + bh)];
+    const gx0 = Math.min(...cs.map(c => c[0])), gx1 = Math.max(...cs.map(c => c[0])), gy0 = Math.min(...cs.map(c => c[1])), gy1 = Math.max(...cs.map(c => c[1]));
+    ctx.setTransform(k * ISO, k * ISO / 2, -k * ISO, k * ISO / 2, -vx * k, -vy * k);
+    ctx.imageSmoothingEnabled = true; // a turned, shrunk tile is cleaner smoothed; the sprites stay crisp
     const [bx0, by0, bx1, by1] = W.bounds, CT = C * T;
     for (let cy = Math.floor(Math.max(gy0 / T, by0) / C); cy * C < Math.min(gy1 / T, by1); cy++)
-      for (let cx = Math.floor(Math.max(gx0 / T, bx0) / C); cx * C < Math.min(gx1 / T, bx1); cx++) { const g = chunkAt(cx, cy, iso); if (g) ctx.drawImage(g, cx * CT, cy * CT); }
+      for (let cx = Math.floor(Math.max(gx0 / T, bx0) / C); cx * C < Math.min(gx1 / T, bx1); cx++) { const g = chunkAt(cx, cy); if (g) ctx.drawImage(g, cx * CT, cy * CT); }
     const onGround = (x, y, w, h) => x + w > gx0 && x < gx1 && y + h > gy0 && y < gy1;
     ctx.fillStyle = '#e9fbff';
     for (const [x, y] of W.waves) { if (!onGround(x * T, y * T, T, T)) continue; const h = hash(key(x, y)), o = still ? 4 : Math.floor(t * 3 + h % 16) % 16; ctx.fillRect(x * T + o, y * T + 6 + (h >> 4) % 6, 4, 1); }
@@ -856,34 +835,31 @@ function createRenderer(IMG) {
     ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
     ctx.imageSmoothingEnabled = false;
     const inView = (x, y, w, h) => x + w > vx && x < vx + bw && y + h > vy && y < vy + bh;
-    if (iso) for (const p of W.wildIso) { const x = p.x + p.io[0], y = p.y + p.io[1]; if (inView(x, y, R[p.r][3], R[p.r][4])) blit(ctx, p.r, x, y); }
+    for (const p of W.wildIso) { const x = p.x + p.io[0], y = p.y + p.io[1]; if (inView(x, y, R[p.r][3], R[p.r][4])) blit(ctx, p.r, x, y); }
     const list = [];
-    // In iso every drawable also gets its ground footprint (fx0, fy0, fx1, fy1: world px; a point for
-    // anything upright) and screen rect (sx0, sy0, sx1, sy1: view px) for isoSort.
+    // Every drawable gets its ground footprint (fx0, fy0, fx1, fy1: world px; a point for anything
+    // upright) and screen rect (sx0, sy0, sx1, sy1: view px) for isoSort.
     const pt = (d, fx, fy, sx0, sy0, sx1, sy1) => Object.assign(d, { fx0: fx, fx1: fx, fy0: fy, fy1: fy, sx0, sy0, sx1, sy1 });
-    if (iso) for (const p of W.wildNear) {
+    for (const p of W.wildNear) {
       const x = p.x + p.io[0], y = p.y + p.io[1], w = R[p.r][3], h = R[p.r][4];
       if (inView(x, y, w, h)) list.push(pt({ r: p.r, x, y }, p.x + w / 2, p.base, x, y, x + w, y + h));
     }
     for (const p of W.liveProps) {
-      const [ox, oy] = iso ? p.io : [0, 0], w = R[p.r][3], h = R[p.r][4];
+      const [ox, oy] = p.io, w = R[p.r][3], h = R[p.r][4];
       if (!inView(p.x + ox, p.y + oy, 64, 64)) continue;
-      if (iso && p.light) list.push(pt({ lamp: 1, x: p.x + 8 + ox, y: p.base + oy }, p.x + w / 2, p.base, p.x + 8 + ox - 3, p.base + oy - 24, p.x + 8 + ox + 3, p.base + oy)); // a slim post: the lantern sprite reads as a birdhouse at this angle
-      else if (iso) list.push(pt(p.banner ? { ...p, x: p.x + ox, y: p.y + oy, base: p.base + oy } : { r: p.r, x: p.x + ox, y: p.y + oy }, p.x + w / 2, p.base, p.x + ox, p.y + oy - 4, p.x + ox + w, p.base + oy));
-      else list.push(p.banner ? { ...p, x: p.x + ox, y: p.y + oy, base: p.base + oy } : { r: p.r, x: p.x + ox, y: p.y + oy, base: p.base + oy });
+      if (p.light) list.push(pt({ lamp: 1, x: p.x + 8 + ox, y: p.base + oy }, p.x + w / 2, p.base, p.x + 8 + ox - 3, p.base + oy - 24, p.x + 8 + ox + 3, p.base + oy)); // a slim post: the lantern sprite reads as a birdhouse at this angle
+      else list.push(pt(p.banner ? { ...p, x: p.x + ox, y: p.y + oy, base: p.base + oy } : { r: p.r, x: p.x + ox, y: p.y + oy }, p.x + w / 2, p.base, p.x + ox, p.y + oy - 4, p.x + ox + w, p.base + oy));
     }
     const restingIn = new Map();
     for (const v of f.agents.values()) if (folds(v.a) && v.own) restingIn.set(v.home.id, (restingIn.get(v.home.id) || 0) + 1);
     for (const it of W.items) {
       if (it.kind !== 'home' && it.kind !== 'pr') continue;
       it.px = null; it.iso = null; // set when drawn (night lights, smoke and the zZ use them)
-      if (iso) {
-        // Windows glow while its agent is in, and in every home after dark.
-        const b = isoItem(it, !!restingIn.get(it.id) || (f.night > 0.5 && it.kind === 'home'));
-        if (!inView(b.x, b.y, b.img.width, b.img.height)) continue;
-        const [bx, by, bw2, bh2] = b.box;
-        list.push({ it, b, fx0: it.x * T, fy0: it.y * T, fx1: (it.x + it.w) * T, fy1: (it.y + it.h) * T, sx0: b.ox + bx, sy0: b.oy + by, sx1: b.ox + bx + bw2, sy1: b.oy + by + bh2 });
-      } else if (inView(it.x * T - 16, it.y * T - 16, it.w * T + 48, it.h * T + 32)) list.push({ it, base: (it.y + it.h) * T });
+      // Windows glow while its agent is in, and in every home after dark.
+      const b = isoItem(it, !!restingIn.get(it.id) || (f.night > 0.5 && it.kind === 'home'));
+      if (!inView(b.x, b.y, b.img.width, b.img.height)) continue;
+      const [bx, by, bw2, bh2] = b.box;
+      list.push({ it, b, fx0: it.x * T, fy0: it.y * T, fx1: (it.x + it.w) * T, fy1: (it.y + it.h) * T, sx0: b.ox + bx, sy0: b.oy + by, sx1: b.ox + bx + bw2, sy1: b.oy + by + bh2 });
     }
     const vills = [];
     for (const v of f.agents.values()) {
@@ -892,35 +868,34 @@ function createRenderer(IMG) {
       if (hidden && !ghost) continue;
       const d = place(v, ghost, still || v.a.id === f.selected, t);
       d.wx = d.left + 8; d.wy = d.feet; // its feet on the ground, world px
-      const [ox, oy] = agentOffset(v, iso);
+      const [ox, oy] = agentOffset(v);
       d.left += ox; d.feet += oy; d.top += oy;
       if (!inView(d.left - 30, d.feet - 60, 80, 70)) continue;
-      // On a tie a villager stands in front of its building. In iso the depth sort decides: a house
-      // nearer the viewer hides whoever stands behind it (they show through it as a silhouette).
+      // The depth sort decides: a house nearer the viewer hides whoever stands behind it (they show
+      // through it as a silhouette).
       vills.push(d);
-      list.push(iso ? pt({ vd: d }, d.wx, d.wy, d.left - 2, d.feet - 32, d.left + 18, d.feet + 3) : { vd: d, base: d.feet + 0.5 });
+      list.push(pt({ vd: d }, d.wx, d.wy, d.left - 2, d.feet - 32, d.left + 18, d.feet + 3));
       if (v.pose === 'carry') walkers.push({ id: v.a.id, kind: 'carry', x: d.left, y: d.feet, facing: d.dir === 3 ? 'R' : d.dir === 2 ? 'L' : 'D', moving: d.moving, t });
-      if (v.block && !ghost) list.push(iso ? pt({ r: 'block', x: v.block[0] + ox, y: v.block[1] + oy }, d.wx + 9, d.wy + 0.5, v.block[0] + ox, v.block[1] + oy, v.block[0] + ox + 16, v.block[1] + oy + 16) : { r: 'block', x: v.block[0] + ox, y: v.block[1] + oy, base: v.block[1] + 12 + oy });
+      if (v.block && !ghost) list.push(pt({ r: 'block', x: v.block[0] + ox, y: v.block[1] + oy }, d.wx + 9, d.wy + 0.5, v.block[0] + ox, v.block[1] + oy, v.block[0] + ox + 16, v.block[1] + oy + 16));
     }
     // Strollers: a chicken in each neighbourhood square, a cat on the town square.
     const strollers = W.villages.map(v => ['chicken', `chicken:${v.name}`, { x: v.plaza.x * T, y: (v.plaza.y + 0.4) * T, w: (v.plaza.w - 1) * T, h: (v.plaza.h - 1) * T }]);
     strollers.push(['cat', 'cat', { x: (SQUARE.x + 0.5) * T, y: (SQUARE.y + SQUARE.h - 2) * T, w: (SQUARE.w - 2) * T, h: T }]);
     for (const [an, id, rect] of strollers) {
-      const s = stroll(id, rect, t), [ox, oy] = pointOffset(s.x + 8, s.y + 14, iso), x = s.x + ox, y = s.y + oy;
+      const s = stroll(id, rect, t), [ox, oy] = pointOffset(s.x + 8, s.y + 14), x = s.x + ox, y = s.y + oy;
       if (!inView(x, y, 16, 16)) continue;
       // Both sheets face right; a stroller heading left is mirrored. The walk cycle only steps while it moves.
       const fr = !still && s.moving ? Math.floor(t * 6) % 2 : 0;
-      list.push(iso ? pt({ an, x, y, flip: !s.right, fr }, s.x + 8, s.y + 14, x, y, x + 16, y + 16) : { an, x, y, flip: !s.right, fr, base: y + 14 });
+      list.push(pt({ an, x, y, flip: !s.right, fr }, s.x + 8, s.y + 14, x, y, x + 16, y + 16));
       walkers.push({ id, kind: an, x, y, facing: s.right ? 'R' : 'L', moving: s.moving && !still, t });
     }
-    const order = iso ? isoSort(list) : list.sort((a, b) => a.base - b.base);
-    drawOrder = iso ? order : [];
+    const order = isoSort(list);
+    drawOrder = order;
     const pops = [], hits = [], badges = [], resting = new Map();
     for (const v of f.agents.values()) if (folds(v.a) && v.own) resting.set(v.home.id, (resting.get(v.home.id) || 0) + 1);
     for (const d of order) {
       if (d.vd) drawVill(ctx, d.vd, t, f8, f, pops, badges);
       else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
-      else if (d.it) drawItem(ctx, d.it, t, f, resting.get(d.it.id) || 0, still);
       else if (d.an) { if (d.flip) { ctx.save(); ctx.translate(d.x + 16, d.y); ctx.scale(-1, 1); ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, 0, 0, 16, 16); ctx.restore(); } else ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, d.x, d.y, 16, 16); }
       else if (d.banner) drawBanner(ctx, d);
       else if (d.lamp) drawLamp(ctx, d.x, d.y, f.night);
@@ -936,8 +911,7 @@ function createRenderer(IMG) {
     for (const [x, y, k, d] of pops) if (!d.covered) ctx.drawImage(k === 'star' ? star : crown, x, y); // a crown behind a roof stays hidden
     if (f.night > 0.5) for (const it of W.items) {
       if (!resting.get(it.id) || it.px == null) continue;
-      if (it.iso) ctx.drawImage(zGlyph, it.iso.ox + it.iso.ridge[0] + 6, it.iso.oy + it.iso.ridge[1] - 4);
-      else ctx.drawImage(zGlyph, it.x * T + R[it.look][5] + 6, (it.y + it.h) * T - 26);
+      ctx.drawImage(zGlyph, it.iso.ox + it.iso.ridge[0] + 6, it.iso.oy + it.iso.ridge[1] - 4);
     }
     for (const d of vills) {
       if (d.v.a.id === f.selected) ctx.drawImage(marker, d.left + 4, d.top - 9 - (still ? 0 : Math.floor(t * 3) % 2));
@@ -1033,24 +1007,6 @@ function createRenderer(IMG) {
     if (hx >= 0 && hy >= 0 && hx < b.img.width && hy < b.img.height && al[(hy * b.img.width + hx) * 4 + 3]) d.hidden = true;
   }
 
-  function drawItem(ctx, it, t, f, restingN, still) {
-    const r = R[it.look], [sh, sx, sy, w, h] = r, x = it.x * T, y = (it.y + it.h) * T - h;
-    it.px = x; it.py = y;
-    if (it.kind === 'pr' && it.building) return drawSite(ctx, it, r, x, y, w, h);
-    ctx.drawImage(TONED[sh] || IMG[sh], sx, sy, w, h, x, y, w, h);
-    const rh = Math.round(h * (ROOF[it.look] ?? 0.5)); // the roof in the neighbourhood's accent
-    ctx.drawImage(roofSheet(sh, it.village.accent), sx, sy, w, rh, x, y, w, rh);
-    if (it.kind === 'home' && restingN) { ctx.fillStyle = f.night > 0.5 ? '#ffd27a' : '#f7c96b'; ctx.globalAlpha = 0.85; for (const [a, b, c, e] of r[6]) ctx.fillRect(x + a, y + b, c, e); ctx.globalAlpha = 1; }
-    if (it.kind === 'home') {
-      // Flag.png has exactly 4 frames. The frame index used to be floor(t·6 + x) % 4, which is negative
-      // for a flag left of x = 0 (JS % keeps the sign), so 3 frames in 4 drew from outside the sheet:
-      // the flag blinked. Now: a non-negative index, 4 fps, desynced per flag by its id.
-      const fr = still ? 0 : (Math.floor(t * 4) + hash(it.id)) % 4, fx = it.look === 'hall' ? x + 30 : x + w - 14, fy = y - (it.look === 'hall' ? 12 : 6);
-      ctx.drawImage(flagSheet(it.village.accent), fr * 16, 0, 16, 16, fx, fy, 16, 16);
-      flagsDrawn.push({ id: it.id, x: fx, y: fy, frame: fr, accent: it.village.accent });
-    }
-    if (f.selectedHome === it.id) { ctx.strokeStyle = '#eaf2ff'; ctx.lineWidth = 1; ctx.strokeRect(x - 1.5, y - 1.5, w + 3, h + 3); }
-  }
   function drawIsoItem(ctx, it, b, t, f, still) {
     ctx.drawImage(b.img, b.x, b.y);
     it.px = b.x; it.py = b.y; it.iso = b;
@@ -1078,68 +1034,41 @@ function createRenderer(IMG) {
     ctx.fillStyle = '#9a6233'; ctx.fillRect(x + 7, top - 3, 2, d.base - top + 2); ctx.fillStyle = '#c98a4a'; ctx.fillRect(x + 2, top - 3, 12, 1);
     ctx.drawImage(dyed('banner', d.banner), x, top - 2);
   }
-  // Under construction: foundation, walls to a ragged ~50%, roof truss, scaffold, materials.
-  function drawSite(ctx, it, r, x, y, w, h) {
-    const [sh, sx, sy] = r, img = TONED[sh] || IMG[sh], base = y + h, ink = '#140f1c';
-    ctx.fillStyle = ink; ctx.fillRect(x - 3, base - 5, w + 6, 6); ctx.fillStyle = '#8f8a86'; ctx.fillRect(x - 2, base - 4, w + 4, 4);
-    ctx.fillStyle = '#b9b3ab'; for (let i = 0; i < w + 4; i += 6) ctx.fillRect(x - 2 + i, base - 4, 4, 1);
-    for (let c = 0; c < w; c += 4) {
-      const keep = Math.round(h * (0.42 + ((hash(it.id + c) % 100) / 100) * 0.16)), cw = Math.min(4, w - c);
-      ctx.drawImage(img, sx + c, sy + h - keep, cw, keep - 4, x + c, base - keep, cw, keep - 4);
-      ctx.fillStyle = ink; ctx.fillRect(x + c, base - keep - 1, cw, 1);
-    }
-    const top = y + 6, mid = x + (w >> 1), wall = base - Math.round(h * 0.42);
-    const beam = (x0, y0, x1, y1) => { const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)); for (let i = 0; i <= n; i++) { const px = Math.round(x0 + (x1 - x0) * i / n), py = Math.round(y0 + (y1 - y0) * i / n); ctx.fillStyle = ink; ctx.fillRect(px - 1, py - 1, 3, 3); ctx.fillStyle = '#c98a4a'; ctx.fillRect(px, py, 1, 1); } };
-    beam(x + 2, wall, mid, top); beam(x + w - 3, wall, mid, top); beam(mid, top, mid, wall);
-    for (const px of [x - 2, x + w + 1]) { ctx.fillStyle = ink; ctx.fillRect(px - 1, top - 2, 4, base - top + 2); ctx.fillStyle = '#c98a4a'; ctx.fillRect(px, top - 1, 2, base - top); }
-    for (const py of [top + 4, wall - 2]) { ctx.fillStyle = ink; ctx.fillRect(x - 4, py - 1, w + 8, 5); ctx.fillStyle = '#e0a868'; ctx.fillRect(x - 3, py, w + 6, 3); ctx.fillStyle = '#9a6233'; ctx.fillRect(x - 3, py + 2, w + 6, 1); }
-    const mx = x + w + 4, my = base - 6;
-    ctx.fillStyle = ink; ctx.fillRect(mx - 1, my - 7, 14, 8);
-    for (let i = 0; i < 3; i++) { ctx.fillStyle = i % 2 ? '#c98a4a' : '#e0a868'; ctx.fillRect(mx, my - 6 + i * 2, 12, 2); }
-    blit(ctx, 'crate', mx - 2, my - 22);
-  }
   function stepFx(t, W, f, resting) {
     const dt = Math.min(0.5, Math.max(0, t - lastT)); lastT = t;
-    // In iso smoke rises from the chimney (or the ridge of a house without one).
+    // Smoke rises from the chimney (or the ridge of a house without one).
     const flue = it => { const b = it.iso, p = b.chimney || b.ridge; return [b.ox + p[0], b.oy + p[1] - 4]; };
     for (const v of f.agents.values()) if (v.own && v.pose === 'hammer' && v.home.px != null && Math.random() < dt * 0.9) {
-      if (v.home.iso) { const [x, y] = flue(v.home); smoke.push({ x, y, born: t, a: 0.8, f: 0 }); } else smoke.push({ x: v.home.px + R[v.home.look][3] * 0.62, y: v.home.py + 8, born: t, a: 0.8, f: 0 });
+      const [x, y] = flue(v.home); smoke.push({ x, y, born: t, a: 0.8, f: 0 });
     }
     for (const it of W.items) {
       if (it.px == null) continue;
       if (it.kind === 'pr' && it.building && Math.random() < dt * 0.25) {
-        if (it.iso) { const [bx, by, bw, bh] = it.iso.box; smoke.push({ x: it.iso.ox + bx + Math.random() * bw, y: it.iso.oy + by + bh * 0.7, born: t, a: 0.5, f: 0 }); } else smoke.push({ x: it.px + Math.random() * R[it.look][3], y: it.py + R[it.look][4] - 4, born: t, a: 0.5, f: 0 });
+        const [bx, by, bw, bh] = it.iso.box; smoke.push({ x: it.iso.ox + bx + Math.random() * bw, y: it.iso.oy + by + bh * 0.7, born: t, a: 0.5, f: 0 });
       } else if (it.iso?.chimney && resting.get(it.id) && Math.random() < dt * 0.12) { const [x, y] = flue(it); smoke.push({ x, y, born: t, a: 0.45, f: 0 }); } // someone's home: the fire is lit
     }
     smoke = smoke.filter(p => { const age = t - p.born; p.y -= dt * 10; p.x += dt * 4; p.f = Math.min(2, Math.floor(age / 1.2)); p.a = Math.max(0, 0.75 - age * 0.2); return age < 3.6 && age >= 0; });
     const shown = smoke.filter(p => p.x > f.vx - 32 && p.x < f.vx + f.bw + 32 && p.y > f.vy - 32 && p.y < f.vy + f.bh + 32);
     if (shown.length > 6) { const drop = new Set(shown.slice(0, shown.length - 6)); smoke = smoke.filter(p => !drop.has(p)); } // at most 6 puffs on screen
-    if (W.trees.length && Math.random() < dt * 0.8) { const p = W.trees[Math.floor(Math.random() * W.trees.length)]; const [ox, oy] = f.iso ? p.io : [0, 0]; leaves.push({ x: p.x + 8 + ox + Math.random() * 16, y: p.y + 10 + oy, y1: p.base + 4 + oy, s: Math.random() * 6 }); }
+    if (W.trees.length && Math.random() < dt * 0.8) { const p = W.trees[Math.floor(Math.random() * W.trees.length)]; const [ox, oy] = p.io; leaves.push({ x: p.x + 8 + ox + Math.random() * 16, y: p.y + 10 + oy, y1: p.base + 4 + oy, s: Math.random() * 6 }); }
     leaves = leaves.filter(l => { l.y += dt * 12; l.x += Math.sin(t * 2 + l.s) * dt * 10; return l.y < l.y1; });
   }
   function drawNight(ctx, f, vills, resting) {
-    const { vx, vy, bw, bh, still, t, iso } = f, W = Wcur, w = Math.ceil(bw), h = Math.ceil(bh);
+    const { vx, vy, bw, bh, still, t } = f, W = Wcur, w = Math.ceil(bw), h = Math.ceil(bh);
     if (!veil || veil.width !== w || veil.height !== h) veil = canvas(w, h);
     const g = veil.getContext('2d');
     g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, w, h);
     g.fillStyle = `rgba(14, 18, 50, ${0.6 * f.night})`; g.fillRect(0, 0, w, h);
     // Light pools, in view px: [x, y, radius, warm glow?]. Every lamp; every home's windows (brighter when
     // its agent is in for the night); a work lamp on each building site; each square; each villager.
-    const pools = [], P = (x, y) => (iso ? isoP(x, y) : [x, y]);
-    for (const p of W.lights) { const [ox, oy] = iso ? p.io : [0, 0]; pools.push(iso ? [p.x + 8 + ox, p.base + oy - 19, 48, 1] : [p.x + 8, p.y + 8, 48, 1]); }
+    const pools = [], P = isoP;
+    for (const p of W.lights) { const [ox, oy] = p.io; pools.push([p.x + 8 + ox, p.base + oy - 19, 48, 1]); }
     for (const it of W.items) {
       if (it.px == null) continue;
       const lit = resting.get(it.id), b = it.iso;
-      if (b) {
-        if (it.kind === 'pr' && it.building) pools.push([b.ox + b.ridge[0], b.oy + b.ridge[1] + 20, 40, 1]);
-        for (const [x, y] of b.windows) pools.push([b.ox + x, b.oy + y, lit ? 34 : 22, lit ? 1 : 0]);
-        if (b.door) pools.push([b.ox + b.door[0], b.oy + b.door[1] - 4, 26, 1]);
-        continue;
-      }
-      if (it.kind === 'pr' && it.building) { pools.push([it.px + R[it.look][3] / 2, it.py + R[it.look][4] - 8, 40, 1]); continue; }
-      if (it.kind !== 'home') continue;
-      for (const [a, b, c, e] of R[it.look][6]) pools.push([it.px + a + c / 2, it.py + b + e / 2, lit ? 34 : 22, lit ? 1 : 0]);
-      pools.push([it.px + R[it.look][5], it.py + R[it.look][4] + 4, 26, 1]); // the porch light
+      if (it.kind === 'pr' && it.building) pools.push([b.ox + b.ridge[0], b.oy + b.ridge[1] + 20, 40, 1]);
+      for (const [x, y] of b.windows) pools.push([b.ox + x, b.oy + y, lit ? 34 : 22, lit ? 1 : 0]);
+      if (b.door) pools.push([b.ox + b.door[0], b.oy + b.door[1] - 4, 26, 1]);
     }
     for (const v of W.villages) pools.push([...P((v.plaza.x + v.plaza.w / 2) * T, (v.plaza.y + v.plaza.h / 2) * T), 64, 1]);
     pools.push([...P((SQUARE.x + SQUARE.w / 2) * T, (SQUARE.y + SQUARE.h / 2) * T), 96, 1]);
@@ -1153,14 +1082,7 @@ function createRenderer(IMG) {
     const a = Math.min(1, (f.night - 0.35) / 0.4);
     ctx.globalCompositeOperation = 'lighter';
     for (const [x, y, r, warm] of vis) { if (!warm) continue; const gr = ctx.createRadialGradient(x, y, 0, x, y, r * 0.65); gr.addColorStop(0, `rgba(255,170,70,${0.24 * a})`); gr.addColorStop(1, 'rgba(255,170,70,0)'); ctx.fillStyle = gr; ctx.fillRect(x - r, y - r, r * 2, r * 2); }
-    ctx.fillStyle = `rgba(255,214,120,${0.9 * a})`;
-    for (const p of W.lights) { if (iso) continue; ctx.fillRect(p.x + 6, p.y + 6, 4, 4); } // iso lamps light their own head
-    // Every home's windows glow at night, not just the ones whose agent is in.
-    for (const it of W.items) {
-      if (it.kind !== 'home' || it.px == null || resting.get(it.id)) continue;
-      if (it.iso) continue; // iso homes are drawn with their windows lit after dark
-      for (const [wa, wb, wc, we] of R[it.look][6]) ctx.fillRect(it.px + wa + 1, it.py + wb + 1, wc - 2, we - 2);
-    }
+    // Lamps light their own head, and every home is drawn with its windows lit after dark.
     ctx.globalCompositeOperation = 'source-over';
   }
   // e2e only (?debug): what the last frame drew, and whether each flag drawn is really on the canvas

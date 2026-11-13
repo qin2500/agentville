@@ -110,7 +110,7 @@ test('Tree: Important agents are not behind "+N resting" pills', async ({ page }
 })
 
 test('village: Important agents keep their own house and villager, quiet project included', async ({ page }, ti) => {
-  await open(page, { panel: 'collapsed', view: 'team', query: '?view=iso&night=0&debug' })
+  await open(page, { panel: 'collapsed', view: 'team', query: '?night=0&debug' })
   await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
   await page.waitForFunction(() => (window.villageDebug?.().homes?.length || 0) > 0)
   const d = await page.evaluate(() => window.villageDebug())

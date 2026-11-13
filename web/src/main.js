@@ -764,7 +764,7 @@ document.addEventListener('keydown', e => {
   }
   else if (k === 'v' || k === 'V') setView(nextView(S.view));
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
-  else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && (S.panel !== 'full' || S.peek) && !e.target.closest('.panel')) village.key(k);
+  else if ((k === '+' || k === '=' || k === '-' || k === '0') && (S.panel !== 'full' || S.peek) && !e.target.closest('.panel')) village.key(k);
 });
 document.addEventListener('keyup', e => { if (e.key === 'Alt') { altDown = false; village.showAllTags(false); } });
 addEventListener('blur', () => { if (altDown) { altDown = false; village.showAllTags(false); } });

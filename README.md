@@ -29,7 +29,7 @@ correct any agent's role, parent or name from its menu.
 
 **The village.** Each project is a neighbourhood. Agents live in homes, subagents gather in their
 lead's yard, and pull requests become buildings. Stalled villagers show a "!" bubble. There's day
-and night, an isometric (2.5D) and a top-down view (**I** toggles), and buildings never move around
+and night, an isometric (2.5D) view that remembers where you left the camera, and buildings never move around
 between visits. Click a villager to select its row, and the other way round.
 
 **The agent menu.** Right-click an agent (in the village, the panel or the Tree), or use its **⋯**
