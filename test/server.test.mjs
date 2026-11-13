@@ -60,7 +60,7 @@ test('PATCH overrides: validated, persisted atomically, beat detection, null cle
   const patch = (body, type = 'application/json') => fetch(`${base}/api/overrides/${encodeURIComponent(id)}`, {
     method: 'PATCH', headers: { 'content-type': type, origin: base }, body: JSON.stringify(body) })
   assert.equal((await patch({ role: 'emperor' })).status, 400)
-  assert.equal((await patch({ color: 'red' })).status, 400)
+  assert.equal((await patch({ color: 'mauve' })).status, 400)
   assert.equal((await patch({ name: 'x' }, 'text/plain')).status, 415)
   const ok = await patch({ role: 'lead', parentId: `claude-code:${IDS.boss}`, name: 'Renamed' })
   assert.equal(ok.status, 200)

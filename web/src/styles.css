@@ -98,8 +98,6 @@ svg.role { width: 14px; height: 14px; }
 .empty-note b { color: var(--text); font-size: 14px; }
 .empty-note[hidden] { display: none; }
 .quiet-note .ghost { border-color: transparent; padding: 2px 8px; }
-.viewbtn { width: auto; padding: 0 7px; font: 600 11px/1 ui-monospace, monospace; border-left: 1px solid var(--line); border-radius: 0 var(--radius) var(--radius) 0; }
-.viewbtn[aria-pressed="true"] { color: var(--text); }
 .acct-badge.q { color: var(--waiting); }
 .acct-net { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; font-size: 12px; color: var(--text-muted); padding: 6px 2px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .acct-net.work { color: var(--text); }
@@ -748,7 +746,7 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
    A little signboard: a header about the agent, then its actions. Hard pixel shadow and an accent
    top edge like the village's signs, on the same dark surfaces as the panels. */
 .ctxmenu { position: fixed; z-index: 60; left: 0; top: 0; width: max-content; min-width: 240px; max-width: min(320px, calc(100vw - 16px)); overflow: auto; overscroll-behavior: contain;
-  background: var(--surface); color: var(--text); border: 2px solid #0b0c10; border-top: 4px solid var(--agent-color, var(--accent)); border-radius: 4px;
+  background: var(--surface); color: var(--text); border: 2px solid #0b0c10; border-top: 4px solid var(--agent-color, #0b0c10); border-radius: 4px;
   box-shadow: inset 0 0 0 1px var(--line), 4px 4px 0 rgb(0 0 0 / .5); font-size: 13px; animation: cm-in .08s ease-out; }
 @keyframes cm-in { from { opacity: 0; transform: translateY(-2px); } }
 .reduce-motion .ctxmenu { animation: none; }
@@ -779,14 +777,34 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .cm-note { font-size: 11px; line-height: 1.3; color: var(--text-muted); white-space: normal; }
 .cm-item.danger { color: var(--error); }
 .cm-item.danger:hover, .cm-item.danger:focus { background: color-mix(in srgb, var(--error) 14%, transparent); }
+/* Colour row in the agent menu (ctxmenu.js): swatches in a radio group; the current one is ringed. */
+.cm-color { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; font-size: 13px; color: var(--text); }
+.cm-swatches { display: flex; gap: 5px; }
+.cm-swatch { width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--sw, transparent); cursor: pointer; }
+.cm-swatch.none { background: linear-gradient(135deg, transparent 45%, var(--text-muted) 45% 55%, transparent 55%); }
+.cm-swatch:hover { transform: scale(1.15); }
+.cm-swatch:focus { outline: none; }
+.cm-swatch:focus-visible { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 4px var(--focus); }
+.cm-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 3.5px var(--text); }
+.cm-swatch[aria-checked="true"]:focus-visible { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 3.5px var(--text), 0 0 0 5.5px var(--focus); }
 /* What the open menu is for. */
-.cm-target { box-shadow: inset 0 0 0 2px var(--agent-color, var(--accent)); }
-/* Claude Code's /color (ui.js agentColor sets --agent-color; nothing when none) is who the agent is, so
-   it colours the role glyph beside the name, like an avatar. Status keeps the left edge, the tint and the
-   status icon (what the agent is doing), so the two never stack up as stripes. The selection and menu rings use it too. */
+.cm-target { box-shadow: inset 0 0 0 2px var(--agent-color, var(--text-muted)); } /* no colour: a grey ring */
+/* Claude Code's /color (ui.js agentColor sets --agent-color; nothing when none): a soft wash fading in
+   from the right edge of every agent row and Tree node, behind the text. Status keeps the left edge, the
+   tint and the status icon, so colour and state never meet as two hard stripes. The selection and menu
+   rings use it too. With no colour the gradient is invalid, so nothing is drawn. */
+.row, .tnode { isolation: isolate; }
 .row { position: relative; }
-.row .rg .role, .tnode .tn1 > .role { color: var(--agent-color, currentColor); }
-.row.b-resting .rg .role { opacity: .6; }
+.row::after, .tnode::after { content: ""; position: absolute; inset: 0 0 0 auto; width: 45%; z-index: -1; pointer-events: none; border-radius: inherit;
+  background: linear-gradient(to left, color-mix(in srgb, var(--agent-color) 24%, transparent), transparent); }
+.row.b-resting::after { opacity: .55; }
+/* A coloured agent's status tint fades out by the middle of the row, leaving the right half to its colour. */
+.row.has-color.b-stalled { background: linear-gradient(to right, var(--stalled-bg) 35%, transparent 55%); }
+.row.has-color.b-stalled[aria-current="true"] { background: linear-gradient(to right, var(--stalled-bg) 35%, transparent 55%), var(--surface-3); }
+.row.has-color.sev-error { background: linear-gradient(to right, var(--error-bg) 35%, transparent 55%); }
+.row.has-color.sev-error[aria-current="true"] { background: linear-gradient(to right, var(--error-bg) 35%, transparent 55%), var(--surface-3); }
+.row.has-color.sev-prompt { background: linear-gradient(to right, var(--prompt-bg) 35%, transparent 55%); }
+.row.has-color.sev-prompt[aria-current="true"] { background: linear-gradient(to right, var(--prompt-bg) 35%, transparent 55%), var(--surface-3); }
 .row:focus-visible { outline-color: var(--agent-color, var(--focus)); }
 .sheet header { border-top: 3px solid var(--agent-color, transparent); background: color-mix(in srgb, var(--agent-color, var(--surface)) 12%, var(--surface)); }
 /* "⋯" on a row: on hover or keyboard focus with a mouse, always there on a touch screen. */

@@ -10,6 +10,7 @@ import { loadModels } from './models.js';
 import { createUpdate } from './update.js';
 import { createLaunch } from './launch.js';
 import { createBroadcast } from './broadcast.js';
+import { createDock } from './dock.js';
 import { createPeek } from './peek.js';
 import { createZen } from './zen.js';
 import { transitions } from './notify.js';
@@ -132,6 +133,7 @@ const spend = createSpend(app);
 const update = createUpdate(app);
 const launch = createLaunch(app);
 const broadcast = createBroadcast(app);
+const dock = createDock(app);
 const peek = createPeek(app, { store, village });
 createZen(); // "Show only the village" (zen.js)
 
@@ -232,6 +234,8 @@ if (new URLSearchParams(location.search).has('debug')) window.villageDebug = vil
 function ingest(data) {
   const prevStalled = S.data ? visibleCount(S.data, 'stalled') : null;
   S.data = data;
+  S.dock = data.dock || null;
+  dock.update();
   observe(data.agents || []);
   S.agents = (data.agents || []).filter(a => S.filters.showHidden || !a.hidden);
   S.byId = new Map(S.agents.map(a => [a.id, a]));
@@ -350,7 +354,7 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
   $('view-tree').setAttribute('aria-pressed', String(S.view === 'tree'));
   $('view-models').setAttribute('aria-pressed', String(S.view === 'models'));
   $('btn-new').hidden = S.view !== 'team';
-  const full = S.panel === 'full';
+  const full = S.panel === 'full' && !S.term; // beside the terminal, Expand still means the whole window
   $('btn-full').textContent = full ? '⤡ Dock' : '⤢ Expand';
   $('btn-full').title = full ? 'Dock the panel beside the village (F or Esc)' : 'Expand to full screen (F)';
   applyPanelWidth();
@@ -438,6 +442,14 @@ function chime() {
 }
 
 // ---------- panel modes / hash ----------
+/** Expand / Dock (the button and F). Expanding from the terminal view gives the whole window to the
+ *  list: it closes the terminal and the village peek rather than squeezing the list beside them. */
+function toggleFull() {
+  if (S.panel === 'full' && !S.term) return setPanel('docked');
+  if (S.term) { peek.close('term'); app.closeTerminal(); }
+  peek.close('full');
+  setPanel('full');
+}
 function setPanel(mode) {
   if (S.panel === mode) return;
   S.panel = mode;
@@ -691,7 +703,7 @@ document.addEventListener('click', e => {
   }
   if (t.closest('#btn-expand')) return setPanel('docked');
   if (t.closest('#btn-collapse')) return setPanel('collapsed');
-  if (t.closest('#btn-full')) return setPanel(S.panel === 'full' ? 'docked' : 'full');
+  if (t.closest('#btn-full')) return toggleFull();
   if (t.closest('#view-team')) return setView('team');
   if (t.closest('#view-tree')) return setView('tree');
   if (t.closest('#view-models')) return setView('models');
@@ -760,14 +772,14 @@ document.addEventListener('keydown', e => {
   if (document.body.classList.contains('village-only') && !'+=-0'.includes(k)) return; // village only: just zoom keys
   if (k === '/') { e.preventDefault(); focusSearch(); }
   else if (k === '\\') setPanel(S.panel === 'collapsed' ? 'docked' : S.panel === 'docked' ? 'collapsed' : 'docked');
-  else if (k === 'f' || k === 'F') setPanel(S.panel === 'full' ? 'docked' : 'full');
+  else if (k === 'f' || k === 'F') toggleFull();
   else if (k === 'o' || k === 'O') { // open the focused row's agent, else the selected one, in a terminal
     const id = e.target.closest?.('[data-id]')?.dataset.id || S.selected;
     if (id) panel.open(id);
   }
   else if (k === 'v' || k === 'V') setView(nextView(S.view));
   else if (k === 'j' || k === 'J' || k === 'k' || k === 'K') panel.jumpStalled(k.toLowerCase() === 'j' ? 1 : -1);
-  else if ((k === '+' || k === '=' || k === '-' || k === '0' || k === 'i' || k === 'I') && (S.panel !== 'full' || S.peek || document.body.classList.contains('village-only')) && !e.target.closest('.panel')) village.key(k);
+  else if ((k === '+' || k === '=' || k === '-' || k === '0') && (S.panel !== 'full' || S.peek || document.body.classList.contains('village-only')) && !e.target.closest('.panel')) village.key(k);
 });
 document.addEventListener('keyup', e => { if (e.key === 'Alt') { altDown = false; village.showAllTags(false); } });
 addEventListener('blur', () => { if (altDown) { altDown = false; village.showAllTags(false); } });

@@ -41,6 +41,12 @@ async function withPayload(page, edit) {
 const clone = (a, id, project, bucket, agoMs) => ({ ...a, id, name: `${project} ${id.slice(-2)}`, project, bucket, severity: bucket === 'stalled' ? 'attention' : null,
   parentId: null, role: 'solo', prs: [], hidden: false, live: bucket !== 'resting', lastActivityAt: Date.now() - agoMs, since: Date.now() - agoMs })
 const DAY = 864e5
+// The village is isometric only: a tile rect [x0, y0, x1, y1] (inclusive) as its box in view px
+// (isoP(x, y) = [(x - y)·0.8, (x + y)·0.4], as world.js projects it).
+const isoBox = ([x0, y0, x1, y1]) => {
+  const cs = [[x0, y0], [x1 + 1, y0], [x0, y1 + 1], [x1 + 1, y1 + 1]].map(([x, y]) => [(x - y) * 16 * 0.8, (x + y) * 16 * 0.4])
+  return [Math.min(...cs.map((c) => c[0])), Math.min(...cs.map((c) => c[1])), Math.max(...cs.map((c) => c[0])), Math.max(...cs.map((c) => c[1]))]
+}
 const blocks = (d) => Object.fromEntries(d.villages.map((v) => [v.name, [v.block.x, v.block.y]]))
 const pos = (d) => new Map(d.items.map((it) => [it.id, [it.x, it.y]]))
 const ready = async (page) => {
@@ -69,7 +75,7 @@ test('the camera is clamped to the world bounds at every zoom', async ({ page })
         await page.mouse.up()
       }
       const d = await dbg(page)
-      const [x0, y0, x1, y1] = d.bounds.map((b) => b * 16)
+      const [x0, y0, x1, y1] = isoBox([d.bounds[0], d.bounds[1], d.bounds[2] - 1, d.bounds[3] - 1])
       const { bw, bh } = d.view
       if (z === 4) expect(x1 - x0, 'the world is wider than the view at 4×').toBeGreaterThan(bw)
       if (x1 - x0 >= bw) {
@@ -194,14 +200,15 @@ test('one town: no water between neighbourhoods, the active town fits one 1440×
     }
     // Compact: the neighbourhoods fill a good share of the town box (no island gaps, no sprawl).
     const [tx0, ty0, tx1, ty1] = d.town
+    const [vx0, vy0, vx1, vy1] = isoBox(d.town) // the town's box on screen, in view px
     const filled = d.villages.reduce((a, v) => a + v.block.w * v.block.h, 0) / ((tx1 - tx0 + 1) * (ty1 - ty0 + 1))
     expect(filled).toBeGreaterThan(0.55) // blocks shrink to what they hold, leaving a little street between them
     // The default view shows the whole active town without panning.
     const cv = await page.locator('#cv').boundingBox()
     const scale = d.zoom
     expect([0.5, 1, 2]).toContain(scale)
-    const left = (tx0 * 16 - d.view.vx) * d.view.k * d.view.px, top = (ty0 * 16 - d.view.vy) * d.view.k * d.view.px
-    const right = ((tx1 + 1) * 16 - d.view.vx) * d.view.k * d.view.px, bottom = ((ty1 + 1) * 16 - d.view.vy) * d.view.k * d.view.px
+    const left = (vx0 - d.view.vx) * d.view.k * d.view.px, top = (vy0 - d.view.vy) * d.view.k * d.view.px
+    const right = (vx1 - d.view.vx) * d.view.k * d.view.px, bottom = (vy1 - d.view.vy) * d.view.k * d.view.px
     expect(left, 'town starts inside the view').toBeGreaterThanOrEqual(-1)
     expect(top).toBeGreaterThanOrEqual(-1)
     expect(right, 'town ends inside the view').toBeLessThanOrEqual(cv.width + 1)

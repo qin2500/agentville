@@ -29,7 +29,7 @@ correct any agent's role, parent or name from its menu.
 
 **The village.** Each project is a neighbourhood. Agents live in homes, subagents gather in their
 lead's yard, and pull requests become buildings. Stalled villagers show a "!" bubble. There's day
-and night, an isometric (2.5D) and a top-down view (**I** toggles), and buildings never move around
+and night, an isometric (2.5D) view that remembers where you left the camera, and buildings never move around
 between visits. Click a villager to select its row, and the other way round.
 
 **The agent menu.** Right-click an agent (in the village, the panel or the Tree), or use its **⋯**
@@ -39,8 +39,8 @@ a session that isn't a background job), **Fork…**, **Stop job…**, **Mark imp
 role and parent) and **Hide in village**. On the keyboard, the menu key or Shift+F10 opens it on the
 focused row.
 
-**Colour and marks.** An agent's Claude Code `/color` tints the role icon beside its name (like an avatar),
-the menu header and the selection highlight, so it never competes with the status edge; with no colour set, the icon stays plain.
+**Colour and marks.** An agent's Claude Code `/color` shows as a soft wash fading in from the right edge of its row and Tree node,
+in the menu header and on the selection highlight, so it never competes with the status edge; with no colour set, there is none.
 **Mark important** keeps an agent from ever being folded or hidden automatically (only **Hide in
 village** removes it) and puts it in [Restore after crash](#restore-after-crash). Agents that have
 been quiet for more than 10 days leave the app altogether (nothing on disk is touched); live and

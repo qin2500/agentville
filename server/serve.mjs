@@ -19,6 +19,7 @@ import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODE
 import { createChanges } from './changes.mjs'
 import { fanOut, PER_MINUTE as BROADCASTS_PER_MINUTE, MAX_RECIPIENTS, recipientIds, sameSet, SELF_WHY, selfId, summarize, textProblem } from './broadcast.mjs'
 import { createPrStatus } from './prstatus.mjs'
+import { createDock } from './dock.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
@@ -99,6 +100,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   let quietIds = new Set() // removed by the last scan: quiet for over QUIET_REMOVE_DAYS
   const changes = createChanges()
   const prStatus = createPrStatus(claude.home)
+  const dock = createDock({ dataDir })
   const projectStore = createProjectStore(dataDir)
   // Usage research log: tokens by model next to every usage reading (see research.mjs).
   const research = createResearch({ dataDir })
@@ -170,6 +172,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     }
     changes.prune(dirs)
     await prStatus.annotate(agents)
+    const dockState = await dock.update(agents).catch(() => ({ loading: [], sailed: [], total: 0, level: 1 }))
     // Fleet sends to live Claude sessions; `blocked` says why it can't here ('' = it can).
     const fleet = { mode: 'send', blocked: sendingBlocked(), last: fleetData.last, pending: pending && { ...pending, rebootDetected: startedAt > pending.at } }
     // Restore after crash: remember what is running now; report what an earlier boot lost.
@@ -181,7 +184,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
-    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects }
+    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState }
   }
 
   function messageProblem(a) {
