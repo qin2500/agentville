@@ -298,8 +298,9 @@ export function createPanel(app) {
       sync(kul, items);
       nodes.push(kul);
     } else if (hasKids) {
-      // A folded team still shows its Important members, pinned under it with "↳ parent".
-      const pins = descendants(a).filter(d => pinned(d) && sets.keep.has(d.id) && !seen.has(d.id));
+      // A folded team still shows its Important members, and any member waiting on a click from you
+      // (permission, question, plan), pinned under it with "↳ parent". Once answered it folds away again.
+      const pins = descendants(a).filter(d => (pinned(d) || (isPrompt(d) && !d.hidden)) && sets.keep.has(d.id) && !seen.has(d.id));
       if (pins.length) {
         pins.forEach(d => seen.add(d.id));
         const pul = keyed(`tpins:${a.id}`, () => h('ul', { class: 'kids pinned' }));
@@ -310,6 +311,107 @@ export function createPanel(app) {
     }
     return li(`tli:${a.id}`, ...nodes);
   }
+  // ---------- Tasks ----------
+  // Top of Team: every task/idea you started an agent on, until you check it off.
+  const TK_CAP = 5;
+  let tkOpen = true, tkMore = false, tkDone = false;
+  // By default only crowned and Important agents' tasks (and your own ideas); "Show all" adds the rest.
+  let tkAll = false;
+  try { tkAll = localStorage.getItem('va.tasksAll') === '1'; } catch {}
+  const tkMine = r => { if (!r.agentId) return true; const a = S.byId.get(r.agentId); return !!a && (a.role === 'boss' || a.important === true); };
+  let tkEdit = null, tkVal = ''; // tkEdit: a task id (rename) | '+' (new idea) | null
+  try { tkOpen = localStorage.getItem('va.tasksOpen') !== '0'; } catch {}
+  function tkRow(r) {
+    const a = r.agentId ? S.byId.get(r.agentId) : null;
+    const col = a ? agentColor(a) : '';
+    const idea = r.kind === 'idea';
+    const body = tkEdit === r.id
+      ? `<input class="tk-in" data-tkedit="${esc(r.id)}" value="${esc(tkVal)}" maxlength="200" aria-label="Rename task" placeholder="${esc(r.title || '')}">`
+      : `<span class="tk-t" title="${esc(r.title || '')}">${esc(r.title || '')}</span>`;
+    const lead = r.unseen ? '<i class="udot" title="New since you last looked"></i>' : '';
+    const st = tkEdit === r.id ? '' : `<span class="tk-st tone-${esc(r.tone || 'muted')}">${esc(r.status || '')}</span>`;
+    const acts = tkEdit === r.id ? '' : `<span class="tk-acts"><button type="button" class="tk-b" data-tkact="edit" data-tkid="${esc(r.id)}" title="Rename" aria-label="Rename ${esc(r.title || 'task')}">✎</button>${idea ? `<button type="button" class="tk-b" data-tkact="del" data-tkid="${esc(r.id)}" title="Delete idea" aria-label="Delete ${esc(r.title || 'idea')}">✕</button>` : ''}</span>`;
+    return `<div class="tk-row${idea ? ' idea' : ''}${r.agentId && S.selected === r.agentId ? ' cur' : ''}${r.gone ? ' gone' : ''}" data-tk="${esc(r.id)}"${r.agentId ? ` data-tkagent="${esc(r.agentId)}"` : ''}${col ? ` style="--agent-color:${esc(col)}"` : ''}>
+      <button type="button" class="tk-chk" data-tkact="done" data-tkid="${esc(r.id)}" role="checkbox" aria-checked="false" title="Check off" aria-label="Check off ${esc(r.title || 'task')}"></button>${lead}${body}${st}${acts}</div>`;
+  }
+  function tasksSection() {
+    const rows = S.taskRows || { open: [], done: [] };
+    const allOpen = rows.open || [];
+    const open = tkAll ? allOpen : allOpen.filter(tkMine), done = tkAll ? (rows.done || []) : (rows.done || []).filter(tkMine);
+    const hiddenN = allOpen.length - open.length;
+    const shown = !tkOpen ? [] : tkMore ? open : open.slice(0, TK_CAP);
+    const needs = open.filter(r => r.tone === 'needs').length;
+    const follow = open.length - needs;
+    const tally = [needs ? `${needs} waiting on you` : '', follow ? `${follow} to follow up` : ''].filter(Boolean).join(' · ');
+    const unseen = open.some(r => r.unseen);
+    const sum = tkOpen || !tally ? '' : `<span class="tk-sum">${esc(tally)}</span>`;
+    let html = `<h2><button type="button" class="tk-head" data-tkact="fold" aria-expanded="${tkOpen}"><span class="tk-car" aria-hidden="true">${tkOpen ? '▾' : '▸'}</span>Tasks · <span class="c num">${open.length}</span>${!tkOpen && unseen ? '<i class="udot" title="Something new"></i>' : ''}${sum}</button></h2>`;
+    if (tkOpen) {
+      html += shown.map(tkRow).join('');
+      if (open.length > TK_CAP) html += `<button type="button" class="linkbtn tk-more" data-tkact="more">${tkMore ? 'Show fewer' : `+${open.length - TK_CAP} more`}</button>`;
+      if (tkAll || hiddenN) html += `<button type="button" class="linkbtn tk-more" data-tkact="all" title="Tasks from agents that aren't crowned or Important">${tkAll ? 'Only crowned & important' : `Show all · ${hiddenN} more from other agents`}</button>`;
+      html += tkEdit === '+'
+        ? `<div class="tk-add"><input class="tk-in" data-tkedit="+" value="${esc(tkVal)}" maxlength="200" aria-label="New idea" placeholder="Add an idea"></div>`
+        : '<button type="button" class="linkbtn tk-addb" data-tkact="add">+ Add an idea</button>';
+      if (done.length) {
+        html += `<button type="button" class="linkbtn tk-donehead" data-tkact="donefold" aria-expanded="${tkDone}">${tkDone ? '▾' : '▸'} Done · <span class="num">${done.length}</span></button>`;
+        if (tkDone) html += done.map(r => `<div class="tk-row done${r.agentId && S.selected === r.agentId ? ' cur' : ''}" data-tk="${esc(r.id)}"${r.agentId ? ` data-tkagent="${esc(r.agentId)}"` : ''}><span class="tk-chk on" aria-hidden="true">✓</span><span class="tk-t" title="${esc(r.title || '')}">${esc(r.title || '')}</span><button type="button" class="tk-b tk-re" data-tkact="reopen" data-tkid="${esc(r.id)}" aria-label="Reopen ${esc(r.title || 'task')}">reopen</button></div>`).join('');
+      }
+    }
+    const el = keyed('tasks', () => h('section', { class: 'sec tk-strip', 'aria-label': 'Tasks' }));
+    // Never rebuild under an input that is being typed in.
+    if (el._html !== html && !(el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT')) {
+      el.innerHTML = html; el._html = html;
+      const inp = el.querySelector('.tk-in');
+      if (inp && tkEdit != null) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    }
+    return el;
+  }
+  function tkEndEdit(commit) {
+    const id = tkEdit, v = tkVal.trim();
+    tkEdit = null; tkVal = '';
+    if (commit && id === '+') { if (v) app.taskAdd(v); }
+    else if (commit && id) app.taskAct(id, { rename: v || null });
+    app.render();
+  }
+  function tasksClick(e) {
+    if (e.target.closest('.tk-in')) return true;
+    const b = e.target.closest('[data-tkact]');
+    if (b) {
+      e.stopPropagation();
+      const id = b.dataset.tkid;
+      switch (b.dataset.tkact) {
+        case 'done': app.taskAct(id, { done: true }); break;
+        case 'reopen': app.taskAct(id, { reopen: true }); break;
+        case 'del': app.taskAct(id, { delete: true }); break;
+        case 'edit': {
+          const r = (S.taskRows?.open || []).find(x => x.id === id);
+          tkEdit = id; tkVal = r?.title || ''; app.render(); break;
+        }
+        case 'add': tkEdit = '+'; tkVal = ''; app.render(); break;
+        case 'more': tkMore = !tkMore; app.render(); break;
+        case 'all': tkAll = !tkAll; try { localStorage.setItem('va.tasksAll', tkAll ? '1' : '0'); } catch {} app.render(); break;
+        case 'donefold': tkDone = !tkDone; app.render(); break;
+        case 'fold': tkOpen = !tkOpen; try { localStorage.setItem('va.tasksOpen', tkOpen ? '1' : '0'); } catch {} app.render(); break;
+      }
+      return true;
+    }
+    const row = e.target.closest('.tk-row');
+    if (!row) return false;
+    if (e.detail === 2) return true; // dblclick opens the terminal
+    if (row.dataset.tkagent && S.byId.has(row.dataset.tkagent)) app.select(row.dataset.tkagent);
+    return true;
+  }
+  /** Keys inside the task inputs; true when handled. */
+  function tasksKey(e) {
+    const inp = e.target.closest?.('.tk-in');
+    if (!inp) return false;
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); tkVal = inp.value; tkEndEdit(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); tkEndEdit(false); }
+    return true;
+  }
+
   function teamView(agents) {
     const sets = teamSets(agents);
     if (S.panel === 'full') return fullTeam(agents, sets);
@@ -603,6 +705,7 @@ export function createPanel(app) {
           ? `<b>No agents match “${esc(S.query)}”.</b><span><button class="link" type="button" data-act="clearsearch">Clear search</button></span>`
           : '<b>No agents match these filters.</b><span><button class="link" type="button" data-act="clearfilters">Clear filters</button></span>')];
       } else nodes = S.view === 'tree' ? tree.render() : teamView(S.agents);
+      if (S.view === 'team') { nodes = [tasksSection(), ...nodes]; }
       const conv = S.view === 'team' ? convSection() : null;
       if (conv) nodes = [...nodes, conv];
     }
@@ -645,7 +748,7 @@ export function createPanel(app) {
   // clears the selection. Not on a drag or text selection, and never on anything interactive.
   let down = null;
   list.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
-  const INTERACTIVE = 'button, a, input, select, textarea, label, summary, details, .row, .trow, .card, .chip, .qchip, [data-act], [data-open], [data-menu], [role="columnheader"]';
+  const INTERACTIVE = 'button, a, input, select, textarea, label, summary, details, .row, .trow, .card, .chip, .qchip, [data-act], [data-open], [data-menu], [role="columnheader"], .tk-row';
   function clickedNothing(e) {
     if (e.currentTarget !== list || e.target.closest(INTERACTIVE)) return false;
     const d = down; down = null;
@@ -656,6 +759,7 @@ export function createPanel(app) {
   function onClick(e) {
     userAction(); // also releases the order hold for the render this click causes
     if (clickedNothing(e)) return app.select(null);
+    if (tasksClick(e)) return;
     const ob = e.target.closest('[data-open]');
     if (ob) { e.stopPropagation(); return openAgent(ob.dataset.open, ob); }
     if (S.view === 'models' && e.currentTarget === list && models.onClick(e)) return;
@@ -693,14 +797,18 @@ export function createPanel(app) {
     // In the terminal view a click switches the terminal to it; elsewhere a second click deselects.
     app.select(S.selected === id && !S.term ? null : id);
   }
+  list.addEventListener('input', e => { if (e.target.closest?.('.tk-in')) tkVal = e.target.value; });
   list.addEventListener('click', onClick);
   list.addEventListener('dblclick', e => {
+    const tk = e.target.closest('.tk-row');
+    if (tk) { if (tk.dataset.tkagent && !e.target.closest('[data-tkact], .tk-in') && S.byId.has(tk.dataset.tkagent)) app.activate(tk.dataset.tkagent); return; }
     const row = e.target.closest('.row, .trow[data-id]');
     const inner = e.target.closest('button, .chip[data-href]'); // a row's own buttons (the row itself is one)
     if (row && (!inner || inner === row)) app.activate(row.dataset.id);
   });
   list.addEventListener('keydown', e => {
     if (!['Tab', 'Shift'].includes(e.key)) userAction();
+    if (tasksKey(e)) return;
     if (S.view === 'models' && models.onKey(e)) return;
     const row = e.target.closest?.('.row');
     if (!row || e.metaKey || e.ctrlKey || e.altKey) return;
