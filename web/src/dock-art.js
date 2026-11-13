@@ -1,5 +1,4 @@
-// The harbour (owner, 2026-11-11: "a cute little dock on our island"; 2026-11-12: "make the port scale
-// with how many PRs we are handling … in a more interesting way"). Each PR being shipped is a boat at a
+// The harbour: a little dock on the island that grows with the number of PRs in flight. Each PR being shipped is a boat at a
 // berth; villagers walk crates there from town (dock-walk.js) while checks pass and review lands, and
 // when the PR merges the boat casts off and sails out to sea.
 //

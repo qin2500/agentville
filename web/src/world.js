@@ -53,7 +53,7 @@ const DAY = 864e5;
 const HOLD_MS = DAY / 2;     // a building that vanished holds its ground this long, then frees it
 const RESERVE_MS = 14 * DAY; // a hidden neighbourhood keeps its block this long before a newcomer may take it
 export const SEA_MID = '#2a7fae', SEA_DEEP = '#1b4a7a';
-// The village is drawn isometric (2.5D) only (owner, 2026-11-11: the top-down view is gone): the ground is
+// The village is drawn isometric (2.5D) only (the top-down view is gone): the ground is
 // the tile map turned 45° and squashed 2:1; buildings are boxes with walls and roofs drawn in that
 // projection (iso.js); trees, lamps and villagers stand upright on their spot like the sprites they are.
 // ISO is view px per world px along the ground. Layout stays in world px; "view px" are isoP of them.

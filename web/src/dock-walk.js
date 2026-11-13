@@ -1,4 +1,4 @@
-// Dock walkers (owner, 2026-11-11: "the NPCs in the village physically walk all the way to the port").
+// Dock walkers: villagers physically walk all the way to the port.
 // Crates reach the ships on foot: villagers walk out of town along the roads to the harbour (from
 // tier 2, by way of the crate yard to pick a crate up), along the quay to their ship's pier, down the
 // pier to the ship, set the crate down, and walk back. Who walks keeps each agent's bucket readable:
