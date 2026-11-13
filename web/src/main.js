@@ -1,5 +1,6 @@
 import { BUCKETS, icon, esc, clock, h, reducedMotionQuery, isPrompt, PROMPT_NAME } from './ui.js';
 import { createPanel } from './panel.js';
+import { taskRows } from './tasks-model.js';
 import { createVillage } from './village.js';
 import { createFleet } from './fleet.js';
 import { createAccount } from './account.js';
@@ -31,6 +32,7 @@ const S = {
   data: null,            // last good payload
   agents: [],            // visible agents (hidden removed unless showHidden)
   byId: new Map(),
+  loops: {}, tasks: [], taskRows: { open: [], done: [] }, unseen: new Set(), // Tasks (see tasks-model.js); unseen = agent ids with an unseen open task
   kids: new Map(),       // id -> visible children (from parentId)
   status: 'loading',     // loading | ok | offline
   failures: 0,
@@ -67,6 +69,7 @@ const app = {
   narrow: () => narrowQuery.matches,
   select(id, { pan = true, fromVillage = false, reveal = fromVillage } = {}) {
     S.selected = id && S.byId.has(id) ? id : null;
+    if (S.selected) app.markSeen(S.selected);
     writeHash();
     if (reveal && S.selected) {
       if (fromVillage && S.panel === 'collapsed' && !app.narrow()) setPanel('docked');
@@ -181,6 +184,7 @@ app.openTerminal = id => {
   }
   S.term = id;
   S.selected = id;
+  app.markSeen(id);
   writeHash();
   village.setSelected(id, { pan: false });
   render();
@@ -232,6 +236,78 @@ function focusKey(f) {
 // ?debug exposes the world layout for e2e checks (positions, bounds, zoom).
 if (new URLSearchParams(location.search).has('debug')) window.villageDebug = village.debug;
 
+// ---------- tasks ----------
+// S.tasks mirrors the snapshot's `tasks`; S.taskRows / S.unseen are derived from it (with S.loops'
+// seenAt) and rerun on every ingest and every optimistic change.
+const SEEN_GAP = 5000, seenSent = new Map();
+function recomputeLoops() {
+  const now = S.data?.serverTime || Date.now();
+  try { S.taskRows = taskRows(S.tasks || [], S.agents || [], S.loops || {}, now); } catch { S.taskRows = { open: [], done: [] }; }
+  S.unseen = new Set(S.taskRows.open.filter(r => r.unseen && r.agentId).map(r => r.agentId));
+}
+async function loopPost(id, body) {
+  try {
+    const res = await fetch(`/api/loops/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json().catch(() => null);
+  } catch { return null; }
+}
+/** Marks an agent seen: optimistic, then the POST; the next poll brings the server's copy. */
+app.loopAct = async (id, body) => {
+  (S.loops ||= {})[id] = { ...(S.loops[id] || {}), seenAt: Date.now() };
+  recomputeLoops();
+  render();
+  const res = await loopPost(id, body);
+  if (res && typeof res === 'object') { S.loops[id] = res; recomputeLoops(); render(); }
+};
+async function taskPost(path, body) {
+  try {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json().catch(() => ({}));
+  } catch { return null; }
+}
+/** Done / reopen / rename / delete a task: optimistic, then the POST; a failure re-fetches the real list. */
+app.taskAct = async (id, body) => {
+  const t = (S.tasks ||= []).find(x => x.id === id);
+  if (!t) return;
+  if (body.done) t.doneAt = Date.now();
+  if (body.reopen) delete t.doneAt;
+  if ('rename' in body) { if (body.rename) t.rename = body.rename; else delete t.rename; }
+  if (body.delete) S.tasks = S.tasks.filter(x => x.id !== id);
+  recomputeLoops();
+  render();
+  const res = await taskPost(`/api/tasks/${encodeURIComponent(id)}`, body);
+  if (!res) { app.toast("Couldn't update that task."); poll(); return; }
+  if (res.id && !body.delete) { const i = S.tasks.findIndex(x => x.id === id); if (i >= 0) S.tasks[i] = { ...S.tasks[i], ...res }; recomputeLoops(); render(); }
+};
+/** Done for the open task of an agent (right-click menu). */
+app.taskDoneFor = agentId => {
+  const r = S.taskRows?.open?.find(x => x.agentId === agentId);
+  return r && app.taskAct(r.id, { done: true });
+};
+app.taskAdd = async text => {
+  text = String(text || '').trim();
+  if (!text) return;
+  const tmp = `tmp-${Date.now()}`;
+  (S.tasks ||= []).push({ id: tmp, kind: 'idea', text, addedAt: Date.now() });
+  recomputeLoops();
+  render();
+  const res = await taskPost('/api/tasks', { text });
+  if (!res || !res.id) { app.toast("Couldn't add that idea."); S.tasks = S.tasks.filter(x => x.id !== tmp); recomputeLoops(); render(); poll(); return; }
+  const i = S.tasks.findIndex(x => x.id === tmp);
+  if (i >= 0) S.tasks[i] = res;
+  recomputeLoops();
+  render();
+};
+app.markSeen = id => {
+  if (!id || !S.unseen?.has(id)) return;
+  const now = Date.now();
+  if (now - (seenSent.get(id) || 0) < SEEN_GAP) return;
+  seenSent.set(id, now);
+  app.loopAct(id, { seen: true });
+};
+
 // ---------- data ----------
 function ingest(data) {
   const prevStalled = S.data ? visibleCount(S.data, 'stalled') : null;
@@ -241,6 +317,10 @@ function ingest(data) {
   observe(data.agents || []);
   S.agents = (data.agents || []).filter(a => S.filters.showHidden || !a.hidden);
   S.byId = new Map(S.agents.map(a => [a.id, a]));
+  S.loops = data.loops && typeof data.loops === 'object' ? data.loops : {};
+  S.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  recomputeLoops();
+  if (S.term) app.markSeen(S.term);
   S.kids = new Map();
   for (const a of S.agents) if (a.parentId && S.byId.has(a.parentId)) {
     if (!S.kids.has(a.parentId)) S.kids.set(a.parentId, []);
@@ -599,7 +679,11 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="notify-checks" ${S.notifyOn.checks ? 'checked' : ''}>…when a PR's checks start failing</label>
       <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked. Allow Agentville under System Settings › Notifications.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
-      <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label></div>${update.menuHTML()}`;
+      <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label>
+      <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
+      <p class="helper">Uses a small Haiku model, through your Claude login, for background jobs such as naming your tasks. Off by default.</p>
+      <p class="helper" id="helper-status" role="status"></p></div>${update.menuHTML()}`;
+    loadHelper();
     return;
   }
   const all = S.data?.agents || [];
@@ -616,9 +700,37 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="hidden" ${f.showHidden ? 'checked' : ''}>Show hidden agents</label>
       <label><input type="checkbox" data-set="compact" ${S.compact ? 'checked' : ''}>Compact rows</label></div>`;
 }
+function showHelper(h, err) {
+  const el = $('helper-status'), box = pops.settings?.querySelector('[data-set="helper"]');
+  if (box && h) box.checked = !!h.enabled;
+  if (!el) return;
+  el.textContent = err || (h?.lastError ? `Last error: ${h.lastError}` : h ? `${h.callsToday || 0} call${h.callsToday === 1 ? '' : 's'} today` : '');
+}
+async function loadHelper() {
+  try {
+    const r = await fetch('/api/helper');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    showHelper(await r.json());
+  } catch (e) { showHelper(null, e instanceof TypeError ? 'Helper status: server not reachable.' : `Helper status: ${e.message}`); }
+}
+async function setHelper(enabled, box) {
+  box.disabled = true;
+  try {
+    const r = await fetch('/api/helper', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const h = await r.json();
+    if (S.data) S.data.helper = { enabled: h.enabled };
+    showHelper(h);
+  } catch (e) {
+    box.checked = !enabled;
+    showHelper(null, e instanceof TypeError ? "Couldn't change the helper: server not reachable." : `Couldn't change the helper: ${e.message}`);
+  } finally { box.disabled = false; }
+}
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.f) {
+  if (t.dataset.set === 'helper') {
+    setHelper(t.checked, t);
+  } else if (t.dataset.f) {
     const set = S.filters[t.dataset.f];
     t.checked ? set.add(t.value) : set.delete(t.value);
     render();
