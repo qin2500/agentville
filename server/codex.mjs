@@ -148,6 +148,8 @@ export async function scan(now = Date.now()) {
       harness: 'codex',
       kind: parentId ? 'thread' : 'session',
       name: clean(row?.nickname) || clean(row?.title),
+      // The user/harness-set nickname only (never the thread title, which can be the first prompt).
+      nickname: clean(row?.nickname),
       title: prompt,
       project: projectOf(cwd),
       cwd: cwd || null,

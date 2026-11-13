@@ -377,6 +377,7 @@ async function subagentsOf(t, parent, parentLive, now) {
       harness: 'claude-code',
       kind: teammate ? 'teammate' : 'subagent',
       name: meta.name || meta.agentType || 'Subagent',
+      nickname: meta.name || meta.agentType || '', // never prompt text (engine shortName)
       title: clean(meta.description),
       // A sidechain works in its parent's tree unless it was given a worktree of its own.
       project: meta.worktreePath ? projectOf(meta.worktreePath) : parent.project,
@@ -529,6 +530,7 @@ export async function scan(now = Date.now()) {
       // Its permission mode from the saved respawn flags ('' = default). Never the flag values themselves.
       permissionMode: modeOf(j.respawnFlags),
       name: j.name || '',
+      nickname: j.name || '',
       title: meta.customTitle || meta.aiTitle || meta.firstPrompt || '',
       // The title part that is a name, never the first prompt (Restore after crash stores this).
       titleName: meta.customTitle || meta.aiTitle || '',
@@ -597,6 +599,7 @@ export async function scan(now = Date.now()) {
       harness: 'claude-code',
       kind: 'session',
       name: meta.customTitle || meta.aiTitle || '',
+      nickname: meta.customTitle || '', // user-set only: aiTitle is a summary of the conversation
       title: meta.firstPrompt || '',
       project: projectOf(meta.cwd || f.cwd || liveEntry?.cwd),
       cwd: meta.cwd || f.cwd || liveEntry?.cwd || null,

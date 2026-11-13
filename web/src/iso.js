@@ -226,8 +226,8 @@ function styleOf(it, T = 16) {
 }
 
 /** A building's screen rect in view px relative to isoP(x0, y0), without drawing it: [x0, y0, x1, y1]. */
-export function isoExtent(it, T) {
-  const s = ISO, st = styleOf(it, T), W = it.w * T, D = it.h * T;
+export function isoExtent(it, T, S = 1) {
+  const s = ISO * S, st = styleOf(it, T), W = it.w * T, D = it.h * T;
   const p = st.pad ?? 0;
   return [-D * s - 8 - p, -(st.top ?? st.H + st.R + 44), W * s + 8 + p, (W + D) * s / 2 + 8];
 }
@@ -238,19 +238,20 @@ const cache = new Map();
  * The building for item `it` (footprint it.x, it.y, it.w, it.h in tiles, look, village accent). `lit`:
  * its windows glow (its agent is in, or it is night). Returns { img, dx, dy, windows, door, ridge,
  * chimney, box }: img is drawn at isoP(x0, y0) + [dx, dy] in view px; the points and box are in view px
- * relative to isoP(x0, y0).
+ * relative to isoP(x0, y0). `S` (default 1 = the classic projection, ISO 0.8) scales the ground projection:
+ * the engine's 32x16 tile is S = 1.25. Heights stay in view px.
  */
-export function isoBuilding(it, T, lit) {
+export function isoBuilding(it, T, lit, S = 1) {
   const site = it.kind === 'pr' && it.building;
   // Style comes from look + variant (+ accent), so hundreds of townsfolk houses share a few images; an
   // item without a variant (older layouts) keeps its id-picked style.
-  const k = `${it.look}|${it.w}|${it.h}|${it.village.accent}|${it.variant ?? `id:${it.id}`}|${lit ? 1 : 0}|${site ? 'site' : ''}|${it.doorX}|${styleKey(it)}|${it.look === 'palace' && it.crown ? 1 : 0}`;
-  if (!cache.has(k)) { if (cache.size > 4000) cache.clear(); cache.set(k, make(it, T, lit, site)); }
+  const k = `${it.look}|${it.w}|${it.h}|${it.village.accent}|${it.variant ?? `id:${it.id}`}|${lit ? 1 : 0}|${site ? 'site' : ''}|${it.doorX}|${styleKey(it)}|${it.look === 'palace' && it.crown ? 1 : 0}${S === 1 ? '' : `|s${S}`}`;
+  if (!cache.has(k)) { if (cache.size > 4000) cache.clear(); cache.set(k, make(it, T, lit, site, S)); }
   return cache.get(k);
 }
 
-function make(it, T, lit, site) {
-  const s = ISO, W = it.w * T, D = it.h * T, st = styleOf(it, T);
+function make(it, T, lit, site, S = 1) {
+  const s = ISO * S, W = it.w * T, D = it.h * T, st = styleOf(it, T);
   const H = st.H, R = st.R, e = st.e;
   const Q = (x, y, z = 0) => [(x - y) * s, (x + y) * s / 2 - z];
   const top = -(st.top ?? H + R + 44), left = Math.floor(-D * s) - 8 - (st.pad ?? 0), right = Math.ceil(W * s) + 8 + (st.pad ?? 0), bottom = Math.ceil((W + D) * s / 2) + 8;

@@ -183,6 +183,9 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       name: cap((typeof o.name === 'string' && o.name) || a.name || a.title || 'Untitled', NAME_MAX),
       // The same name, unless it would come from the first prompt ('' then). Safe to store.
       safeName: cap((typeof o.name === 'string' && o.name) || a.name || a.titleName || '', NAME_MAX),
+      // Mods only: an override name or a user/harness-set nickname (Codex agent_nickname, Claude customTitle, job or
+      // subagent name). Never a prompt-derived title or the Claude aiTitle summary. '' if none.
+      shortName: cap((typeof o.name === 'string' && o.name) || a.nickname || '', NAME_MAX),
       title: cap(a.title, TITLE_MAX),
       project: a.project || 'unknown',
       cwd: a.cwd || null,
