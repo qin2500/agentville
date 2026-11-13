@@ -80,3 +80,10 @@ test('sailed keeps 24 h and 12, newest first', async () => {
   c.t += 1; r = await d.update([agent('a', pr(101, 'merged'))])
   assert.deepEqual(r.sailed.map((s) => s.id), ['#101', '#100'])
 })
+
+test('loading entries carry size when known and omit it otherwise', async () => {
+  const d = createDock({ dataDir: tmp() })
+  const r = await d.update([agent('a', pr(1, 'open', { size: { additions: 10, deletions: 2, files: 3 } }), pr(2, 'open'))])
+  assert.deepEqual(r.loading.find((l) => l.id === '#1').size, { additions: 10, deletions: 2, files: 3 })
+  assert.equal('size' in r.loading.find((l) => l.id === '#2'), false)
+})
