@@ -50,7 +50,10 @@ export function createEngine(app) {
 
   // ?world=<id> picks a bundled mod for the session; else Settings (va.world.mod); else the default (village-mods.md §5.2).
   // pickWorld never throws: an invalid or unknown id falls back to the default world.
-  const mod = resolveMod(pickWorld(params.get('world'), store.get('va.world.mod', undefined), listMods().map(m => m.id)));
+  const picked = pickWorld(params.get('world'), store.get('va.world.mod', undefined), listMods().map(m => m.id));
+  let mod;
+  try { mod = resolveMod(picked); }   // a world that fails to load (bad apiVersion, missing parent) falls back to the default
+  catch (e) { console.warn(`world ${picked} failed to load, using ${DEFAULT_MOD}: ${e.message}`); mod = resolveMod(DEFAULT_MOD); }
   const CAM_KEY = mod.id === DEFAULT_MOD ? 'va.cam.e2' : `va.cam.e2.${mod.id}`;   // each world keeps its own camera
   const BG_COL = mod.terrain?.classes?.find(c => c.code === 0)?.color || BG;   // outside the grid is terrain class 0
   const persisted = loadWorld(store, { demo: DEMO || !!fixtureName, now: Date.now(), mod });

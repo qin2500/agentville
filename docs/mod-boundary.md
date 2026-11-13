@@ -52,11 +52,11 @@ case-insensitive, in each file under `web/src/engine/**`:
 
 | Path | Owner | Review |
 |---|---|---|
-| `mods/<id>/**` (third-party) | The mod's author | The author merges changes inside their own folder. Maintainers are not required. |
+| `mods/<id>/**` (third-party) | The mod's author | Review is routed to the author through their CODEOWNERS line; a maintainer merges. |
 | `mods/agentville.*/**` | Maintainers | Reviewed. |
 | `mods/index.js` | Generated, gitignored (`npm run mods`) | Never committed, so world PRs cannot conflict on it. `dev`, `build` and `test` regenerate it. |
 | `web/src/engine/**` | Maintainers | Shared and reviewed: every change needs a maintainer. |
-| `tools/`, `docs/`, `package.json`, `test/` | Maintainers | Reviewed. |
+| `tools/`, `docs/`, `package.json`, `test/`, `.github/` | Maintainers | Reviewed (CODEOWNERS `*` and `/.github/`). |
 
 ### What a PR from `mods/<id>/` may touch
 

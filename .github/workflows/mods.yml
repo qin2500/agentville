@@ -19,4 +19,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run mods
       - run: npm run lint:mods
+      # Runs every mod's hooks (bundled and contributed) against the fixtures, so an engine change that breaks a world fails here.
+      - run: node tools/mod.mjs check all
       - run: node --test test/mod-*.test.mjs test/engine-*.test.mjs test/mods-index.test.mjs test/worlds.test.mjs test/mod-tool.test.mjs

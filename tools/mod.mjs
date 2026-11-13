@@ -223,6 +223,7 @@ async function main(argv) {
   const [cmd, arg, ...rest] = argv;
   const opt = (k, d) => { const i = rest.indexOf(`--${k}`); return i < 0 ? d : rest[i + 1]; };
   const flag = k => rest.includes(`--${k}`);
+  await refreshIndex();   // a fresh clone has no mods/index.js yet (it is generated); the registry imports it
   if (cmd === 'new' && arg) {
     const dest = await newMod(arg, { extendsId: opt('extends', 'agentville.base') });
     const indexed = await refreshIndex();

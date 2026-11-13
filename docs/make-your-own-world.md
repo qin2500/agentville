@@ -4,7 +4,7 @@ A world is a mod: a folder `mods/<your-id>/` that decides what your village look
 keeps the grid, walking, drawing, the camera and your saved layout. You keep everything that makes the world yours.
 This takes about 30 minutes for a first change.
 
-You need Node 20 or newer and a clone of the repo with `npm install` done.
+You need Node 22.13 or newer and a clone of the repo with `npm install` done.
 
 ## The steps
 
@@ -43,7 +43,7 @@ You need Node 20 or newer and a clone of the repo with `npm install` done.
 - Every fixture in `e2e/fixtures/engine/` is built twice from the same input. Both worlds must be identical, which is
   why hooks may not use the clock or `Math.random`.
 - Your own `terrain.classes` are linted (`checkClasses`); any lint there fails the check.
-- The world lint is summarised per kind. A lint of level `error` or a throw fails the check (non-zero exit).
+- The world lint is summarised per kind and is advisory. A throw from any hook, or a lint of level `error`, fails the check (non-zero exit).
 
 `node tools/mod.mjs check all` also checks the template and the bundled worlds. The same commands run as
 `npm run mod -- <new|check|shots> ...`; `npm run mods` regenerates the gitignored `mods/index.js` and `npm run lint:mods` runs the
@@ -142,6 +142,8 @@ Every hook receives `ctx`:
 - `mods/<id>/**` belongs to its author. `web/src/engine/**` is shared and reviewed.
 - Nothing personal in a mod: it ships in a public repo. Tests and fixtures use synthetic data only.
 - Mods run in the app's own process and are trusted code; review each other's pull requests accordingly.
+- Set `apiVersion: 1` as a literal. API v1 is frozen: new things arrive only as `FEATURES` entries, so a v1 world keeps
+  working. A breaking change bumps the major, and the engine keeps supporting the previous major for at least one release.
 
 See [docs/mod-boundary.md](mod-boundary.md) for the full import and ownership rules.
 

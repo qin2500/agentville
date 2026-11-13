@@ -3,7 +3,7 @@
 //   - import engine code ONLY from '#agentville/mod'. Never from web/src/engine/** and never from another mod.
 //   - keep hooks pure: no Math.random, no Date.now, no DOM. Use ctx.rng(stream), ctx.hash(s) and ctx.time.now.
 //   - you own everything in mods/<your-id>/**.
-import { API_VERSION } from '#agentville/mod';
+// import { hash, noise, ROAD } from '#agentville/mod';   // the whole kit: docs/make-your-own-world.md "The kit"
 
 // Data keys (rules, terrain, objects, behaviour, represent, venues) merge deeply over the mod you extend.
 // Arrays replace. Leave a key out to inherit it.
@@ -41,7 +41,7 @@ export default {
   id: 'example.template',          // reverse-DNS, not agentville.*; `tools/mod.mjs new` rewrites this
   name: 'Example Template',        // shown in the world picker
   version: '0.1.0',
-  apiVersion: API_VERSION,
+  apiVersion: 1,                   // the mod API major you wrote against; a literal, never the engine's constant
   extends: 'agentville.base',      // or 'agentville.fantasy' to start from the full village
   rules,
   hooks,

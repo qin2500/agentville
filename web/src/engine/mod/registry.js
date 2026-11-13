@@ -149,10 +149,13 @@ export function resolveWith(mods, id) {
   return resolveIn(byId, id);
 }
 
+// The engine supports the current and the previous API major (village-mods.md §3: versioning).
+export const SUPPORTED_API = [API_VERSION - 1, API_VERSION].filter(v => v >= 1);
+
 function resolveIn(byId, id) {
   const chain = chainOf(id, byId), mods = chain.map(c => byId.get(c));
   const top = mods[0];
-  if (top.apiVersion !== API_VERSION) throw new Error(`mod ${id}: apiVersion ${top.apiVersion} is not supported (engine ${API_VERSION})`);
+  if (!SUPPORTED_API.includes(top.apiVersion)) throw new Error(`mod ${id}: apiVersion ${top.apiVersion} is not supported (engine supports ${SUPPORTED_API.join(', ')})`);
   checkPersistOwner(top.persist, top.id);
   const data = {};
   for (const m of [...mods].reverse()) for (const k of DATA_KEYS) data[k] = mergeModData(data[k], m[k], k);
