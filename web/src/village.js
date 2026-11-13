@@ -3,12 +3,16 @@
 // camera (Map, 1–4×, clamped to the world), input, selection, DOM labels and the frame loop. If the sprite sheets fail to load, the same layout is
 // drawn procedurally below. Frames run at 8 fps only while visible and animating; otherwise on demand.
 import { BUCKET_NAME, ROLE_NAME, store, icon, esc } from './ui.js';
-import { T, ZOOMS, R, ISO, plan, layout, placeAgents, loadSheets, SEA_DEEP, isoP, isoInv, itemBox, agentOffset } from './world.js';
+import { T, ZOOMS, ISO, BUILDING, plan, layout, placeAgents, loadSheets, SEA_DEEP, isoP, isoInv, itemBox, agentOffset } from './world.js';
+import { cityDemo, isDemoId } from './city-demo.js';
+import { GROUND } from './city-plan.js';
 import { visibleProjects } from './quiet.js';
 import { folds } from './important.js';
 import { dockData, dockDemo, demoDock, dockSig, dockRect, harbourFor, previewSlots } from './dock-art.js';
 
 const FPS = 8;
+// The simple fallback renderer's flat colour per plan GROUND code (city-plan.js).
+const SIMPLE_GROUND = ['', '', '#8a8278', '#8a7353', '#b4aa98', '#b89a6a', '#9a7d52', '#c9a640', '#5f8a3c', '#6f9a44', '#5f9e4a', '#6f8f44', '#3a7ab0', '#a39a8c', '#7a746e', '#c97aa0'];
 
 export function createVillage(app) {
   const { S } = app;
@@ -19,6 +23,11 @@ export function createVillage(app) {
   const seenOrder = store.get('va.seen', []);
   const seenIdx = new Map(seenOrder.map((id, i) => [id, i]));
   const nightParam = new URLSearchParams(location.search).get('night');
+  // ?citydemo=1: the village shows a made-up town of four projects, one per growth tier (city-demo.js),
+  // instead of the real agents; the rest of the app (list, panels) still shows the real ones.
+  const DEMO = new URLSearchParams(location.search).get('citydemo') === '1';
+  let demo = null;
+  const agentById = id => S.byId.get(id) || demo?.byId.get(id);
   const quietNote = document.getElementById('quiet-note');
   const emptyNote = document.getElementById('empty-note');
   // The village is isometric (2.5D) only: the top-down view and its toggle are gone.
@@ -52,20 +61,28 @@ export function createVillage(app) {
     }
     // Quiet projects (every agent resting, nothing for a day) are left out of the village, not the list.
     // The selected agent's project always shows, so selecting from the list still finds its villager.
-    const sel = selected && S.byId.get(selected);
-    const vis = visibleProjects(S.agents, { hideQuiet: S.hideQuiet, keep: sel ? [sel.project || '—'] : [] });
-    shownAgents = S.agents.filter(a => vis.shown.has(a.project || '—'));
-    quiet = vis.quiet;
+    let byId = S.byId, projects = S.data?.projects;
+    if (DEMO) {
+      demo ||= cityDemo(Date.now());
+      ({ byId, projects } = demo);
+      shownAgents = demo.agents;
+      quiet = [];
+    } else {
+      const sel = selected && S.byId.get(selected);
+      const vis = visibleProjects(S.agents, { hideQuiet: S.hideQuiet, keep: sel ? [sel.project || '—'] : [] });
+      shownAgents = S.agents.filter(a => vis.shown.has(a.project || '—'));
+      quiet = vis.quiet;
+    }
     updateQuietNote();
     if (!shownAgents.length) { W = null; sig = ''; placed = { vill: new Map(), crowd: new Map() }; return; }
-    const P = plan(shownAgents, S.byId, S.data?.projects);
+    const P = plan(shownAgents, byId, projects, { demo: DEMO });
     if (P.sig !== sig) { // the world only re-lays out when something is added or removed
       sig = P.sig;
       W = layout(P);
       cv.dataset.villages = W.villages.length;
       if (renderer) renderer.prepare(W);
     }
-    placed = placeAgents(W, shownAgents, S.byId, seenIdx);
+    placed = placeAgents(W, shownAgents, byId, seenIdx);
     counts = new Map();
     for (const a of shownAgents) {
       if (a.hidden) continue;
@@ -173,10 +190,11 @@ export function createVillage(app) {
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
       const key = `${x},${y}`;
       if (!W.land.has(key)) continue;
-      ctx.fillStyle = W.street.has(key) ? '#6f5a40' : W.path.has(key) ? '#8a7353' : (x + y) % 2 ? '#3b5d3a' : '#43683f';
+      const code = W.ground.get(key);
+      ctx.fillStyle = code > GROUND.GRASS ? SIMPLE_GROUND[code] || '#8a7353' : W.street.has(key) ? '#6f5a40' : W.path.has(key) ? '#8a7353' : (x + y) % 2 ? '#3b5d3a' : '#43683f';
       ctx.fillRect(x * T, y * T, T + 0.5, T + 0.5);
     }
-    for (const v of W.villages) { const b = v.block; ctx.globalAlpha = 0.16; ctx.fillStyle = v.accent; ctx.fillRect(b.x * T, b.y * T, b.w * T, b.h * T); ctx.globalAlpha = 1; }
+    for (const v of W.villages) { const b = v.block; ctx.globalAlpha = 0.35; ctx.strokeStyle = v.accent; ctx.lineWidth = 1.5; ctx.strokeRect(b.x * T + 0.75, b.y * T + 0.75, b.w * T - 1.5, b.h * T - 1.5); ctx.globalAlpha = 1; }
     simpleDock = [];
     let ships = [];
     if (W.dock) { // the harbour: quay, piers and breakwater on the water, and a hull at a berth for each PR loading
@@ -198,15 +216,16 @@ export function createVillage(app) {
     }
     // Buildings and villagers, back to front.
     const things = [];
-    for (const it of W.items) if (it.kind === 'home' || it.kind === 'pr') things.push({ it, d: (it.x + it.w + it.y + it.h) * T });
+    for (const it of W.items) if (BUILDING.has(it.kind)) things.push({ it, d: (it.x + it.w + it.y + it.h) * T });
     for (const p of f.agents.values()) if (!folds(p.a) && !p.crowd) things.push({ p, d: (p.pose === 'carry' ? p.x0 : p.x) + p.y });
     const out = [];
     for (const { it, p } of things.sort((a, b) => a.d - b.d)) {
       if (it) {
         const [x, y, w, h] = itemBox(it), roof = Math.round(h * 0.45);
         ctx.fillStyle = '#1a1c22'; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
-        ctx.fillStyle = it.kind === 'pr' ? (it.building ? '#8f8a86' : '#3f5a8c') : '#9c3f35'; ctx.fillRect(x, y, w, roof);
-        ctx.fillStyle = '#9a6a3e'; ctx.fillRect(x, y + roof, w, h - roof);
+        ctx.fillStyle = it.kind === 'pr' ? (it.building ? '#8f8a86' : '#3f5a8c') : it.kind === 'civic' ? '#5d6a86' : it.kind === 'house' ? '#a8573d' : '#9c3f35'; ctx.fillRect(x, y, w, roof);
+        ctx.fillStyle = it.kind === 'civic' ? '#b3aa98' : it.kind === 'house' ? '#b08a5e' : '#9a6a3e'; ctx.fillRect(x, y + roof, w, h - roof);
+        if (f.night > 0.5 && (it.kind === 'house' || it.kind === 'civic' || it.kind === 'home')) { ctx.fillStyle = '#ffcd68'; ctx.fillRect(x + (w >> 1) - 2, y + roof + 3, 4, 4); } // a lit window
         continue;
       }
       const fx = p.pose === 'carry' ? p.x0 : p.x, [ox, oy] = agentOffset({ x: fx, y: p.y });
@@ -248,7 +267,7 @@ export function createVillage(app) {
     }
     if (zoom >= 1) {
       for (const hit of hits) {
-        const a = S.byId.get(hit.id);
+        const a = agentById(hit.id);
         if (!a) continue;
         const sel = a.id === selected, cur = a.id === cursor, st = a.bucket === 'stalled';
         const pri = sel ? 0 : cur ? 1 : a.id === hover ? 2 : st ? 4 + (a.severity === 'error' || a.prompt ? -0.5 : 0) + (a.since || 0) / 1e15 : altTags ? 7 : -1;
@@ -258,8 +277,8 @@ export function createVillage(app) {
       const sv = selected && placed.vill.get(selected);
       const at = (it, x, y) => P(x, y); // a spot by a building, in view px
       if (sv && (folds(sv.a) || sv.crowd)) add(`t:${selected}`, 0, 'tag sel', `${sv.a.name} (${sv.crowd ? 'in the crowd' : 'indoors'})`, ...at(sv.home, sv.door, sv.home.y * T - 4));
-      if (W) for (const [homeId, n] of placed.crowd) { const it = W.items.find(i => i.id === homeId); if (it) add(`c:${homeId}`, 6, 'tag', `+${n} more`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 64)); }
-      if (zoom >= 3 && W) for (const it of W.items) if (it.kind === 'pr') add(`p:${it.id}`, 5, 'tag prt', `#${it.pr}`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 14));
+      if (W) for (const [homeId, n] of placed.crowd) { const it = W.items.find(i => i.id === homeId); if (it) add(`c:${homeId}`, 6, 'tag', `+${n} more`, ...at(it, it.x * T + it.doorX, (it.y + it.h) * T + 64)); }
+      if (zoom >= 3 && W) for (const it of W.items) if (it.kind === 'pr') add(`p:${it.id}`, 5, 'tag prt', `#${it.pr}`, ...at(it, it.x * T + it.doorX, (it.y + it.h) * T + 14));
       if (zoom >= 3 && renderer && artState === 'ready') for (const g of renderer.dockTags()) add(g.key, 5, 'tag prt', g.text, g.x, g.y); // each ship's PR number
     }
     // Labels & status bubbles off: only the hovered item (and the selected / keyboard-cursor agent) keeps its text.
@@ -394,7 +413,7 @@ export function createVillage(app) {
       press = setTimeout(() => {
         if (!drag || drag.moved) return;
         const p = pick(at);
-        if (!p?.id) return;
+        if (!p?.id || isDemoId(p.id)) return;
         drag = null; host.classList.remove('dragging');
         app.menu(p.id, { x: at.clientX, y: at.clientY });
       }, 500);
@@ -405,6 +424,7 @@ export function createVillage(app) {
     const p = pick(e);
     if (!p?.id) return;
     e.preventDefault();
+    if (isDemoId(p.id)) return; // a ?citydemo villager: no menu
     const kb = e.clientX === 0 && e.clientY === 0;
     app.menu(p.id, kb ? screenAt(p.id) : { x: e.clientX, y: e.clientY });
   });
@@ -435,12 +455,13 @@ export function createVillage(app) {
     if (d.moved) { const v = view(); clamp(v.bw, v.bh); remember(); return; }
     const p = pick(e);
     if (p?.village) { zoom = 2; panTo(...P((p.village.cx + 0.5) * T, (p.village.cy + 0.5) * T)); remember(); return; }
+    if (p?.id && isDemoId(p.id)) return; // a ?citydemo villager opens nothing
     // The dock or a ship: the PR panel (dock.js) opens on this event; a ship says which PR it is.
     if (p?.dock) { window.dispatchEvent(new CustomEvent('va:dock', { detail: { href: p.dock.startsWith('ship:') ? p.dock.slice(5) : null } })); return; }
     app.select(p ? p.id : null, { fromVillage: true, pan: false });
   });
   // Double-click a villager: open it in the built-in terminal (or its menu, which says why it can't be).
-  cv.addEventListener('dblclick', e => { const p = pick(e); if (p?.id && !p.village) app.activate(p.id, { x: e.clientX, y: e.clientY }); });
+  cv.addEventListener('dblclick', e => { const p = pick(e); if (p?.id && !p.village && !isDemoId(p.id)) app.activate(p.id, { x: e.clientX, y: e.clientY }); });
   cv.addEventListener('pointerleave', () => { if (hover || hoverDock) { hover = null; hoverDock = null; invalidate(); } host.classList.remove('hovering'); });
   let wheelAcc = 0;
   cv.addEventListener('wheel', e => {
@@ -524,10 +545,10 @@ export function createVillage(app) {
     camera: () => (tween ? { x: tween.x1, y: tween.y1, z: zoom } : { x: cam.x, y: cam.y, z: zoom }), // a pan in flight counts as done
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
     debug: () => ({ zoom, iso: true, cam: { ...cam }, clusters,
-      outdoors: [...placed.vill.values()].filter(p => !folds(p.a) && !p.crowd).map(p => p.a.id), homes: W?.items.filter(it => it.kind === 'home').map(it => it.agentId) || [], badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy })),
+      outdoors: [...placed.vill.values()].filter(p => !folds(p.a) && !p.crowd).map(p => p.a.id), homes: W?.items.filter(it => it.kind === 'home').map(it => it.agentId) || [], badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy, tier: v.tier, cap: v.cap, need: v.need })), demo: DEMO,
       town: W?.town, square: W?.square, quiet, dock: W?.dock ? { ...W.dock, rect: dockRect(W.dock, harbourFor(W.dock, dockData(S))) } : null, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
       ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), depthCheck: () => (renderer && artState === 'ready' ? renderer.depthCheck() : []),
       // Footprint tiles of each item that aren't land (0 = it stands on the island).
-      items: W?.items.map(it => { let wet = 0; for (let j = it.y; j < it.y + it.h; j++) for (let i = it.x; i < it.x + it.w; i++) if (!W.land.has(`${i},${j}`)) wet++; return { id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, village: it.village.name, kind: it.kind, building: it.building, look: it.look, wet }; }) }),
+      items: W?.items.map(it => { let wet = 0; for (let j = it.y; j < it.y + it.h; j++) for (let i = it.x; i < it.x + it.w; i++) if (!W.land.has(`${i},${j}`)) wet++; return { id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, village: it.village.name, kind: it.kind, building: it.building, look: it.look, lot: it.lot, doorX: it.doorX, tier: it.tier, wet }; }) }),
   };
 }
