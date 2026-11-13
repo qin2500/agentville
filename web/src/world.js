@@ -1,15 +1,27 @@
 // World v3 (docs/ARCHITECTURE.md, "The village"): one compact town of project neighbourhoods around a central square, drawn
 // with the v2 value structure (muted terrain, toned buildings, outlined agents, loud badges). Two halves:
-//   layout()        pure placement: blocks, homes, PR sites, decor, streets, the land and the forest ring.
-//                   Positions persist in localStorage (`va.world4`) and never move. Needs no images.
+//   layout()        pure placement: plots, homes, PR sites, streets, the land and the forest ring.
+//                   Positions persist in localStorage (`va.world6`) and never move. Needs no images.
 //   createRenderer  the sprite renderer (Ninja Adventure, CC0). village.js falls back to its own
 //                   procedural drawing of the same layout if the sheets don't load.
+// "Growing towns" (va-city-spec): each project's plot is a planned settlement (city-plan.js) whose
+// character follows its growth tier (hamlet, village, town, city). Seams used here:
+//   city-plan.js  tierFor, capacityFor, planSettlement, GROUND, WALKABLE   (the plan of one plot)
+//   ground-art.js paintGround                                             (plot ground, baked)
+//   props-art.js  createPropArt                                           (procedural plan props)
+//   ambient.js    createAmbient                                           (townsfolk, carts, birds...)
+//   iso.js        isoBuilding / isoExtent                                 (every building look)
 import { store } from './ui.js';
 import { isoBuilding, isoExtent } from './iso.js';
 import { pinned, folds, stoppedNote } from './important.js';
 import { createDockArt } from './dock-art.js';
+import { tierFor, capacityFor, planSettlement, GROUND, WALKABLE } from './city-plan.js';
+import { paintGround } from './ground-art.js';
+import { createPropArt } from './props-art.js';
+import { createAmbient } from './ambient.js';
 
-const BASE = `${import.meta.env.BASE_URL}assets/ninja-adventure/`;
+// import.meta.env is Vite's; guarded so pure helpers (isoP, hash...) can be imported from node tests.
+const BASE = `${import.meta.env?.BASE_URL ?? '/'}assets/ninja-adventure/`;
 export const T = 16;
 export const ZOOMS = [0.5, 1, 2, 3, 4];
 
@@ -34,20 +46,21 @@ export const R = {
   redflower: ['nature', 16, 176, 16, 16], clover: ['nature', 32, 176, 16, 16], tulip: ['nature', 48, 176, 16, 16], rock: ['nature', 240, 144, 16, 16],
   banner: ['house', 352, 320, 16, 32],
 };
+// Compatibility shim (seam): dock-walk.js still reads R[look][5] for a PR building's door. Plan lot
+// looks have no sprite; give each an entry whose door is the footprint's middle (items carry the real
+// one in it.doorX, which everything in world.js / village.js uses).
+for (const [look, w] of [['farmhouse', 3], ['cottage', 3], ['timber', 3], ['townhouse', 3], ['manor', 4]]) R[look] ??= [null, 0, 0, w * 16, 0, w * 8, []];
 export const LOOKS = ['Villager2', 'Woman', 'OldMan', 'Villager4', 'Hunter', 'Princess', 'Villager3', 'Boy', 'Monk2', 'Villager5', 'OldMan3'];
 export const NINJAS = ['NinjaBlue', 'NinjaRed', 'NinjaYellow', 'NinjaGreen', 'NinjaMasked', 'NinjaDark', 'NinjaLeaf', 'NinjaGray'];
-const PR_LOOKS = ['houseE', 'cabin', 'towerWood', 'houseF', 'towerSand', 'houseG', 'towerDome', 'houseH', 'towerRed', 'towerWhite', 'towerGreen'];
 export const ACCENT = ['#e4572e', '#2e86de', '#f2b134', '#9b59b6', '#16a085', '#e84393', '#27ae60', '#d35400'];
-const DECOR = [['lanterns', 0], ['tree', 2], ['flowers', 4], ['field', 6], ['stall', 9], ['tree', 12], ['cart', 15], ['laundry', 18],
-  ['stall', 22], ['field', 26], ['flowers', 30], ['tree', 34], ['barrels', 38], ['tree', 44], ['field', 50]];
-const DECOR_SIZE = { lanterns: [5, 2], tree: [2, 2], flowers: [3, 1], field: [3, 3], stall: [3, 3], cart: [2, 2], laundry: [2, 2], barrels: [2, 1] };
-// Compactness caps: a big, spread-out village is hard to take in at a glance.
-// Each is per neighbourhood.
-const RESTING_HOMES = 2; // the most recently active resting homes; more would sprawl
+// Compactness caps (owner, 2026-10-26: "the village feels bloated"; 2026-10-30: "so spread out").
+// Each is per neighbourhood. Spare lots in a plot are townsfolk houses, so these only decide whose.
+const RESTING_HOMES = 2; // the most recently active resting homes
 const PR_LIVE_CAP = 6;   // PRs under construction (builders hammer there)
-const PR_DONE_CAP = 3;   // the newest finished PR buildings; older ones fall off the map
-const DECOR_CAP = 3;     // decor never grows a block; it fills spare ground, up to this many
+const PR_DONE_CAP = 3;   // the newest finished PR buildings; older ones become townsfolk houses
 export const SQUARE = { x: -4, y: -3, w: 9, h: 5 }; // the central town square (tiles)
+/** Item kinds that are buildings (drawn by iso.js): agents' homes, PR buildings, townsfolk houses, landmarks. */
+export const BUILDING = new Set(['home', 'pr', 'house', 'civic']);
 const GAP = 2;           // tiles between blocks: their two ring roads make one 2-wide street
 const DAY = 864e5;
 const HOLD_MS = DAY / 2;     // a building that vanished holds its ground this long, then frees it
@@ -66,7 +79,7 @@ export const pointOffset = (x, y) => { const [X, Y] = isoP(x, y); return [Math.r
 export const agentOffset = v => pointOffset(v.x ?? v.door, v.y ?? v.base + 12);
 /** A building in the iso view: its drawing, and where it goes in view px. */
 export function isoItem(it, lit) {
-  it.doorX ??= R[it.look][5];
+  if (it.doorX === undefined) it.doorX = R[it.look]?.[5] ?? Math.round(it.w * T / 2); // plan items carry their own (null: no door)
   const b = isoBuilding(it, T, lit), [ox, oy] = isoP(it.x * T, it.y * T);
   return { ...b, ox, oy, x: ox + b.dx, y: oy + b.dy };
 }
@@ -117,15 +130,16 @@ export function itemBox(it) {
   const b = isoItem(it, false);
   return [b.ox + b.box[0], b.oy + b.box[1], b.box[2], b.box[3]];
 }
-const KEY = 'va.world5'; // va.world4 had roomier lots: a fresh, tighter layout
+const KEY = 'va.world6'; // va.world5 was the per-project shelf layout: planned settlements start afresh
 
 export const hash = s => { let h = 2166136261; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
 const rnd = s => (hash(s) % 10000) / 10000;
 const key = (x, y) => `${x},${y}`;
 const unkey = k => k.split(',').map(Number);
+const LATTICE = new Map(); // noise lattice values (pure in i, j): hashing them is most of the land's cost
 function noise(x, y, s = 7) {
   const gx = Math.floor(x / s), gy = Math.floor(y / s), fx = x / s - gx, fy = y / s - gy;
-  const n = (i, j) => rnd(`n${i},${j}`), sm = t => t * t * (3 - 2 * t);
+  const n = (i, j) => { const k = i * 100003 + j; let r = LATTICE.get(k); if (r === undefined) { r = rnd(`n${i},${j}`); LATTICE.set(k, r); } return r; }, sm = t => t * t * (3 - 2 * t);
   const a = n(gx, gy), b = n(gx + 1, gy), c = n(gx, gy + 1), d = n(gx + 1, gy + 1);
   return a + (b - a) * sm(fx) + (c - a) * sm(fy) + (a - b - c + d) * sm(fx) * sm(fy);
 }
@@ -134,12 +148,54 @@ const near = (a, b, gap) => a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && a.
 const inRect = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 
 // ---------------- layout ----------------
-const saved = () => { const s = store.get(KEY, null); return s && s.blocks && s.pos ? s : { blocks: {}, pos: {} }; };
+const DEMO_KEY = `${KEY}.demo`; // ?citydemo=1 keeps a layout of its own and never touches the real one
+const saved = k => { const s = store.get(k, null); return s && s.blocks && s.lots ? s : { blocks: {}, lots: {} }; };
+const param = k => (typeof location === 'undefined' ? null : new URLSearchParams(location.search).get(k));
+
+// TIER_AT[k]: the least growth at which tierFor() says tier k or more. Found by bisecting tierFor, so
+// the thresholds live only in city-plan.js.
+let TIER_AT = null;
+const tierAt = k => {
+  TIER_AT ||= [0, 1, 2, 3].map(t => {
+    let lo = 0, hi = 1 << 24;
+    if (tierFor(hi) < t) return Infinity;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (tierFor(m) >= t) hi = m; else lo = m + 1; }
+    return lo;
+  });
+  return TIER_AT[k] ?? Infinity;
+};
+/**
+ * A project's tier, with hysteresis: it rises as soon as growth reaches the next tier, and drops only
+ * once growth falls under 60% of the current tier's threshold, so a project hovering at a boundary
+ * never flips its whole plot back and forth. `prev` is the tier persisted on its block.
+ */
+export function tierWithHysteresis(growth, prev) {
+  const t = tierFor(growth);
+  if (prev == null || t >= prev) return t;
+  return growth < 0.6 * tierAt(prev) ? t : prev;
+}
+// Plans are pure in (tier, seed, capacity): computed once per session per plot shape.
+const PLANS = new Map();
+function planFor(tier, seed, cap) {
+  const k = `${tier}|${seed}|${cap}`;
+  let p = PLANS.get(k);
+  if (!p) {
+    if (PLANS.size > 64) PLANS.clear();
+    p = planSettlement({ tier, seed, lots: cap }); // lots = the capacity bucket itself: same plan for every need in it
+    PLANS.set(k, p);
+  }
+  return p;
+}
+/** `?citytier=N` (0..3): every project is drawn at tier N (persisted tiers are left alone). */
+function forcedTier() {
+  const f = param('citytier');
+  return f == null || f === '' || Number.isNaN(+f) ? null : Math.max(0, Math.min(3, Math.round(+f)));
+}
 
 // What the world is made of this poll (only the projects the village shows). Cheap; its signature
-// decides whether to re-run layout().
-export function plan(agents, byId, projects) {
-  const S = saved();
+// decides whether to re-run layout(). `demo`: the ?citydemo=1 town (a store key of its own).
+export function plan(agents, byId, projects, { demo = false } = {}) {
+  const key = demo ? DEMO_KEY : KEY, S = saved(key), now = Date.now(), force = forcedTier();
   const names = [...new Set(agents.map(a => a.project || '—'))];
   // An Important agent always keeps its own house and villager, whatever its rank or status.
   const hasHome = a => a.role === 'boss' || a.role === 'lead' || !a.parentId || !byId.has(a.parentId) || pinned(a);
@@ -158,26 +214,37 @@ export function plan(agents, byId, projects) {
     const mb = (meta.transcriptBytes || 0) / 1e6;
     const growth = 3 * all.length + (meta.agentsEver || here.length) + Math.floor(Math.log2(mb + 1));
     const busy = awake.length * 10 + here.filter(a => a.bucket !== 'resting').length;
-    return { name, homes, prs, growth, busy };
+    // Tier: hysteresis state `gt` is persisted on the block (block.tier is what the plot is planned at,
+    // which differs from gt only under ?citytier).
+    const b = S.blocks[name], gt = tierWithHysteresis(growth, b?.gt), tier = force ?? gt;
+    // Lots needed: every home and PR shown, plus lots still held for ones that left lately (HOLD_MS).
+    const L = S.lots[name], ids = new Set([...homes.map(a => `home:${a.id}`), ...prs.map(p => `pr:${name}#${p.id}`)]);
+    let held = 0;
+    if (L && L.tier === tier) for (const id of Object.keys(L.a)) if (!ids.has(id) && now - (L.h?.[id] ?? now) <= HOLD_MS) held++;
+    const need = homes.length + prs.length + held;
+    // Capacity only grows within a tier: an agent leaving never shrinks (re-plans) the plot.
+    let cap = capacityFor(tier, need);
+    if (b && b.tier === tier && b.cap > cap) cap = b.cap;
+    return { name, homes, prs, growth, busy, tier, gt, need, cap };
   });
   const items = villages.flatMap(v => [
-    ...v.homes.map(a => `home:${a.id}:${a.role === 'boss' ? 'hall' : a.role === 'lead' ? 'L' : 'S'}`),
+    ...v.homes.map(a => `home:${a.id}:${a.role === 'boss' || pinned(a) ? 'L' : a.role === 'lead' ? 'M' : 'S'}`),
     ...v.prs.map(p => `pr:${v.name}#${p.id}:${p.live ? 1 : 0}`),
-    `decor:${v.name}:${decorTier(v.growth)}`,
   ]);
-  return { villages, sig: JSON.stringify([villages.map(v => v.name), items]), saved: S };
+  // Re-layout only when something changes: who has a house, a PR's state, or a plot's tier/capacity.
+  return { villages, sig: JSON.stringify([villages.map(v => [v.name, v.tier, v.cap]), items]), saved: S, key };
 }
-const decorTier = growth => Math.min(DECOR_CAP, DECOR.filter(([, at]) => growth >= at).length);
 
 export function layout(P, now = Date.now()) {
   const S = P.saved;
+  S.lots ||= {};
   const W = { villages: [], items: [], occ: new Map(), fp: new Set(), path: new Set(), street: new Set(), land: new Set(), seaDist: new Map(),
-    props: [], groundDecor: [], square: SQUARE, inBlock: new Map(), box: null, bounds: null, town: null };
+    ground: new Map(), props: [], groundDecor: [], square: SQUARE, inBlock: new Map(), box: null, bounds: null, town: null };
   const shown = new Set(P.villages.map(v => v.name));
   const B = S.blocks;
   // A block is held while its project shows, or for RESERVE_MS after it was last shown. A lapsed block
   // is only taken when a newcomer needs that ground; it is then marked away and its project gets a new
-  // block (same shape, everything inside shifted together) if it ever comes back.
+  // block (the same plan, so everything inside moves together) if it ever comes back.
   const held = n => B[n] && !B[n].away && (shown.has(n) || now - (B[n].seen || 0) < RESERVE_MS);
   const obstacles = self => [SQUARE, ...Object.keys(B).filter(n => n !== self && held(n)).map(n => B[n])];
   const evict = (r, self) => { for (const n of Object.keys(B)) if (n !== self && !held(n) && !B[n].away && near(r, B[n], GAP)) B[n].away = true; };
@@ -202,8 +269,12 @@ export function layout(P, now = Date.now()) {
   };
   function findSpot(w, h, self) {
     const obs = obstacles(self);
+    // Only spots touching (or just off) what is already there can make the most compact town, so the
+    // search is the obstacles' box grown by the plot's size (clamped to the old ±120 × ±90 window).
+    const m = GAP + 2, bx0 = Math.max(-120, Math.min(...obs.map(o => o.x)) - w - m), bx1 = Math.min(120, Math.max(...obs.map(o => o.x + o.w)) + m);
+    const by0 = Math.max(-90, Math.min(...obs.map(o => o.y)) - h - m), by1 = Math.min(90, Math.max(...obs.map(o => o.y + o.h)) + m);
     let best = null;
-    for (let y = -90; y <= 90; y++) for (let x = -120; x <= 120; x++) {
+    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
       const r = { x, y, w, h };
       if (obs.some(o => near(r, o, GAP))) continue;
       const s = score(r, self) - contact(r, obs) * 0.05;
@@ -211,157 +282,123 @@ export function layout(P, now = Date.now()) {
     }
     return best[1];
   }
+  const fitsAt = (r, self) => !obstacles(self).some(o => near(r, o, GAP));
 
-  // Each village's claims, in claim order (claim order only matters for new items).
-  const claims = new Map();
-  for (const pv of P.villages) {
-    const q = [], name = pv.name;
-    const claim = (id, look, yard, kind, extra) => { const r = R[look]; q.push([id, Math.ceil(r[3] / T), Math.ceil(r[4] / T), yard, kind, { look, ...extra }]); };
-    for (const a of pv.homes) if (a.role === 'boss') claim(`home:${a.id}`, 'hall', 1, 'home', { agentId: a.id });
-    for (const a of pv.homes) if (a.role === 'lead') claim(`home:${a.id}`, ['houseA', 'houseD', 'houseC', 'houseB'][hash(a.id) % 4], 1, 'home', { agentId: a.id });
-    // Every lot has one yard row in front (its agent, a subagent crew, a builder crew) and a one-tile
-    // side gap, and nothing behind: the yard row doubles as the lane. A crew that doesn't fit the row
-    // stands in the crowd ("+N more").
-    for (const a of pv.homes) if (a.role !== 'boss' && a.role !== 'lead') claim(`home:${a.id}`, ['houseH', 'houseG'][hash(a.id) % 2], 1, 'home', { agentId: a.id });
-    for (const pr of [...pv.prs].reverse()) claim(`pr:${name}#${pr.id}`, PR_LOOKS[hash(pr.id) % PR_LOOKS.length], 1, 'pr', { pr: pr.id, building: pr.live });
-    DECOR.slice(0, decorTier(pv.growth)).forEach(([kind], i) => { const [w, h] = DECOR_SIZE[kind]; q.push([`decor:${name}:${i}`, w, h, 0, 'decor', { decor: kind }]); });
-    claims.set(name, q);
-  }
-  // Blocks: new neighbourhoods take the free spot nearest the square, busiest first, sized for what they
-  // hold today (plus a little room). A returning one keeps its block.
-  const size = pv => claims.get(pv.name).reduce((a, q) => a + (q[1] + 1) * (q[2] + q[3] + 1), 0);
-  const order = [...P.villages].sort((a, b) => (B[a.name] && !B[a.name].away ? 0 : 1) - (B[b.name] && !B[b.name].away ? 0 : 1) || size(b) - size(a) || b.busy - a.busy || a.name.localeCompare(b.name));
-  // Grow a block by a tile on the side that keeps the town most compact (never into another block).
-  // Up is the last resort: the neighbourhood square sits at the top and rows of homes fill downwards.
-  const grow = v => {
-    const b = v.block, obs = obstacles(v.name);
-    const opts = [[0, 0, 1, 0, 0], [0, 0, 0, 1, 0], [-1, 0, 1, 0, 0], [0, -1, 0, 1, 99]].map(([dx, dy, dw, dh, pen]) => ({ x: b.x + dx, y: b.y + dy, w: b.w + dw, h: b.h + dh, pen }))
-      .filter(r => !obs.some(o => near(r, o, GAP))).sort((p, q) => score(p, v.name) + p.pen - score(q, v.name) - q.pen);
-    if (!opts.length) return false;
-    const { pen, ...r } = opts[0];
-    Object.assign(b, r);
-    evict(b, v.name);
-    return true;
-  };
-  // One neighbourhood at a time: its block, then everything in it (growing the block while nothing
-  // hems it in yet), then the next. Existing blocks go first, so they can still grow.
+  // Each plot is the plan for its tier and capacity, sized w × h. Existing plots go first (they keep
+  // their ground); new ones take the free spot nearest the square, biggest and busiest first.
+  const plans = new Map(P.villages.map(pv => [pv.name, planFor(pv.tier, hash(pv.name), pv.cap)]));
+  const live = n => B[n] && !B[n].away ? 0 : 1, area = pv => plans.get(pv.name).w * plans.get(pv.name).h;
+  const order = [...P.villages].sort((a, b) => live(a.name) - live(b.name) || area(b) - area(a) || b.busy - a.busy || a.name.localeCompare(b.name));
   const byName = new Map();
   for (const pv of order) {
-    const name = pv.name, b = B[name];
-    if (!b || b.away) {
-      let w, h;
-      if (b) ({ w, h } = b);
-      else {
-        let area = 7 * 5;
-        for (const [, iw, ih, yard, kind] of claims.get(name)) area += (iw + 1) * (ih + yard) * (kind === 'decor' ? 0.5 : 1);
-        area *= 1.1;
-        w = Math.max(9, Math.round(Math.sqrt(area * 1.4))) + 2;
-        h = Math.max(6, Math.ceil(area / (w - 2))) + 2;
+    const name = pv.name, p = plans.get(name);
+    let b = B[name];
+    // A tier or capacity change re-plans this plot only: it keeps its centre when the new size fits
+    // there, else it moves to a free spot. Other plots never move.
+    const replan = b && !b.away && (b.tier !== pv.tier || b.cap !== pv.cap || b.w !== p.w || b.h !== p.h);
+    if (!b || b.away || replan) {
+      let r = null;
+      if (replan) {
+        const c = { x: b.x + Math.round((b.w - p.w) / 2), y: b.y + Math.round((b.h - p.h) / 2), w: p.w, h: p.h };
+        if (fitsAt(c, name)) r = c;
       }
-      const r = findSpot(w, h, name);
-      if (b) { // came back after its block was taken: move everything it owns along with it
-        for (const p of Object.values(S.pos)) if (p[5] === name) { p[0] += r.x - b.x; p[1] += r.y - b.y; }
-        delete b.away;
-        Object.assign(b, r);
-      } else {
+      r ||= findSpot(p.w, p.h, name);
+      if (b) { delete b.away; Object.assign(b, r); }
+      else {
         const used = Object.keys(B).filter(n => held(n) && near(B[n], r, GAP + 4)).map(n => B[n].acc);
         const tally = i => Object.values(B).filter(o => o.acc === i).length;
         const acc = ACCENT.map((_, i) => i).filter(i => !used.includes(i)).sort((i, j) => tally(i) - tally(j) || i - j)[0] ?? 0;
-        B[name] = { ...r, acc };
+        b = B[name] = { ...r, acc };
       }
-      evict(B[name], name);
+      evict(b, name);
     }
-    B[name].seen = now;
-    const v = { ...pv, block: B[name], accent: ACCENT[B[name].acc % ACCENT.length] };
+    Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, seen: now });
+    const v = { ...pv, block: b, plan: p, accent: ACCENT[b.acc % ACCENT.length] };
     byName.set(name, v);
-    placeVillage(W, v, S, claims.get(name), grow, now);
+    placeVillage(W, v, S, now);
   }
   for (const pv of P.villages) W.villages.push(byName.get(pv.name));
   for (const v of W.villages) for (let y = v.block.y; y < v.block.y + v.block.h; y++) for (let x = v.block.x; x < v.block.x + v.block.w; x++) W.inBlock.set(key(x, y), v);
-  store.set(KEY, S);
+  store.set(P.key || KEY, S);
   W.parks = Object.keys(B).filter(n => !shown.has(n) && held(n)).map(n => B[n]); // hidden neighbourhoods: their ground waits as park
   buildRoads(W);
   W.dock = dockSite(W);
   buildLand(W);
   dockShore(W);
   scatter(W);
-  W.waves = [...W.seaDist].filter(([k, d]) => d === 3 && hash(k) % 3 === 0).map(([k]) => unkey(k));
   return W;
 }
 
-function placeVillage(W, v, S, queue, grow, now) {
-  const { name } = v, b = v.block;
-  // The neighbourhood's own square (sign, banner, lantern, chicken) sits at the top middle of the
-  // block and never moves; homes fill rows below it like shelves, from the middle outwards.
-  const pid = `plaza:${name}`;
-  if (!S.pos[pid]) S.pos[pid] = [b.x + ((b.w - 5) >> 1), b.y + 2, 5, 3, 0, name];
-  const [px, py] = S.pos[pid];
-  v.plaza = { x: px, y: py, w: 5, h: 3 };
-  v.cx = px + 2; v.cy = py + 1;
-  for (let j = py - 1; j < py + 4; j++) for (let i = px - 1; i < px + 6; i++) W.occ.set(key(i, j), pid);
-  for (let j = py; j < py + 3; j++) for (let i = px; i < px + 5; i++) W.path.add(key(i, j));
-  // Inside the block's fence (its outer ring of tiles); an item's spare gap may sit on the fence.
-  const free = (x, y, w, h) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) if (W.occ.has(key(i, j))) return false; return true; };
-  const fits = (x, y, w, h) => x >= b.x + 1 && y >= b.y + 1 && x + w <= b.x + b.w && y + h <= b.y + b.h && free(x, y, w, h);
-  const spots = (w, h) => {
-    const out = [];
-    for (let y = b.y + 1; y + h <= b.y + b.h; y++) for (let x = b.x + 1; x + w <= b.x + b.w; x++) out.push([x, y, (y - b.y) * 64 + Math.abs(x + w / 2 - v.cx - 0.5)]);
-    return out.sort((p, q) => p[2] - q[2]);
-  };
-  // Last resort, when the block is hemmed in: the nearest free ground just outside it, clear of every
-  // block, ring road and the square. Rare; nothing moves to make room.
-  const annex = (w, h) => {
-    const taken = (x, y) => W.occ.has(key(x, y)) || [SQUARE, ...Object.values(S.blocks).filter(o => !o.away)].some(o => x >= o.x - 2 && x < o.x + o.w + 2 && y >= o.y - 2 && y < o.y + o.h + 2);
-    let best = null;
-    for (let y = b.y - 24; y < b.y + b.h + 24; y++) for (let x = b.x - 24; x < b.x + b.w + 24; x++) {
-      const d = Math.hypot(x + w / 2 - v.cx, y + h / 2 - v.cy);
-      if (best && d >= best[2]) continue;
-      let ok = true;
-      for (let j = y; j < y + h && ok; j++) for (let i = x; i < x + w && ok; i++) if (taken(i, j)) ok = false;
-      if (ok) best = [x, y, d];
-    }
-    return best;
-  };
-  const place = (id, w, h, yard, kind, extra) => {
-    let p = S.pos[id];
-    for (let tries = 0; !p && tries < 48; tries++) {
-      const hit = spots(w + 1, h + yard).find(([x, y]) => fits(x, y, w + 1, h + yard));
-      if (hit) p = S.pos[id] = [hit[0], hit[1], w, h, yard, name];
-      else if (kind === 'decor') return null; // decor is the elastic part: it never grows a block
-      else if (!grow(v)) { const a = annex(w + 1, h + yard); if (!a) return null; p = S.pos[id] = [a[0], a[1], w, h, yard, name]; }
-    }
-    if (!p) return null;
-    p.length = 6; // present again: no longer counting down to release its ground
-    for (let j = p[1]; j < p[1] + h + yard; j++) for (let i = p[0]; i < p[0] + w + 1; i++) W.occ.set(key(i, j), id);
-    for (let j = p[1]; j < p[1] + h; j++) for (let i = p[0]; i < p[0] + w; i++) W.fp.add(key(i, j));
-    const it = { id, kind, x: p[0], y: p[1], w, h, yard: p[4], village: v, ...extra };
-    W.items.push(it);
-    return it;
-  };
-  // A saved lot belongs to the neighbourhood that saved it. An agent whose project changed (renamed,
-  // moved, regrouped) would otherwise be drawn at its old lot, which may be far outside today's town,
-  // out at sea: it gets a new lot here instead.
-  for (const q of queue) if (S.pos[q[0]] && S.pos[q[0]][5] !== name) delete S.pos[q[0]];
-  // Saved items first; then hold the ground of saved items absent today (for HOLD_MS, then it is
-  // freed); then new items take the first free fit. Nothing ever moves.
-  const ids = new Set(queue.map(q => q[0]));
-  for (const q of queue) if (S.pos[q[0]]) place(...q);
-  for (const [id, p] of Object.entries(S.pos)) if (p[5] === name && !ids.has(id) && id !== pid) {
-    if (p[6] == null) p[6] = now;
-    if (now - p[6] > HOLD_MS) { delete S.pos[id]; continue; }
-    for (let j = p[1]; j < p[1] + p[3] + p[4]; j++) for (let i = p[0]; i < p[0] + p[2] + 1; i++) W.occ.set(key(i, j), id);
+// Who wants which lot rank: the boss (crown) and Important agents a large lot, leads a middle one,
+// everyone else a small one; each then falls back to the others. PRs fill what is left.
+const RANKS = { L: ['L', 'M', 'S'], M: ['M', 'L', 'S'], S: ['S', 'M', 'L'] };
+function placeVillage(W, v, S, now) {
+  const { name, plan: p } = v, b = v.block, X = b.x, Y = b.y, pid = `plot:${name}`;
+  // The plan's ground, in world tiles. The whole plot is occupied (the forest stays out); walkable
+  // tiles are paths (crews stand on them, ambient townsfolk walk them).
+  for (let j = 0; j < p.h; j++) for (let i = 0; i < p.w; i++) {
+    const code = p.ground[j * p.w + i], k = key(X + i, Y + j);
+    W.occ.set(k, pid);
+    if (code === GROUND.NONE) continue;
+    W.ground.set(k, code);
+    if (WALKABLE.has(code)) W.path.add(k);
   }
-  for (const q of queue) if (!S.pos[q[0]]) place(...q);
-  // A block shrinks back to what stands in it (plus its fence ring), so ground freed by buildings that
-  // left doesn't stay as empty grass. It only shrinks from the right and the bottom: nothing moves.
-  let x1 = v.plaza.x + v.plaza.w + 1, y1 = v.plaza.y + v.plaza.h + 1;
-  for (const p of Object.values(S.pos)) if (p[5] === name) { x1 = Math.max(x1, p[0] + p[2] + 1); y1 = Math.max(y1, p[1] + p[3] + p[4]); }
-  b.w = Math.min(b.w, Math.max(9, x1 - b.x + 1));
-  b.h = Math.min(b.h, Math.max(6, y1 - b.y + 1));
+  v.plaza = { x: X + p.plaza.x, y: Y + p.plaza.y, w: p.plaza.w, h: p.plaza.h };
+  v.cx = v.plaza.x + (v.plaza.w >> 1); v.cy = v.plaza.y + (v.plaza.h >> 1);
+
+  // Lot assignment, persisted as S.lots[name] = { cap, tier, a: { itemId: lotId }, h: { itemId: goneSince } }.
+  // A re-plan (tier or capacity change) starts the map afresh. An item keeps its lot for as long as it
+  // shows; one that is gone keeps it HOLD_MS (then it is freed), and is the first to give it up when a
+  // newcomer finds every lot taken.
+  let L = S.lots[name];
+  if (!L || L.cap !== v.cap || L.tier !== v.tier) L = S.lots[name] = { cap: v.cap, tier: v.tier, a: {}, h: {} };
+  L.h ||= {};
+  const lots = new Map(p.lots.map(l => [l.id, l]));
+  const want = [], extra = new Map();
+  const rankOf = a => (a.role === 'boss' || pinned(a) ? 'L' : a.role === 'lead' ? 'M' : 'S');
+  for (const r of ['L', 'M', 'S']) for (const a of v.homes) if (rankOf(a) === r) { want.push([`home:${a.id}`, RANKS[r]]); extra.set(`home:${a.id}`, { kind: 'home', agentId: a.id }); }
+  for (const pr of v.prs) { want.push([`pr:${name}#${pr.id}`, RANKS.S]); extra.set(`pr:${name}#${pr.id}`, { kind: 'pr', pr: pr.id, building: pr.live }); }
+  for (const [id, lot] of Object.entries(L.a)) {
+    if (!lots.has(lot)) { delete L.a[id]; delete L.h[id]; continue; } // the plan has no such lot any more
+    if (extra.has(id)) { delete L.h[id]; continue; }
+    L.h[id] ??= now;
+    if (now - L.h[id] > HOLD_MS) { delete L.a[id]; delete L.h[id]; }
+  }
+  const used = new Set(Object.values(L.a));
+  for (const [id, ranks] of want) {
+    if (L.a[id]) continue;
+    let lot = null;
+    for (const r of ranks) if ((lot = p.lots.find(l => l.rank === r && !used.has(l.id)))) break;
+    lot ||= p.lots.find(l => !used.has(l.id));
+    if (!lot) {
+      const gone = Object.keys(L.h).filter(g => L.a[g]).sort((x, y) => L.h[x] - L.h[y])[0];
+      if (!gone) continue; // more items than lots (capacity is sized for them, so this is rare): it waits unbuilt
+      lot = lots.get(L.a[gone]); delete L.a[gone]; delete L.h[gone];
+    }
+    L.a[id] = lot.id; used.add(lot.id);
+  }
+  const byLot = new Map(Object.entries(L.a).filter(([id]) => extra.has(id)).map(([id, lot]) => [lot, id]));
+
+  // Items: every lot is a building. Assigned lots are homes and PR buildings; the rest (free, or held
+  // for someone gone) are townsfolk houses; the plan's landmarks are civic buildings.
+  const add = it => {
+    for (let j = it.y; j < it.y + it.h; j++) for (let i = it.x; i < it.x + it.w; i++) W.fp.add(key(i, j));
+    if (it.doorX != null) it.doorTile = [it.x + Math.floor(it.doorX / T), it.y + it.h]; // the walkable tile in front of the door
+    W.items.push(it);
+  };
+  for (const lot of p.lots) {
+    const id = byLot.get(lot.id), iid = id || `house:${name}:${lot.id}`;
+    add({ id: iid, ...(id ? extra.get(id) : { kind: 'house' }), look: lot.look, x: X + lot.x, y: Y + lot.y, w: lot.w, h: lot.h, doorX: lot.doorX,
+      variant: hash(id || `${lot.id}${name}`) % 16, lot: lot.id, rank: lot.rank, tier: v.tier, village: v });
+  }
+  for (const c of p.civic || []) {
+    const id = `civic:${name}:${c.id}`;
+    add({ id, kind: 'civic', civic: c.id, look: c.look, x: X + c.x, y: Y + c.y, w: c.w, h: c.h, doorX: c.doorX ?? null, variant: hash(id) % 16, tier: v.tier, village: v });
+  }
 }
 
 // A* over a noise cost field toward `aim`; existing paths are cheap so new ones merge into them, and
-// `avoid` (block interiors) is dear, so streets go round neighbourhoods rather than through them.
+// `avoid` (plot interiors, their own streets included) is dear, so roads go round plots, not through them.
 // ponytail: the heuristic overestimates on old paths, so routes are good rather than shortest.
 function route(W, from, isGoal, box, aim, avoid) {
   const [x0, y0, x1, y1] = box, Wd = x1 - x0 + 1, idx = (x, y) => (y - y0) * Wd + (x - x0);
@@ -389,19 +426,19 @@ function route(W, from, isGoal, box, aim, avoid) {
       if (X < x0 || Y < y0 || X > x1 || Y > y1 || W.fp.has(key(X, Y))) continue;
       if (dx && dy && (W.fp.has(key(x + dx, y)) || W.fp.has(key(x, y + dy)))) continue;
       const k = key(X, Y);
-      const c = (W.path.has(k) ? 0.35 : (avoid?.has(k) ? 40 : 0) + 1 + 3 * noise(X, Y, 5) ** 2) * (dx && dy ? 1.42 : 1);
+      const c = (avoid?.has(k) ? 41 : W.path.has(k) ? 0.35 : 1 + 3 * noise(X, Y, 5) ** 2) * (dx && dy ? 1.42 : 1); // a plot's own streets don't make it a shortcut
       const j = idx(X, Y);
       if (d + c < dist[j]) { dist[j] = d + c; prev[j] = i; push(d + c + h(X, Y), j); }
     }
   }
   return [];
 }
-// Streets: a ring road round every block (neighbours' rings make one 2-wide street) and a 2-wide road
-// from each block to the square. Lanes: every door and each neighbourhood square join a street.
+// Streets: a ring road round every plot (neighbours' rings make one 2-wide street) and a 2-wide road
+// from each plot to the square. Inside a plot the plan's own streets run to its gates on the plot edge,
+// which touch the ring road, so no lanes are routed here.
 function buildRoads(W) {
-  // The town spans every block, the square, and every lot (a lot annexed outside its block when the
-  // block was hemmed in included), so the land always reaches under every building.
-  const rects = [SQUARE, ...W.villages.map(v => v.block), ...W.items.map(it => ({ x: it.x, y: it.y, w: it.w + 1, h: it.h + it.yard }))];
+  // The town spans every plot and the square, so the land always reaches under every building.
+  const rects = [SQUARE, ...W.villages.map(v => v.block)];
   const x0 = Math.min(...rects.map(r => r.x)), y0 = Math.min(...rects.map(r => r.y));
   const x1 = Math.max(...rects.map(r => r.x + r.w)), y1 = Math.max(...rects.map(r => r.y + r.h));
   W.town = [x0 - 1, y0 - 1, x1, y1]; // inclusive tiles, ring roads included
@@ -420,61 +457,63 @@ function buildRoads(W) {
     for (let j = b.y; j < b.y + b.h; j++) ring.push([b.x - 1, j], [b.x + b.w, j]);
     for (const [x, y] of route(W, ring, (x, y) => inRect(SQUARE, x, y), W.box, sq, W.inBlock)) for (const [a, c] of [[0, 0], [1, 0], [0, 1], [1, 1]]) if (!W.inBlock.has(key(x + a, y + c))) street(key(x + a, y + c));
   }
-  const lane = (v, from, aim) => {
-    const b = v.block, vb = [Math.min(b.x, from[0]) - 2, Math.min(b.y, from[1]) - 2, Math.max(b.x + b.w, from[0]) + 1, Math.max(b.y + b.h, from[1]) + 1];
-    for (const [x, y] of route(W, [from], (x, y) => inRect(v.plaza, x, y) || (W.path.has(key(x, y)) && Math.hypot(x - from[0], y - from[1]) > 2), vb, aim)) W.path.add(key(x, y));
-  };
-  for (const v of W.villages) { // the square's own lane to its ring, out through the side nearest the town square
-    const b = v.block, p = v.plaza, dx = sq[0] - v.cx, dy = sq[1] - v.cy;
-    const to = Math.abs(dx) * 0.8 > Math.abs(dy) ? [dx > 0 ? b.x + b.w : b.x - 1, p.y + 1] : [p.x + 2, dy > 0 ? b.y + b.h : b.y - 1];
-    const from = [Math.min(Math.max(to[0], p.x), p.x + p.w - 1), Math.min(Math.max(to[1], p.y), p.y + p.h - 1)];
-    for (const [x, y] of route(W, [from], (x, y) => W.street.has(key(x, y)), [b.x - 2, b.y - 2, b.x + b.w + 1, b.y + b.h + 1], to)) W.path.add(key(x, y));
-  }
-  for (const it of W.items) if (it.kind === 'home' || it.kind === 'pr') {
-    const dx = it.x + Math.floor(R[it.look][5] / T), dy = it.y + it.h, v = it.village;
-    it.doorTile = [dx, dy];
-    lane(v, [dx, dy], [v.plaza.x + v.plaza.w / 2, v.plaza.y + v.plaza.h / 2]);
-    W.path.add(key(dx, dy)); W.path.add(key(dx - 1, dy));
-    if (it.kind === 'pr' && it.building) for (let j = it.y; j < it.y + it.h + 1; j++) for (let i = it.x - 1; i <= it.x + it.w; i++) W.path.add(key(i, j));
-  }
 }
 // One land mass: the town box (blocks, streets, square) plus a 5–9 tile belt that the forest fills,
 // with a sandy shore and the sea beyond, so zooming out never shows void. Inside the town box every
 // tile is land; specks and lakes are cleaned up so the coast is one line.
 function buildLand(W) {
-  const [tx0, ty0, tx1, ty1] = W.town, E = 12, cand = new Set();
+  // Same rules as ever, worked on a flat grid round the town (string-keyed sets were most of a big
+  // town's layout time). The grid reaches past everything the result can touch (land ≤ E tiles out,
+  // sea distance ≤ 13 more, roads ≤ 14 out), so W.land / W.seaDist are what they always were.
+  const [tx0, ty0, tx1, ty1] = W.town, E = 12, PAD = E + 15;
+  const X0 = tx0 - PAD, Y0 = ty0 - PAD, GW = tx1 - tx0 + 1 + 2 * PAD, GH = ty1 - ty0 + 1 + 2 * PAD;
+  const at = (x, y) => (x < X0 || y < Y0 || x >= X0 + GW || y >= Y0 + GH ? -1 : (y - Y0) * GW + (x - X0));
+  const cand = new Uint8Array(GW * GH), seen = new Uint8Array(GW * GH), sea = new Uint8Array(GW * GH), land = new Uint8Array(GW * GH);
   for (let y = ty0 - E; y <= ty1 + E; y++) for (let x = tx0 - E; x <= tx1 + E; x++) {
     const d = Math.hypot(Math.max(tx0 - x, 0, x - tx1), Math.max(ty0 - y, 0, y - ty1));
     if (W.dock && x >= W.dock.x0 && x <= W.dock.x1 && y >= W.dock.sea) continue; // the dock's cove
-    if (d <= 5 + noise(x, y, 6) * 4) cand.add(key(x, y));
+    if (d <= 5 + noise(x, y, 6) * 4) cand[at(x, y)] = 1;
   }
-  for (const k of W.path) cand.add(k);
+  for (const k of W.path) { const [x, y] = unkey(k), i = at(x, y); if (i >= 0) cand[i] = 1; }
   const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  const q = [key(tx0, ty0)], seen = new Set(q);
-  for (let h = 0; h < q.length; h++) { const [x, y] = unkey(q[h]); for (const [a, b] of N4) { const k = key(x + a, y + b); if (cand.has(k) && !seen.has(k)) { seen.add(k); q.push(k); } } }
+  const flood = (q, mark, ok) => { for (let h = 0; h < q.length; h++) { const i = q[h], x = X0 + i % GW, y = Y0 + (i / GW | 0); for (const [a, b] of N4) { const j = at(x + a, y + b); if (j >= 0 && !mark[j] && ok(x + a, y + b, j)) { mark[j] = 1; q.push(j); } } } };
+  const s0 = at(tx0, ty0); seen[s0] = 1;
+  flood([s0], seen, (x, y, j) => cand[j]);
   // Water the outside sea can't reach is a lake: fill it.
-  const sea = new Set(), sq = [];
-  for (let x = tx0 - E - 1; x <= tx1 + E + 1; x++) for (const y of [ty0 - E - 1, ty1 + E + 1]) { sea.add(key(x, y)); sq.push(key(x, y)); }
-  for (let y = ty0 - E - 1; y <= ty1 + E + 1; y++) for (const x of [tx0 - E - 1, tx1 + E + 1]) { sea.add(key(x, y)); sq.push(key(x, y)); }
-  for (let h = 0; h < sq.length; h++) {
-    const [x, y] = unkey(sq[h]);
-    for (const [a, b] of N4) { const X = x + a, Y = y + b, k = key(X, Y); if (X < tx0 - E - 1 || X > tx1 + E + 1 || Y < ty0 - E - 1 || Y > ty1 + E + 1 || sea.has(k) || seen.has(k)) continue; sea.add(k); sq.push(k); }
-  }
-  for (let y = ty0 - E; y <= ty1 + E; y++) for (let x = tx0 - E; x <= tx1 + E; x++) { const k = key(x, y); if (seen.has(k) || !sea.has(k)) W.land.add(k); }
-  for (let pass = 0; pass < 2; pass++) for (const k of [...W.land]) { // no 1-tile spits
-    const [x, y] = unkey(k);
+  const ex0 = tx0 - E - 1, ex1 = tx1 + E + 1, ey0 = ty0 - E - 1, ey1 = ty1 + E + 1, sq = [];
+  for (let x = ex0; x <= ex1; x++) for (const y of [ey0, ey1]) { const i = at(x, y); if (!sea[i]) { sea[i] = 1; sq.push(i); } }
+  for (let y = ey0; y <= ey1; y++) for (const x of [ex0, ex1]) { const i = at(x, y); if (!sea[i]) { sea[i] = 1; sq.push(i); } }
+  flood(sq, sea, (x, y, j) => x >= ex0 && x <= ex1 && y >= ey0 && y <= ey1 && !seen[j]);
+  const order = [];
+  for (let y = ty0 - E; y <= ty1 + E; y++) for (let x = tx0 - E; x <= tx1 + E; x++) { const i = at(x, y); if (seen[i] || !sea[i]) { land[i] = 1; order.push(i); } }
+  for (let pass = 0; pass < 2; pass++) for (const i of order) { // no 1-tile spits (in the old Set's order: row by row)
+    if (!land[i]) continue;
+    const x = X0 + i % GW, y = Y0 + (i / GW | 0);
     if (x >= tx0 && x <= tx1 && y >= ty0 && y <= ty1) continue;
-    if (N4.filter(([a, b]) => W.land.has(key(x + a, y + b))).length <= 1) W.land.delete(k);
+    let n = 0; for (const [a, b] of N4) { const j = at(x + a, y + b); if (j >= 0 && land[j]) n++; }
+    if (n <= 1) land[i] = 0;
   }
   let lx0 = Infinity, ly0 = Infinity, lx1 = -Infinity, ly1 = -Infinity;
-  for (const k of W.land) { const [x, y] = unkey(k); lx0 = Math.min(lx0, x); ly0 = Math.min(ly0, y); lx1 = Math.max(lx1, x); ly1 = Math.max(ly1, y); }
+  const dist = new Int8Array(GW * GH).fill(-1), dq = [];
+  for (const i of order) {
+    if (!land[i]) continue;
+    const x = X0 + i % GW, y = Y0 + (i / GW | 0);
+    W.land.add(key(x, y));
+    lx0 = Math.min(lx0, x); ly0 = Math.min(ly0, y); lx1 = Math.max(lx1, x); ly1 = Math.max(ly1, y);
+    dist[i] = 0; dq.push(i);
+  }
   W.bounds = [lx0 - 10, ly0 - 10, lx1 + 11, ly1 + 11];
-  const dq = [];
-  for (const k of W.land) { W.seaDist.set(k, 0); dq.push(k); }
   for (let h = 0; h < dq.length; h++) {
-    const [x, y] = unkey(dq[h]), dv = W.seaDist.get(dq[h]);
+    const i = dq[h], dv = dist[i];
     if (dv > 12) continue;
-    for (const [dx, dy] of N4) { const k = key(x + dx, y + dy); if (!W.seaDist.has(k)) { W.seaDist.set(k, dv + 1); dq.push(k); } }
+    const x = X0 + i % GW, y = Y0 + (i / GW | 0);
+    for (const [dx, dy] of N4) { const j = at(x + dx, y + dy); if (j >= 0 && dist[j] < 0) { dist[j] = dv + 1; dq.push(j); } }
+  }
+  W.waves = [];
+  for (const i of dq) {
+    const x = X0 + i % GW, y = Y0 + (i / GW | 0), k = key(x, y);
+    W.seaDist.set(k, dist[i]);
+    if (dist[i] === 3 && hash(k) % 3 === 0) W.waves.push([x, y]); // wave glints, a few tiles out
   }
 }
 // The dock (dock-art.js): a pier in a cove cut into the south shore, under the town square's column, so
@@ -492,58 +531,48 @@ function dockShore(W) {
   for (const [x, y] of route(W, from, (x, y) => W.path.has(key(x, y)), [D.cx - 14, W.town[1], D.cx + 15, D.foot], [D.cx, W.town[3]], W.inBlock)) W.path.add(key(x, y));
   for (const [x, y] of from) W.path.add(key(x, y));
 }
+// Plan prop kinds drawn with the R sprite table; every other kind is procedural art (props-art.js).
+const PROP_SPRITE = {
+  tree: v => ['treeRound', 'treeRound2', 'treeBig', 'treePink'][(v | 0) % 4], pine: () => 'pine', sapling: () => 'sapling', bush: v => (v % 2 ? 'bush2' : 'bush'),
+  flowers: v => ['sunflower', 'tulip', 'redflower'][(v | 0) % 3], scarecrow: () => 'scarecrow', barrel: () => 'barrel', crate: () => 'crate',
+  cart: () => 'cart', laundry: () => 'laundry', lamp: () => 'lantern', banner: () => 'banner',
+};
+const TREES = new Set(['tree', 'pine', 'sapling']);
 function scatter(W) {
   const at = (r, x, y, extra = {}) => W.props.push({ r, x, y: y - R[r][4], base: y, ...extra });
   // The town square: a big tree in the middle and a lantern on each corner.
   const s = SQUARE;
   at('treeBig', (s.x + s.w / 2) * T - 24, (s.y + s.h - 1.2) * T, { tree: 1 });
   for (const [x, y] of [[s.x, s.y + 1], [s.x + s.w - 1, s.y + 1], [s.x, s.y + s.h], [s.x + s.w - 1, s.y + s.h]]) at('lantern', x * T, y * T, { light: 1 });
-  for (const v of W.villages) { // each neighbourhood square: its banner, a lantern
+  for (const v of W.villages) { // each settlement's main square: its banner
     const p = v.plaza;
     at('banner', (p.x + p.w - 1) * T, (p.y + 1) * T + 4, { banner: v.accent });
-    at('lantern', p.x * T, (p.y + 1) * T, { light: 1 });
   }
-  for (const it of W.items) {
-    if (it.kind !== 'decor') continue;
-    const px = it.x * T, py = it.y * T, k = it.decor;
-    if (k === 'lanterns') { at('lantern', px, py + 32, { light: 1 }); at('lantern', px + 64, py + 32, { light: 1 }); }
-    if (k === 'tree') at(['treeRound', 'treeRound2', 'sapling'][hash(it.id) % 3], px, py + 32, { tree: 1 });
-    if (k === 'flowers') ['sunflower', 'tulip', 'redflower'].forEach((f, i) => at(f, px + i * 16, py + 16));
-    if (k === 'field') { W.groundDecor.push(['hay', px, py]); at('scarecrow', px + 16, py + 34); }
-    if (k === 'stall') { at('awning', px, py + 32); at('produce', px + 8, py + 46); at('baskets', px, py + 48); }
-    if (k === 'cart') at('cart', px, py + 32);
-    if (k === 'laundry') at('laundry', px, py + 28);
-    if (k === 'barrels') { at('barrel', px, py + 16); at('crate', px + 16, py + 16); }
-  }
-  // Street lamps: every block's corners and every few tiles along its edge, and one by each lane where it
-  // leaves a block, so a neighbourhood is ringed with light at night.
-  const lamps = new Set();
+  // The plan's props, at their foot points (plan tiles → world px). Sprite kinds stand centred on
+  // their foot; hay is ground decor (baked); the rest are { pk } drawn by props-art.
   for (const v of W.villages) {
-    const b = v.block;
-    for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) {
-      const edgeX = x === b.x || x === b.x + b.w - 1, edgeY = y === b.y || y === b.y + b.h - 1, k = key(x, y);
-      if ((!edgeX && !edgeY) || W.path.has(k) || W.fp.has(k) || W.occ.has(k)) continue;
-      const corner = edgeX && edgeY, step = (x - b.x + y - b.y) % 8 === 0;
-      const gate = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, c]) => W.path.has(key(x + a, y + c)) && (edgeX ? a === 0 : c === 0));
-      if (!corner && !step && !gate) continue;
-      if ([...lamps].some(l => { const [lx, ly] = unkey(l); return Math.abs(lx - x) + Math.abs(ly - y) < 5; })) continue;
-      lamps.add(k);
-      at('lantern', x * T, (y + 1) * T, { light: 1 });
+    const X = v.block.x * T, Y = v.block.y * T;
+    for (const p of v.plan.props || []) {
+      const fx = X + p.x * T, fy = Y + p.y * T;
+      if (p.kind === 'hay') { W.groundDecor.push(['hay', Math.round(fx - 24), Math.round(fy - 24)]); continue; }
+      const sp = PROP_SPRITE[p.kind];
+      if (!sp) { W.props.push({ pk: p, x: fx, y: fy, base: fy }); continue; }
+      const r = sp(p.v || 0), extra = TREES.has(p.kind) ? { tree: 1 } : p.kind === 'lamp' ? { light: 1 } : p.kind === 'banner' ? { banner: v.accent } : {};
+      at(r, Math.round(fx - R[r][3] / 2), Math.round(fy), extra);
     }
   }
-  // District boundary: each block's outer ring of tiles, open wherever a lane crosses it and wherever
-  // something stands on it, stays clear of trees (the iso ground draws it as a faint kerb line).
-  const fence = new Set();
+  // Street lamps on the ring roads: each plot's corners, and every 10 tiles or so along a long side,
+  // never two within 5 tiles of each other, so the town is ringed with light at night.
+  const lamps = [];
+  const lamp = (x, y) => { if (lamps.some(([a, b]) => Math.abs(a - x) + Math.abs(b - y) < 5)) return; lamps.push([x, y]); at('lantern', x * T, (y + 1) * T, { light: 1 }); };
   for (const v of W.villages) {
-    const b = v.block;
-    for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) {
-      const edgeX = x === b.x || x === b.x + b.w - 1, edgeY = y === b.y || y === b.y + b.h - 1, k = key(x, y);
-      if ((!edgeX && !edgeY) || W.path.has(k) || W.fp.has(k) || lamps.has(k)) continue;
-      fence.add(k);
-    }
+    const b = v.block, x0 = b.x - 1, y0 = b.y - 1, x1 = b.x + b.w, y1 = b.y + b.h;
+    for (const [x, y] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) lamp(x, y);
+    for (let x = x0 + 10; x < x1 - 4; x += 10) { lamp(x, y0); lamp(x, y1); }
+    for (let y = y0 + 10; y < y1 - 4; y += 10) { lamp(x0, y); lamp(x1, y); }
   }
   // Forest: denser the further from anything built or walked, so the town sits in a ring of woods.
-  // Inside a neighbourhood only flowers and bushes grow; a hidden neighbourhood's block is a park.
+  // Nothing wild grows inside a plot (its plan fills it); a hidden neighbourhood's block is a park.
   const dist = new Map(), q = [];
   for (const k of [...W.occ.keys(), ...W.path]) if (!dist.has(k)) { dist.set(k, 0); q.push(k); }
   for (let h = 0; h < q.length; h++) {
@@ -554,10 +583,9 @@ function scatter(W) {
   const park = (x, y) => W.parks.some(r => inRect(r, x, y));
   for (const k of W.land) {
     const [x, y] = unkey(k);
-    if (x % 2 || y % 2 || W.occ.has(k) || W.path.has(k) || fence.has(k) || lamps.has(k) || lamps.has(key(x + 1, y)) || W.path.has(key(x + 1, y)) || W.path.has(key(x, y + 1)) || W.occ.has(key(x + 1, y + 1))) continue;
-    const h = hash(`t${k}`), inside = W.inBlock.has(k) || W.inBlock.has(key(x + 1, y + 1));
-    if (inside) { if ((h >>> 3) % 7 === 0) at(['bush', 'bush2', 'clover', 'sunflower', 'tulip'][(h >>> 5) % 5], x * T, y * T + 16, { wild: 1 }); continue; }
-    const v = (dist.get(k) ?? 9) - 2;
+    if (x % 2 || y % 2 || W.occ.has(k) || W.path.has(k) || W.path.has(key(x + 1, y)) || W.path.has(key(x, y + 1)) || W.occ.has(key(x + 1, y + 1))) continue;
+    if (W.inBlock.has(k) || W.inBlock.has(key(x + 1, y + 1))) continue;
+    const h = hash(`t${k}`), v = (dist.get(k) ?? 9) - 2;
     const coast = [[3, 0], [-3, 0], [0, 3], [0, -3]].some(([a, b]) => !W.land.has(key(x + a, y + b)));
     const p = park(x, y) ? 0.35 : Math.min(0.9, Math.max(0, (v + 1) / 5) * 0.8 + (coast ? 0.25 : 0));
     if ((h % 1000) / 1000 < p) at(['pine', 'treeRound', 'pine', 'treeRound2', 'treeBig', 'treePink'][h % 6 === 5 && v > 4 ? 5 : h % 5], x * T + ((h >>> 10) % 7) - 8, y * T + 24 + ((h >>> 14) % 5), { tree: 1, wild: 1 });
@@ -566,11 +594,12 @@ function scatter(W) {
 }
 
 // ---------------- who stands where (every poll; cheap) ----------------
-// The yard: a row of fixed spots in the home's yard row (the tile row in front of it), up to 6 per home;
-// stalled agents are placed first so their badges get one. A spot a neighbour's crew or doorstep
-// already takes is skipped, and so is one off the land or on a building's footprint: that row used to
-// sit a tile further out, inside the next lot's house, so in the 2.5D view crews stood on its roof.
-const YARD = [-32, -54, 54, -76, 76].map(x => [x, 12]);
+// The yard: fixed spots on the street in front of a home (lots front streets: the row south of the
+// footprint is walkable), up to 6 per home; stalled agents are placed first so their badges get one.
+// Along the doorstep row either side first, then the row in front of it. A spot a neighbour's crew or
+// doorstep already takes is skipped, and so is one that is not on a walkable tile (a neighbour's
+// footprint, a garden, a field): crews never stand on roofs or in the cabbages.
+const YARD = [[-26, 12], [26, 12], [0, 28], [-22, 28], [22, 28], [-48, 12], [48, 12]];
 const YARD_CAP = 6;
 export function placeAgents(W, agents, byId, seenIdx) {
   const homeById = new Map(W.items.filter(it => it.kind === 'home').map(it => [it.agentId, it]));
@@ -578,10 +607,11 @@ export function placeAgents(W, agents, byId, seenIdx) {
   const homeOf = a => { for (let x = a, g = 0; x && g < 50; x = byId.get(x.parentId), g++) { const h = homeById.get(x.id); if (h) return h; } return null; };
   const vill = new Map(), crews = new Map(), yard = new Map(), crowd = new Map();
   // Every doorstep is kept for its own agent, so a neighbour's crew never stands on it.
-  const taken = W.items.filter(it => it.kind === 'home').map(it => [it.x * T + R[it.look][5], (it.y + it.h) * T + 12]);
+  const taken = W.items.filter(it => it.kind === 'home').map(it => [it.x * T + it.doorX, (it.y + it.h) * T + 12]);
   const free = (x, y) => !taken.some(([a, b]) => Math.abs(a - x) < 20 && Math.abs(b - y) < 14);
-  // Feet (x, y) on open ground: land, and not on any building's footprint (5 px either side of the feet).
-  const ground = (x, y) => [x - 5, x + 5].every(px => { const k = key(Math.floor(px / T), Math.floor((y - 2) / T)); return W.land.has(k) && !W.fp.has(k); });
+  // Feet (x, y) on a walkable tile (a street, lane, square or yard; 5 px either side of the feet), and
+  // never on a building's footprint.
+  const ground = (x, y) => [x - 5, x + 5].every(px => { const k = key(Math.floor(px / T), Math.floor((y - 2) / T)); return W.path.has(k) && !W.fp.has(k); });
   const rank = { stalled: 0, waiting: 1, building: 2, resting: 3 };
   for (const a of [...agents].sort((x, y) => rank[x.bucket] - rank[y.bucket] || (seenIdx.get(x.id) ?? 0) - (seenIdx.get(y.id) ?? 0))) {
     const home = homeOf(a);
@@ -589,7 +619,7 @@ export function placeAgents(W, agents, byId, seenIdx) {
     const own = home.agentId === a.id;
     const look = a.role === 'boss' ? 'Sultan2' : a.role === 'sub' && !own ? NINJAS[hash(home.agentId) % NINJAS.length] : LOOKS[(seenIdx.get(a.id) ?? hash(a.id)) % LOOKS.length];
     const v = { a, home, look, own, sub: a.role === 'sub' && !own, phase: rnd(a.id), crowd: false };
-    const door = home.x * T + R[home.look][5], base = (home.y + home.h) * T;
+    const door = home.x * T + home.doorX, base = (home.y + home.h) * T;
     v.door = door; v.base = base;
     if (folds(a)) { vill.set(a.id, v); continue; } // indoors; an Important one stays out on its doorstep
     // Builders on a live PR work its scaffold (up to 4 per site).
@@ -704,6 +734,12 @@ function createRenderer(IMG) {
     flags.set(team, out); return out;
   };
   const dock = createDockArt({ drawLamp, flagSheet });
+  // Plan props without a sprite (fountains, stalls, fences...) are procedural (props-art.js).
+  const propArt = createPropArt();
+  // Ambient life (ambient.js). actor(ctx, look, dir, row, x, y): one 16×16 villager frame of sheet
+  // IMG[look] (column dir, row row) with its top-left at view px (x, y), rimmed like the agents.
+  const actor = (ctx, look, dir, row, x, y) => { if (IMG[look]) ctx.drawImage(rimmed(look, dir, row, 16, false), Math.round(x) - 2, Math.round(y) - 2); };
+  const amb = createAmbient({ IMG, actor });
   // A sprite dyed an accent (multiply, alpha kept, lifted back up), cached.
   const dyes = new Map();
   const dyed = (r, accent) => {
@@ -748,11 +784,16 @@ function createRenderer(IMG) {
     W.trees = W.props.filter(p => p.tree);
     W.lights = W.props.filter(p => p.light);
     // Each upright prop's iso offset (it stands on the middle of its bottom edge), and the wild ones in
-    // iso draw order (by where their feet land on screen).
-    for (const p of W.props) p.io = pointOffset(p.x + R[p.r][3] / 2, p.base);
+    // iso draw order (by where their feet land on screen). A procedural prop (pk) stands on its foot
+    // point; its screen rect relative to that point comes from props-art.
+    for (const p of W.props) {
+      if (p.pk) { p.io = isoP(p.x, p.base); p.ext = propArt.extent(p.pk); } // io: the foot itself, in view px
+      else p.io = pointOffset(p.x + R[p.r][3] / 2, p.base);
+    }
+    amb.prepare(W);
     // Wild trees and bushes that could overlap a building on screen join the iso depth sort; the rest
     // are drawn first, in order of where their feet land.
-    const rects = W.items.filter(it => it.kind === 'home' || it.kind === 'pr').map(it => { const [ox, oy] = isoP(it.x * T, it.y * T), e = isoExtent(it, T); return [ox + e[0], oy + e[1], ox + e[2], oy + e[3]]; });
+    const rects = W.items.filter(it => BUILDING.has(it.kind)).map(it => { const [ox, oy] = isoP(it.x * T, it.y * T), e = isoExtent(it, T); return [ox + e[0], oy + e[1], ox + e[2], oy + e[3]]; });
     for (const p of W.wild) {
       const x = p.x + p.io[0], y = p.y + p.io[1], w = R[p.r][3], h = R[p.r][4];
       p.nearBuilding = rects.some(r => x < r[2] && x + w > r[0] && y < r[3] && y + h > r[1]);
@@ -787,8 +828,11 @@ function createRenderer(IMG) {
       if (W.land.has(k)) {
         g.drawImage(IMG.floor, GRASS[hash(k) % GRASS.length] * T, 12 * T, T, T, dx, dy, T, T);
         if (!W.path.has(k) && N8.some(([a, b]) => !W.land.has(key(x + a, y + b)))) g.drawImage(IMG.water, 0, 80, T, T, dx, dy, T, T);
-        if (W.street.has(k)) autotile(IMG.floor, (a, b) => W.street.has(key(a, b)), x, y, STREET, dx, dy);
-        else if (W.path.has(k)) autotile(IMG.floor, (a, b) => W.path.has(key(a, b)) && W.land.has(key(a, b)), x, y, PATH, dx, dy);
+        const code = W.ground.get(k);
+        // A plot's ground is the plan's (ground-art.js); the ring roads keep the STREET autotile.
+        if (code != null && code !== GROUND.GRASS && code !== GROUND.NONE) paintGround(g, code, x, y, dx, dy, (a, b) => W.ground.get(key(x + a, y + b)) ?? GROUND.GRASS);
+        else if (W.street.has(k)) autotile(IMG.floor, (a, b) => W.street.has(key(a, b)), x, y, STREET, dx, dy);
+        else if (W.path.has(k) && code == null) autotile(IMG.floor, (a, b) => W.path.has(key(a, b)) && W.land.has(key(a, b)), x, y, PATH, dx, dy);
       } else {
         g.drawImage(IMG.water, T, T, T, T, dx, dy, T, T);
         if (N8.some(([a, b]) => W.land.has(key(x + a, y + b)))) autotile(IMG.water, (a, b) => !W.land.has(key(a, b)), x, y, SEA, dx, dy);
@@ -801,23 +845,17 @@ function createRenderer(IMG) {
     o.filter = 'contrast(0.75) brightness(0.9)';
     for (const [r, x, y] of W.groundDecor) if (hit(x, y, R[r][3], R[r][4])) blit(o, r, x - ox, y - oy);
     o.filter = 'none';
-    // Each neighbourhood's ground takes its accent: a soft wash with a faint paving check, so a
-    // district reads as one place at every zoom (tier 0: it must stay quieter than the buildings).
-    for (const v of W.villages) {
-      const b = v.block;
-      if (!hit(b.x * T, b.y * T, b.w * T, b.h * T)) continue;
-      o.globalCompositeOperation = 'soft-light'; o.fillStyle = v.accent;
-      for (let j = b.y; j < b.y + b.h; j++) for (let i = b.x; i < b.x + b.w; i++) {
-        o.globalAlpha = (i + j) % 2 ? 0.2 : 0.28;
-        o.fillRect(i * T - ox, j * T - oy, T, T);
+    { // a plot's edge is a faint line in its accent (the plan's own ground is the district's look now),
+      // and every building casts a soft shadow east
+      for (const v of W.villages) {
+        const b = v.block;
+        if (!hit(b.x * T - 4, b.y * T - 4, b.w * T + 8, b.h * T + 8)) continue;
+        o.globalAlpha = 0.35; o.strokeStyle = v.accent; o.lineWidth = 1.5;
+        o.strokeRect(b.x * T - ox + 0.75, b.y * T - oy + 0.75, b.w * T - 1.5, b.h * T - 1.5);
+        o.globalAlpha = 1;
       }
-    }
-    o.globalCompositeOperation = 'source-over'; o.globalAlpha = 1;
-    { // a district's edge is a faint kerb line, and each building casts a soft shadow east
-      o.strokeStyle = 'rgba(20, 16, 30, 0.22)'; o.lineWidth = 2;
-      for (const v of W.villages) { const b = v.block; if (hit(b.x * T - 4, b.y * T - 4, b.w * T + 8, b.h * T + 8)) o.strokeRect(b.x * T - ox + 1.5, b.y * T - oy + 1.5, b.w * T - 3, b.h * T - 3); }
       for (const it of W.items) {
-        if ((it.kind !== 'home' && it.kind !== 'pr') || !hit(it.x * T, it.y * T, it.w * T, it.h * T)) continue;
+        if (!BUILDING.has(it.kind) || !hit(it.x * T, it.y * T, it.w * T, it.h * T)) continue;
         o.fillStyle = 'rgba(20, 16, 30, 0.3)'; o.fillRect(it.x * T - ox + 4, it.y * T - oy - 4, it.w * T + 8, it.h * T + 6); // its shadow, cast east
       }
     }
@@ -867,6 +905,11 @@ function createRenderer(IMG) {
       if (inView(x, y, w, h)) list.push(pt({ r: p.r, x, y }, p.x + w / 2, p.base, x, y, x + w, y + h));
     }
     for (const p of W.liveProps) {
+      if (p.pk) { // procedural: foot at p.io (view px), screen rect p.ext relative to it
+        const [X, Y] = p.io, e = p.ext;
+        if (inView(X + e[0], Y + e[1], e[2] - e[0], e[3] - e[1])) list.push(pt({ pk: p.pk, x: X, y: Y }, p.x, p.base, X + e[0], Y + e[1], X + e[2], Y + e[3]));
+        continue;
+      }
       const [ox, oy] = p.io, w = R[p.r][3], h = R[p.r][4];
       if (!inView(p.x + ox, p.y + oy, 64, 64)) continue;
       if (p.light) list.push(pt({ lamp: 1, x: p.x + 8 + ox, y: p.base + oy }, p.x + w / 2, p.base, p.x + 8 + ox - 3, p.base + oy - 24, p.x + 8 + ox + 3, p.base + oy)); // a slim post: the lantern sprite reads as a birdhouse at this angle
@@ -874,11 +917,12 @@ function createRenderer(IMG) {
     }
     const restingIn = new Map();
     for (const v of f.agents.values()) if (folds(v.a) && v.own) restingIn.set(v.home.id, (restingIn.get(v.home.id) || 0) + 1);
+    const dark = f.night > 0.5;
     for (const it of W.items) {
-      if (it.kind !== 'home' && it.kind !== 'pr') continue;
+      if (!BUILDING.has(it.kind)) continue;
       it.px = null; it.iso = null; // set when drawn (night lights, smoke and the zZ use them)
-      // Windows glow while its agent is in, and in every home after dark.
-      const b = isoItem(it, !!restingIn.get(it.id) || (f.night > 0.5 && it.kind === 'home'));
+      // Windows glow while its agent is in, and in every home, townsfolk house and landmark after dark.
+      const b = isoItem(it, !!restingIn.get(it.id) || (dark && it.kind !== 'pr'));
       if (!inView(b.x, b.y, b.img.width, b.img.height)) continue;
       const [bx, by, bw2, bh2] = b.box;
       list.push({ it, b, fx0: it.x * T, fy0: it.y * T, fx1: (it.x + it.w) * T, fy1: (it.y + it.h) * T, sx0: b.ox + bx, sy0: b.oy + by, sx1: b.ox + bx + bw2, sy1: b.oy + by + bh2 });
@@ -912,6 +956,7 @@ function createRenderer(IMG) {
       walkers.push({ id, kind: an, x, y, facing: s.right ? 'R' : 'L', moving: s.moving && !still, t });
     }
     for (const d of dock.parts) list.push(d);
+    amb.frame(f, W, (d, ...r) => list.push(pt(d, ...r)), inView); // townsfolk, carts, chickens... join the sort
     walkers.push(...dock.walking); // the dock's walkers (dock-walk.js) face where they walk too
     const order = isoSort(list);
     drawOrder = order;
@@ -920,12 +965,16 @@ function createRenderer(IMG) {
     for (const d of order) {
       if (d.vd) drawVill(ctx, d.vd, t, f8, f, pops, badges);
       else if (d.dk) dock.draw(ctx, d, f);
-      else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
+      else if (d.b) { drawIsoItem(ctx, d.it, d.b, t, f, still); amb.overlay(ctx, d.it, d.b, f); if (d.occludes) for (const o of d.occludes) drawHidden(ctx, o.vd, d.b, f); }
+      else if (d.amb) amb.draw(ctx, d, f);
+      else if (d.pk) propArt.draw(ctx, d.pk, d.x, d.y, t, f.night);
       else if (d.an) { if (d.flip) { ctx.save(); ctx.translate(d.x + 16, d.y); ctx.scale(-1, 1); ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, 0, 0, 16, 16); ctx.restore(); } else ctx.drawImage(IMG[d.an], d.fr * 16, 0, 16, 16, d.x, d.y, 16, 16); }
       else if (d.banner) drawBanner(ctx, d);
       else if (d.lamp) drawLamp(ctx, d.x, d.y, f.night);
       else blit(ctx, d.r, d.x, d.y);
     }
+    dock.drawSky(ctx); // gulls over the dock
+    amb.sky(ctx, f, W); // birds over the town
     if (!still && zoom >= 1) {
       stepFx(t, W, f, resting);
       for (const p of smoke) { ctx.globalAlpha = p.a; ctx.drawImage(IMG.smoke, p.f * 32, 0, 32, 32, Math.round(p.x - 16), Math.round(p.y - 16), 32, 32); }
@@ -1066,8 +1115,11 @@ function createRenderer(IMG) {
     for (const v of f.agents.values()) if (v.own && v.pose === 'hammer' && v.home.px != null && Math.random() < dt * 0.9) {
       const [x, y] = flue(v.home); smoke.push({ x, y, born: t, a: 0.8, f: 0 });
     }
+    let chimneys = smoke.reduce((n, p) => n + (p.house ? 1 : 0), 0);
     for (const it of W.items) {
       if (it.px == null) continue;
+      // Townsfolk houses smoke now and then too, but only a few puffs at once in the whole town.
+      if (it.kind === 'house' && it.iso?.chimney && chimneys < 4 && Math.random() < dt * 0.02) { const [x, y] = flue(it); smoke.push({ x, y, born: t, a: 0.4, f: 0, house: 1 }); chimneys++; continue; }
       if (it.kind === 'pr' && it.building && Math.random() < dt * 0.25) {
         const [bx, by, bw, bh] = it.iso.box; smoke.push({ x: it.iso.ox + bx + Math.random() * bw, y: it.iso.oy + by + bh * 0.7, born: t, a: 0.5, f: 0 });
       } else if (it.iso?.chimney && resting.get(it.id) && Math.random() < dt * 0.12) { const [x, y] = flue(it); smoke.push({ x, y, born: t, a: 0.45, f: 0 }); } // someone's home: the fire is lit
@@ -1092,7 +1144,9 @@ function createRenderer(IMG) {
       if (it.px == null) continue;
       const lit = resting.get(it.id), b = it.iso;
       if (it.kind === 'pr' && it.building) pools.push([b.ox + b.ridge[0], b.oy + b.ridge[1] + 20, 40, 1]);
-      for (const [x, y] of b.windows) pools.push([b.ox + x, b.oy + y, lit ? 34 : 22, lit ? 1 : 0]);
+      // Townsfolk houses and landmarks: two windows' worth each (a city has hundreds of windows).
+      const ws = it.kind === 'house' || it.kind === 'civic' ? b.windows.slice(0, 2) : b.windows;
+      for (const [x, y] of ws) pools.push([b.ox + x, b.oy + y, lit ? 34 : 22, lit ? 1 : 0]);
       if (b.door) pools.push([b.ox + b.door[0], b.oy + b.door[1] - 4, 26, 1]);
     }
     for (const v of W.villages) pools.push([...P((v.plaza.x + v.plaza.w / 2) * T, (v.plaza.y + v.plaza.h / 2) * T), 64, 1]);
