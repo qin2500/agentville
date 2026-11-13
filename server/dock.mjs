@@ -66,10 +66,12 @@ export function createDock({ dataDir, now = Date.now }) {
           seen.add(href)
           if (!open.has(href)) open.set(href, t)
           if (!loadingByHref.has(href)) {
-            loadingByHref.set(href, {
+            const entry = {
               href: p.href, id: p.id ?? null, repo: repoOf(p.href), agentId: a.id ?? null, agentName: a.name ?? null,
               state: 'open', checks: p.checks || { passed: 0, failed: 0, pending: 0 }, review: p.review ?? null, since: open.get(href),
-            })
+            }
+            if (p.size) entry.size = { additions: num(p.size.additions), deletions: num(p.size.deletions), files: num(p.size.files) }
+            loadingByHref.set(href, entry)
           }
         } else if (p.state === 'merged') {
           if (!mergedSet.has(href)) {
@@ -100,5 +102,8 @@ export function createDock({ dataDir, now = Date.now }) {
     }
   }
 
-  return { update }
+  /** Hrefs the dock believes are open (persisted), for the live PR poll. */
+  const openHrefs = () => [...open.keys()]
+
+  return { update, openHrefs }
 }

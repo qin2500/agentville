@@ -17,16 +17,22 @@ export function prFacts(v) {
   const state = STATES[String(v.state || '').toUpperCase()] || null
   if (!state) return null
   const c = v.checks && typeof v.checks === 'object' ? v.checks : {}
-  return {
+  const out = {
     state,
     checks: { passed: count(c.passed), failed: count(c.failed), pending: count(c.pending) },
     review: REVIEWS[String(v.review || '').toUpperCase()] || null,
   }
+  const z = v.size
+  if (z && typeof z === 'object' && [z.additions, z.deletions, z.files].every((n) => Number.isFinite(n) && n >= 0)) {
+    out.size = { additions: count(z.additions), deletions: count(z.deletions), files: count(z.files) }
+  }
+  return out
 }
 
 const key = (href) => String(href || '').replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase()
 
-export function createPrStatus(claudeHome) {
+/** `live` (optional): { get(href) } from prpoll.mjs; its facts are fresher than the cache and win. */
+export function createPrStatus(claudeHome, live = null) {
   let stamp = ''
   let byUrl = new Map()
   async function load() {
@@ -49,8 +55,8 @@ export function createPrStatus(claudeHome) {
   /** Adds state/checks/review to each agent's PR chips that the cache knows. */
   async function annotate(agents) {
     const m = await load()
-    if (!m.size) return
-    for (const a of agents) if (a.prs?.length) a.prs = a.prs.map((p) => ({ ...p, ...m.get(key(p.href)) }))
+    if (!m.size && !live?.size?.()) return
+    for (const a of agents) if (a.prs?.length) a.prs = a.prs.map((p) => ({ ...p, ...m.get(key(p.href)), ...live?.get(p.href) }))
   }
   return { load, annotate }
 }

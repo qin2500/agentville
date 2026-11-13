@@ -45,6 +45,9 @@ export async function fakeAnthropic(accounts) {
     requests.push({ path: req.url, account: key || null, beta: req.headers['anthropic-beta'] })
     if (!key) return json(401, { error: { type: 'authentication_error', message: `bad token ${bearer}` } })
     const a = accounts[key]
+    if (req.url === '/api/oauth/profile') {
+      if (a.profileDelayMs) await new Promise((r) => setTimeout(r, a.profileDelayMs)) // a test holds a login check (and so a switch) open
+    }
     if (req.url === '/api/oauth/profile') return json(200, { account: { uuid: UUID[key], email: a.email, full_name: 'Test' }, organization: { uuid: 'org', name: 'Org' } })
     if (req.url === '/api/oauth/usage') {
       if (a.status) return json(a.status, { error: 'nope' })
