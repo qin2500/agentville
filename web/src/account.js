@@ -40,11 +40,19 @@ export function createAccount(app, { open: openAgent, termName }) {
   async function json(path, init) {
     const res = await fetch(path, { cache: 'no-store', ...init });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+    if (!res.ok) throw Object.assign(new Error(body.error || `Server returned ${res.status}`), { code: body.code, size: body.size, max: body.max });
     return body;
   }
   const send = (method, path, body) => json(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
-  const why = e => (e instanceof TypeError ? "the Agentville server isn't reachable" : e.message);
+  const why = e => (e instanceof TypeError ? "the Agentville server isn't reachable" : e.code === 'too_big' ? tooBigText(e.size, e.max) : e.message);
+  const tooBigText = (size, max) => `Can't switch accounts: your Claude login entry is too big (${size ?? '?'} of ${max ?? 4000}). Sign out of MCP servers you don't use to make room.`;
+  /** Keychain room: the too-big warning (auto-switch stopped, or a switch refused), or the remaining room once it is under 300 characters. */
+  function headroomHTML() {
+    const a = A.list?.autoSwitch;
+    if (a?.blocked?.reason === 'too_big') return `<p class="acct-warn" role="alert" data-too-big><b>${esc(tooBigText(a.blocked.size, a.blocked.max))}</b></p>`;
+    const h = a?.headroom;
+    return h && h.left < 300 ? `<p class="acct-note" data-headroom>Login entry room: ${esc(h.left)} characters left (${esc(h.size)} of ${esc(h.max)}).</p>` : '';
+  }
 
   // ---------- top bar ----------
   function label() {
@@ -142,6 +150,7 @@ export function createAccount(app, { open: openAgent, termName }) {
       <div class="acct-head"><h4 id="acct-menu-h">Accounts</h4><button class="linkbtn" type="button" ${k('refresh')} ${A.usageBusy ? 'disabled aria-busy="true"' : ''} aria-label="Refresh usage">${A.usageBusy ? 'Checking…' : '↻ Refresh'}</button></div>
       ${L?.network ? networkHTML(L.network, busy) : ''}
       ${L?.network?.current.work && accountOf(cur)?.quarantine ? `<p class="acct-warn" role="alert"><b>${esc(nameOf(cur))} is a quarantine account and you're on the work Wi-Fi.</b> No regular account has room to switch to. Switch to one as soon as it frees up, or add one.</p>` : ''}
+      ${headroomHTML()}
       ${L ? `<ul class="acct-rows" aria-labelledby="acct-menu-h">${rows}</ul>` : `<p class="helper">${esc(A.listErr || 'Loading…')}</p>`}
       ${A.view === 'busy' ? `<button class="ghost" type="button" ${k('show')}>Switching… show progress</button>` : ''}
       <hr>${add}
@@ -340,15 +349,19 @@ export function createAccount(app, { open: openAgent, termName }) {
     // results
     const r = A.result, name = id => jobs.find(j => j.id === id)?.name || id;
     const mark = st => (st === 'respawned' ? icon('check') : st === 'failed' ? icon('error') : '<span class="px">–</span>');
+    const STATUS_TEXT = { respawned: 'Restarted', failed: 'Failed', unchanged: 'No restart needed', waiting: 'Will restart when idle', pending: 'Still busy — not restarted' };
+    const waiting = (A.status?.restarts || []).length;
     const title = A.undone ? `Settings restored: ${nameOf(current() || A.undone.profile)}`
       : r.restored ? 'Nothing changed: the switch was rolled back' : `Now on ${longOf(r.to)}`;
     const lede = A.undone ? "The saved settings and login are back as they were before the switch. Running jobs keep their current account until they restart. Switch again to move them now."
-      : r.restored ? "The first agent couldn't be restarted, so every setting was put back." : `${plural(r.results.filter(x => x.status === 'respawned').length, 'job')} restarted on ${longOf(r.to)}.`;
+      : r.restored ? `Switched back: ${r.reason || 'the switch could not be completed'}` : `${plural(r.results.filter(x => x.status === 'respawned').length, 'job')} restarted on ${longOf(r.to)}.`;
     sheet.innerHTML = `${head(esc(title))}<p class="lede">${esc(lede)}</p></header>
       <div class="body">
+        ${r.verified === false ? `<p class="lede small">Couldn't verify the new login: ${esc(r.note || 'unknown reason')}</p>` : ''}
+        ${waiting ? `<p class="lede small">${esc(plural(waiting, 'agent'))} will restart when idle</p>` : ''}
         <section class="manual acct-results"><h3>Background jobs · ${r.results.length}</h3>
           ${r.results.length ? `<ul>${r.results.map(x => `<li class="st-${esc(x.status)}"><b>${mark(x.status)} ${esc(name(x.id))}</b>
-            <code>${esc([x.status === 'respawned' ? 'Restarted' : x.status === 'failed' ? 'Failed' : 'Skipped', x.detail, x.verified && `verified: ${x.verified}`, x.restarted && `then ${x.restarted}`].filter(Boolean).join(' · '))}</code></li>`).join('')}</ul>` : '<p class="lede small">No background jobs were running.</p>'}</section>
+            <code>${esc([STATUS_TEXT[x.status] || 'Skipped', x.detail, x.verified && `verified: ${x.verified}`, x.restarted && `then ${x.restarted}`].filter(Boolean).join(' · '))}</code></li>`).join('')}</ul>` : '<p class="lede small">No background jobs were running.</p>'}</section>
         ${A.undone ? '' : sessionsHTML(r.sessions || [], `${plural((r.sessions || []).length, 'terminal session')} to resume yourself`)}
       </div>
       <footer><p class="err" id="acct-undo-err" role="alert" ${A.undoErr ? '' : 'hidden'}>${esc(A.undoErr)}</p><span class="spacer"></span>

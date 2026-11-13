@@ -127,12 +127,19 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const network = createNetwork({ dataDir })
   // Restore after crash (restore.mjs): the running-set snapshot and the lost crown/Important jobs.
   const restore = createRestore({ dataDir, claudeHome: claude.home })
-  const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network })
+  const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network,
+    // Switches refuse while a permission-mode switch runs; permSwitch is built just below, so ask it lazily.
+    permBusy: () => typeof permSwitch?.isBusy === 'function' && permSwitch.isBusy(),
+    permBusyJob: (short) => typeof permSwitch?.busyJob === 'function' && permSwitch.busyJob() === short })
   // One background job to bypass-permissions mode, on the user's click (permmode.mjs).
   const permSwitch = createPermSwitch({ dataDir, claudeHome: claude.home, busy: () => account.isBusy() })
   // Token spend is read when the page asks (every few seconds while it is open) and with each usage sample.
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
-  const sampler = createSampler({ dataDir, account, network, agents: async () => (await snapshot()).agents })
+  const sampler = createSampler({ dataDir, account, network,
+    // The scan's agents plus, privately, when each job's scheduler record last said the harness limit (claude-code.mjs).
+    agents: async () => (await snapshot()).agents.map((a) => ({ ...a, limitStopAt: limitStops.get(a.id)?.at || 0, limitText: limitStops.get(a.id)?.text || '' })),
+    nudge: (ids) => nudgeAgents(ids) })
+  let limitStops = new Map() // agent id -> { at: limitStopAt, text: the harness limit string }
   // Update check against GitHub's main (update.mjs); restarting needs `server`, so it's looked up late.
   const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, ...update })
   const startedAt = Date.now()
@@ -173,6 +180,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     transcriptOf = new Map(facts.map((f) => [f.id, f.transcriptFile || null]))
     modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null }]))
     forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
+    limitStops = new Map(facts.filter((f) => f.limitStopAt).map((f) => [f.id, { at: f.limitStopAt, text: f.limitDetail || '' }]))
     const keptIds = new Set(facts.map((f) => f.id))
     titles = results.flatMap((r) => (r.status === 'fulfilled' && r.value.titles) || [])
       .filter((t) => keptIds.has(t.id) || (!removed.has(t.id) && now - (t.at || 0) <= QUIET_REMOVE_MS))
@@ -218,6 +226,32 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     if (['subagent', 'teammate', 'thread'].includes(a.kind)) return "Subagents can't be messaged. Message its lead instead."
     if (!a.live) return "Not running, so there's no session to message. Open it to resume it."
     return inboxProblem(inboxes.get(a.id))
+  }
+  /**
+   * After a limit-triggered account switch: send "continue" (the fleet "continue" text) to the jobs that
+   * stopped on the limit, once each. Same delivery as /api/fleet/send, with the same checks; a job whose
+   * session isn't reachable yet (respawning) gets one retry after a few seconds. Returns the delivered ids.
+   */
+  async function nudgeAgents(ids) {
+    if (sendingBlocked() || dryRun()) return []
+    const sent = new Set()
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 5000))
+      cached = null
+      const snap = await snapshot()
+      for (const id of ids) {
+        if (sent.has(id)) continue
+        if (!limitStops.get(id)) continue // resumed since: its limit stop is gone from the fresh scan
+        const a = snap.agents.find((x) => x.id === id)
+        const inbox = inboxes.get(id)
+        if (!a?.live || !inbox || inboxProblem(inbox)) continue
+        if ((await deliver(inbox, 'continue')).ok) sent.add(id)
+      }
+      if (sent.size === ids.length) break
+    }
+    if (sent.size) await logFleet({ at: Date.now(), action: 'continue', source: 'autoswitch', results: [...sent].map((id) => ({ id, status: 'sent' })) })
+    cached = null
+    return [...sent]
   }
   const logFleet = async (entry) => {
     await fsp.mkdir(dataDir, { recursive: true }).catch(() => {})
@@ -499,7 +533,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         return send(res, 200, out)
       }
       // Saved Claude accounts (server/accounts.mjs). No response ever carries a token.
-      if (url.pathname === '/api/accounts' && req.method === 'GET') return send(res, 200, { ...(await account.accounts.list()), network: await network.status() })
+      if (url.pathname === '/api/accounts' && req.method === 'GET') return send(res, 200, { ...(await account.accounts.list()), network: await network.status(), autoSwitch: await sampler.info() })
       // The network this Mac is on, and marking it as the work Wi-Fi (network.mjs).
       if (url.pathname === '/api/network' && req.method === 'GET') return send(res, 200, await network.status({ fresh: true }))
       if (url.pathname === '/api/network/work' && req.method === 'POST') {

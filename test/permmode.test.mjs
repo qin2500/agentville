@@ -33,7 +33,7 @@ test('withBypass replaces every mode flag and keeps every other argument in orde
   assert.deepEqual(withBypass(['--append-system-prompt', '--permission-mode', 'p']), ['--permission-mode', BYPASS, '--append-system-prompt', '--permission-mode', 'p'])
 })
 
-function setup(flags, { runResult = { code: 0, stdout: '', stderr: '' }, register = true } = {}) {
+function setup(flags, { runResult = { code: 0, stdout: '', stderr: '' }, register = true, activity } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'village-perm-'))
   const home = path.join(root, 'claude')
   const short = 'abcdef12'
@@ -49,13 +49,18 @@ function setup(flags, { runResult = { code: 0, stdout: '', stderr: '' }, registe
     if (runResult.code === 0 && register) fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, jobId: short }))
     return { timedOut: false, ...runResult }
   }
-  const sw = createPermSwitch({ claudeHome: () => home, dataDir: path.join(root, 'data'), run, bin: async () => '/fake/claude', blocked: () => '', verifyMs: () => 500 })
-  return { sw, short, file, original, calls, root, read: () => JSON.parse(fs.readFileSync(file, 'utf8')) }
+  // A fake clock for the wait for a turn boundary: sleeping advances it, nothing really waits.
+  const clock = { t: 0 }
+  const sw = createPermSwitch({
+    claudeHome: () => home, dataDir: path.join(root, 'data'), run, bin: async () => '/fake/claude', blocked: () => '', verifyMs: () => 500,
+    ...(activity && { activity: async () => activity(clock.t) }), idleMs: () => 120_000, pollMs: () => 2_000, now: () => clock.t, sleep: async (ms) => { clock.t += ms },
+  })
+  return { sw, short, file, original, calls, root, clock, read: () => JSON.parse(fs.readFileSync(file, 'utf8')) }
 }
 
 test('toBypass rewrites flags, backs up, respawns and verifies a live job', async () => {
   const t = setup(['--model', 'opus', '--permission-mode', 'auto', 'go'])
-  assert.deepEqual(await t.sw.toBypass(t.short, { live: true }), { ok: true, mode: BYPASS, restarted: true })
+  assert.deepEqual(await t.sw.toBypass(t.short, { live: true }), { ok: true, mode: BYPASS, restarted: true, waited: false })
   assert.deepEqual(t.read().respawnFlags, ['--model', 'opus', '--permission-mode', BYPASS, 'go'])
   assert.deepEqual(t.calls, [['respawn', t.short]])
   const backups = fs.readdirSync(path.join(t.root, 'data', 'perm-backups'))
@@ -89,4 +94,26 @@ test('an interactive session is refused, before or at respawn', async () => {
 test('refuses a bad short id', async () => {
   const t = setup([])
   await assert.rejects(t.sw.toBypass('../../x', { live: true }), { status: 409 })
+})
+
+test('a busy job is restarted once its turn ends, and the result says it waited', async () => {
+  const t = setup(['--permission-mode', 'auto'], { activity: (now) => (now < 10_000 ? 'busy' : 'idle') })
+  assert.deepEqual(await t.sw.toBypass(t.short, { live: true }), { ok: true, mode: BYPASS, restarted: true, waited: true })
+  assert.ok(t.clock.t >= 10_000 && t.clock.t < 120_000, 'waited for idle, not for the cap')
+  assert.deepEqual(t.calls, [['respawn', t.short]])
+})
+
+test('a job still busy after two minutes is restarted anyway: the user confirmed the interruption', async () => {
+  const t = setup(['--permission-mode', 'auto'], { activity: () => 'busy' })
+  assert.deepEqual(await t.sw.toBypass(t.short, { live: true }), { ok: true, mode: BYPASS, restarted: true, waited: true })
+  assert.ok(t.clock.t >= 120_000)
+  assert.deepEqual(t.calls, [['respawn', t.short]])
+})
+
+test('a job that stops while the switch waits for its turn is not respawned (#6)', async () => {
+  const t = setup(['--model', 'opus'], { activity: (now) => (now < 4_000 ? 'busy' : 'gone') })
+  const out = await t.sw.toBypass(t.short, { live: true })
+  assert.deepEqual(out, { ok: true, mode: BYPASS, restarted: false })
+  assert.deepEqual(t.calls, [], 'no respawn of a job that is gone')
+  assert.equal(modeOf(t.read().respawnFlags), BYPASS, 'its saved flags say bypass for its next start')
 })

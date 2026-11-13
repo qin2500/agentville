@@ -297,6 +297,13 @@ export function usageLimitReason(detail) {
   return resets ? `Usage limit · resets ${resets}` : 'Usage limit reached'
 }
 
+/**
+ * The harness's own limit message in a scheduler job's `detail`: "You've hit your weekly limit · resets …".
+ * Anchored at the start, so text an agent wrote that merely mentions a usage limit never counts.
+ */
+export const HARNESS_LIMIT = /^You['\u2019]ve hit your (?:[\w-]+ ){0,4}limit\b/
+export const isHarnessLimit = (detail) => typeof detail === 'string' && HARNESS_LIMIT.test(detail.trim())
+
 /** Still mid-turn (registry `busy`): Claude Code is retrying the failed request on its own. */
 const retrying = (reg, reason) => (reg.running ? `Retrying — ${reason}` : reason)
 
@@ -555,6 +562,9 @@ export async function scan(now = Date.now()) {
       // Server-private (not in the API): the conversation a fork would copy, and its folder.
       fork: current ? { sid: current.sid, cwd: meta.cwd || f?.cwd || j.cwd || null } : null,
       neverStarted: neverRan,
+      // Server-private (not in the API): when the scheduler last recorded the harness's limit message (0 = none).
+      limitStopAt: isHarnessLimit(j.detail) ? updatedAt : 0,
+      limitDetail: isHarnessLimit(j.detail) ? j.detail.trim().slice(0, 120) : '',
       // Server-private (not in the API): where a fleet message would go and where its receipt shows.
       inbox: liveEntry?.inbox || null,
       transcriptFile: current?.file || null,

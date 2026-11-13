@@ -26,7 +26,7 @@ const NOT_OUT = { action: 'none', why: 'not out' }
 
 test('the exported thresholds are the specified numbers', () => {
   assert.equal(REBALANCE_LEAD_MS, 6 * H)
-  assert.equal(REBALANCE_MIN_ROOM, 10)
+  assert.equal(REBALANCE_MIN_ROOM, 20, 'the same room any target needs')
   assert.equal(REBALANCE_MAX_FIVE, 80)
 })
 
@@ -63,16 +63,16 @@ test('rebalance: moves to an account whose weekly resets at least 6h earlier', (
   assert.deepEqual(decide(base), { action: 'switch', to: 'B', why: 'rebalance' })
 })
 
-test('real case: out on 5h; B resets 5h sooner but its week is 7 days away; C week resets in 2 days -> C', () => {
+test('out on 5h; B resets 5h sooner but its week is 7 days away; C week resets in 2 days (not within 36 h) -> most weekly room', () => {
   const d = decide({
     ...base, saved: ['A', 'B', 'C'], rebalance: false,
     activeUsage: u(w(OUT_AT, 4 * H), w(30, 5 * DAY)),
     usage: new Map([
       ['B', u(w(10, 1 * H), w(10, 7 * DAY))],
-      ['C', u(w(10, 4 * H), w(10, 2 * DAY))],
+      ['C', u(w(10, 4 * H), w(30, 2 * DAY))],
     ]),
   })
-  assert.deepEqual(d, { action: 'switch', to: 'C', why: 'five_hour' })
+  assert.deepEqual(d, { action: 'switch', to: 'B', why: 'five_hour' })
 })
 
 test('ranking tie-break: equal weekly reset falls to the sooner 5-hour reset', () => {
@@ -112,7 +112,7 @@ test('active weekly reset unknown while used: no rebalance (an unreadable week i
   assert.deepEqual(d, NOT_OUT)
 })
 
-test('room threshold: 10% weekly left moves, under 10% does not', () => {
+test('room threshold: 20% weekly left moves, under 20% does not', () => {
   const at = (used) => decide(withUsage([['B', u(w(10), w(used, 1 * DAY))]]))
   assert.equal(at(100 - REBALANCE_MIN_ROOM).action, 'switch')
   assert.deepEqual(at(100 - REBALANCE_MIN_ROOM + 0.5), NOT_OUT)
@@ -124,13 +124,13 @@ test('5-hour threshold: under 80 moves, at 80 does not', () => {
   assert.deepEqual(at(REBALANCE_MAX_FIVE), NOT_OUT)
 })
 
-test('only the best-ranked candidate is judged: a worse-ranked one that would qualify is not a fallback', () => {
-  // B ranks first (earliest weekly) but has no 5h room; C qualifies on its own but ranks behind B.
+test('an account without 20% room in both windows is not a candidate: the next one that qualifies is', () => {
   const d = decide(withUsage([
-    ['B', u(w(90), w(30, 1 * DAY))],
+    ['B', u(w(90), w(30, 1 * DAY))], // earliest weekly, but only 10% of its 5-hour window left
     ['C', u(w(10), w(30, 2 * DAY))],
   ]))
-  assert.deepEqual(d, NOT_OUT)
+  assert.deepEqual(d, { action: 'switch', to: 'C', why: 'rebalance' })
+  assert.deepEqual(decide(withUsage([['B', u(w(90), w(30, 1 * DAY))]])), NOT_OUT)
 })
 
 test('a NO_LIMIT candidate counts as 5-hour room', () => {
