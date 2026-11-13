@@ -29,7 +29,7 @@ export function createVillage(app) {
   let userMoved = !!savedCam;
   let W = null, sig = '', placed = { vill: new Map(), crowd: new Map() }, counts = new Map(), shownAgents = [], quiet = [];
   let state = { loading: true, offline: false };
-  let selected = null, hover = null, hoverVil = null, hoverDock = null, cursor = null, altTags = false;
+  let selected = null, hover = null, hoverVil = null, hoverDock = null, cursor = null, altTags = false, bubbles = true;
   let hits = [], houseHits = [], clusters = [], lastBadges = [], simpleDock = [];
   let timer = 0, raf = 0;
   let renderer = null, artState = 'loading';
@@ -153,7 +153,7 @@ export function createVillage(app) {
       for (const it of W.items) if (restingHomes.has(it.id)) { const [x, y, w, h] = itemBox(it); houseHits.push({ ids: restingHomes.get(it.id), x, y, w, h }); }
     }
     const f = { ctx, k: v.k, vx: v.vx, vy: v.vy, bw: v.bw, bh: v.bh, zoom, t, still, night: nightAmount(), agents: placed.vill,
-      selected, cursor, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null, dock: dockData(S), dockHover: hoverDock };
+      selected, cursor, hover, bubbles, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null, dock: dockData(S), dockHover: hoverDock };
     if (W && artState === 'ready') hits = renderer.draw(f);
     else if (W && artState === 'failed') hits = drawSimple(f);
     else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = SEA_DEEP; ctx.fillRect(0, 0, cv.width, cv.height); hits = []; }
@@ -259,6 +259,11 @@ export function createVillage(app) {
       if (W) for (const [homeId, n] of placed.crowd) { const it = W.items.find(i => i.id === homeId); if (it) add(`c:${homeId}`, 6, 'tag', `+${n} more`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 64)); }
       if (zoom >= 3 && W) for (const it of W.items) if (it.kind === 'pr') add(`p:${it.id}`, 5, 'tag prt', `#${it.pr}`, ...at(it, it.x * T + R[it.look][5], (it.y + it.h) * T + 14));
       if (zoom >= 3 && renderer && artState === 'ready') for (const g of renderer.dockTags()) add(g.key, 5, 'tag prt', g.text, g.x, g.y); // each ship's PR number
+    }
+    // Labels & status bubbles off: only the hovered item (and the selected / keyboard-cursor agent) keeps its text.
+    if (!bubbles) {
+      const keep = c => c.key === `t:${hover}` || c.key === `t:${selected}` || c.key === `t:${cursor}` || c.key === `v:${hoverVil}` || (hoverDock && c.key === `d:${hoverDock}`);
+      cands.splice(0, cands.length, ...cands.filter(keep));
     }
     cands.sort((a, b) => a.pri - b.pri);
     const rects = [], want = new Map(), plates = [];
@@ -512,6 +517,7 @@ export function createVillage(app) {
     refit() { if (!W || !host.clientWidth) return; if (!userMoved && !selected) home(false); else invalidate(); },
     key(k) { if (k === '+' || k === '=') zoomStep(1); else if (k === '-') zoomStep(-1); else if (k === '0') { home(); remember(); } },
     showAllTags(on) { altTags = on; invalidate(); },
+    setBubbles(on) { bubbles = !!on; invalidate(); },
     // The terminal view saves the camera on the way in and puts it back on the way out.
     camera: () => (tween ? { x: tween.x1, y: tween.y1, z: zoom } : { x: cam.x, y: cam.y, z: zoom }), // a pan in flight counts as done
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
