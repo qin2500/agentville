@@ -53,7 +53,7 @@ for (const [look, w] of [['farmhouse', 3], ['cottage', 3], ['timber', 3], ['town
 export const LOOKS = ['Villager2', 'Woman', 'OldMan', 'Villager4', 'Hunter', 'Princess', 'Villager3', 'Boy', 'Monk2', 'Villager5', 'OldMan3'];
 export const NINJAS = ['NinjaBlue', 'NinjaRed', 'NinjaYellow', 'NinjaGreen', 'NinjaMasked', 'NinjaDark', 'NinjaLeaf', 'NinjaGray'];
 export const ACCENT = ['#e4572e', '#2e86de', '#f2b134', '#9b59b6', '#16a085', '#e84393', '#27ae60', '#d35400'];
-// Compactness caps (owner, 2026-10-26: "the village feels bloated"; 2026-10-30: "so spread out").
+// Compactness caps: a big, spread-out village is hard to take in at a glance.
 // Each is per neighbourhood. Spare lots in a plot are townsfolk houses, so these only decide whose.
 const RESTING_HOMES = 2; // the most recently active resting homes
 const PR_LIVE_CAP = 6;   // PRs under construction (builders hammer there)
