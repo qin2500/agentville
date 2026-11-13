@@ -18,6 +18,8 @@ import { viewsFrom, nextView } from './views.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) await import('./dev/mock.js');
+// Dev-only sprite sheet of every building look and prop (`?mock&artsheet`; tools/artpass/capture.mjs --sheet).
+if (import.meta.env.DEV && new URLSearchParams(location.search).has('artsheet')) import('./dev/art-sheet.js');
 
 const $ = id => document.getElementById(id);
 const narrowQuery = matchMedia('(max-width: 900px)');
@@ -228,7 +230,7 @@ function focusKey(f) {
   return `${part ? `#${CSS.escape(part.id)} ` : ''}${f.tagName.toLowerCase()}[${attr}="${CSS.escape(f.getAttribute(attr))}"]`;
 }
 // ?debug exposes the world layout for e2e checks (positions, bounds, zoom).
-if (new URLSearchParams(location.search).has('debug')) window.villageDebug = village.debug;
+if (new URLSearchParams(location.search).has('debug')) { window.villageDebug = village.debug; window.villageSetCamera = village.setCamera; } // setCamera: the art capture harness (tools/artpass)
 
 // ---------- data ----------
 function ingest(data) {
