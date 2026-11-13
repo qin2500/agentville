@@ -1,0 +1,10 @@
+diff a/web/src/tasks-model.js b/web/src/tasks-model.js	(rejected hunks)
+@@ -46,7 +46,7 @@ export function taskRows(tasks, agents, loops, now = Date.now()) {
+   const rows = (tasks || []).map(t => {
+     const linked = t.kind === 'agent' || (t.kind === 'idea' && t.agentId);
+     const agent = linked ? byId.get(t.agentId) : null;
+-    const title = t.rename || (t.kind === 'idea' ? t.text : (agent?.title || t.title || agent?.name || t.name)) || 'Untitled';
++    const title = t.rename || (t.kind === 'idea' ? t.text : (t.aiName || agent?.title || t.title || agent?.name || t.name)) || 'Untitled';
+     const base = { id: t.id, kind: t.kind, agentId: t.agentId || null, title, helpers: 0, unseen: false, since: t.addedAt, gone: false, doneAt: t.doneAt };
+     if (!linked) return { ...base, status: 'Idea', tone: 'idea' };
+     if (!agent) return { ...base, status: 'Agent gone', tone: 'muted', gone: true };

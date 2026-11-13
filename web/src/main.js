@@ -677,7 +677,11 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="notify-checks" ${S.notifyOn.checks ? 'checked' : ''}>…when a PR's checks start failing</label>
       <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked. Allow Agentville under System Settings › Notifications.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
-      <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label></div>${update.menuHTML()}`;
+      <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label>
+      <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
+      <p class="helper">Uses a small Haiku model, through your Claude login, for background jobs such as naming your tasks. Off by default.</p>
+      <p class="helper" id="helper-status" role="status"></p></div>${update.menuHTML()}`;
+    loadHelper();
     return;
   }
   const all = S.data?.agents || [];
@@ -694,9 +698,37 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="hidden" ${f.showHidden ? 'checked' : ''}>Show hidden agents</label>
       <label><input type="checkbox" data-set="compact" ${S.compact ? 'checked' : ''}>Compact rows</label></div>`;
 }
+function showHelper(h, err) {
+  const el = $('helper-status'), box = pops.settings?.querySelector('[data-set="helper"]');
+  if (box && h) box.checked = !!h.enabled;
+  if (!el) return;
+  el.textContent = err || (h?.lastError ? `Last error: ${h.lastError}` : h ? `${h.callsToday || 0} call${h.callsToday === 1 ? '' : 's'} today` : '');
+}
+async function loadHelper() {
+  try {
+    const r = await fetch('/api/helper');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    showHelper(await r.json());
+  } catch (e) { showHelper(null, e instanceof TypeError ? 'Helper status: server not reachable.' : `Helper status: ${e.message}`); }
+}
+async function setHelper(enabled, box) {
+  box.disabled = true;
+  try {
+    const r = await fetch('/api/helper', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const h = await r.json();
+    if (S.data) S.data.helper = { enabled: h.enabled };
+    showHelper(h);
+  } catch (e) {
+    box.checked = !enabled;
+    showHelper(null, e instanceof TypeError ? "Couldn't change the helper: server not reachable." : `Couldn't change the helper: ${e.message}`);
+  } finally { box.disabled = false; }
+}
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.f) {
+  if (t.dataset.set === 'helper') {
+    setHelper(t.checked, t);
+  } else if (t.dataset.f) {
     const set = S.filters[t.dataset.f];
     t.checked ? set.add(t.value) : set.delete(t.value);
     render();

@@ -1,0 +1,22 @@
+diff a/server/tasks.mjs b/server/tasks.mjs	(rejected hunks)
+@@ -120,5 +120,19 @@ export function createTasks(dir) {
+     })
+   }
+ 
+-  return { load, sync, patch, addIdea }
++  /** Stores an AI-written short name on an existing agent entry. Returns the entry or null. */
++  function setAiName(id, name) {
++    const n = typeof name === 'string' ? name.trim() : ''
++    if (!validId(id) || n.length < 1 || n.length > 60) return Promise.resolve(null)
++    return serial(async () => {
++      const cur = await load()
++      const e = Object.hasOwn(cur.items, id) ? cur.items[id] : null
++      if (!e || e.kind !== 'agent') return null
++      const next = { ...e, aiName: n }
++      await write({ ...cur, items: { ...cur.items, [id]: next } })
++      return { id, ...next }
++    })
++  }
++
++  return { load, sync, patch, addIdea, setAiName }
+ }

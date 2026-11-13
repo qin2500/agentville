@@ -1,0 +1,39 @@
+diff a/web/src/panel.js b/web/src/panel.js	(rejected hunks)
+@@ -314,6 +314,10 @@ export function createPanel(app) {
+   // Top of Team: every task/idea you started an agent on, until you check it off.
+   const TK_CAP = 5;
+   let tkOpen = true, tkMore = false, tkDone = false;
++  // By default only crowned and Important agents' tasks (and your own ideas); "Show all" adds the rest.
++  let tkAll = false;
++  try { tkAll = localStorage.getItem('va.tasksAll') === '1'; } catch {}
++  const tkMine = r => { if (!r.agentId) return true; const a = S.byId.get(r.agentId); return !!a && (a.role === 'boss' || a.important === true); };
+   let tkEdit = null, tkVal = ''; // tkEdit: a task id (rename) | '+' (new idea) | null
+   try { tkOpen = localStorage.getItem('va.tasksOpen') !== '0'; } catch {}
+   function tkRow(r) {
+@@ -331,7 +335,9 @@ export function createPanel(app) {
+   }
+   function tasksSection() {
+     const rows = S.taskRows || { open: [], done: [] };
+-    const open = rows.open || [], done = rows.done || [];
++    const allOpen = rows.open || [];
++    const open = tkAll ? allOpen : allOpen.filter(tkMine), done = tkAll ? (rows.done || []) : (rows.done || []).filter(tkMine);
++    const hiddenN = allOpen.length - open.length;
+     const shown = !tkOpen ? [] : tkMore ? open : open.slice(0, TK_CAP);
+     const needs = open.filter(r => r.tone === 'needs').length;
+     const follow = open.length - needs;
+@@ -342,6 +348,7 @@ export function createPanel(app) {
+     if (tkOpen) {
+       html += shown.map(tkRow).join('');
+       if (open.length > TK_CAP) html += `<button type="button" class="linkbtn tk-more" data-tkact="more">${tkMore ? 'Show fewer' : `+${open.length - TK_CAP} more`}</button>`;
++      if (tkAll || hiddenN) html += `<button type="button" class="linkbtn tk-more" data-tkact="all" title="Tasks from agents that aren't crowned or Important">${tkAll ? 'Only crowned & important' : `Show all · ${hiddenN} more from other agents`}</button>`;
+       html += tkEdit === '+'
+         ? `<div class="tk-add"><input class="tk-in" data-tkedit="+" value="${esc(tkVal)}" maxlength="200" aria-label="New idea" placeholder="Add an idea"></div>`
+         : '<button type="button" class="linkbtn tk-addb" data-tkact="add">+ Add an idea</button>';
+@@ -382,6 +389,7 @@ export function createPanel(app) {
+         }
+         case 'add': tkEdit = '+'; tkVal = ''; app.render(); break;
+         case 'more': tkMore = !tkMore; app.render(); break;
++        case 'all': tkAll = !tkAll; try { localStorage.setItem('va.tasksAll', tkAll ? '1' : '0'); } catch {} app.render(); break;
+         case 'donefold': tkDone = !tkDone; app.render(); break;
+         case 'fold': tkOpen = !tkOpen; try { localStorage.setItem('va.tasksOpen', tkOpen ? '1' : '0'); } catch {} app.render(); break;
+       }
