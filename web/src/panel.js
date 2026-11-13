@@ -298,8 +298,9 @@ export function createPanel(app) {
       sync(kul, items);
       nodes.push(kul);
     } else if (hasKids) {
-      // A folded team still shows its Important members, pinned under it with "↳ parent".
-      const pins = descendants(a).filter(d => pinned(d) && sets.keep.has(d.id) && !seen.has(d.id));
+      // A folded team still shows its Important members, and any member waiting on a click from you
+      // (permission, question, plan), pinned under it with "↳ parent". Once answered it folds away again.
+      const pins = descendants(a).filter(d => (pinned(d) || (isPrompt(d) && !d.hidden)) && sets.keep.has(d.id) && !seen.has(d.id));
       if (pins.length) {
         pins.forEach(d => seen.add(d.id));
         const pul = keyed(`tpins:${a.id}`, () => h('ul', { class: 'kids pinned' }));
