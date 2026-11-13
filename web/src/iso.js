@@ -82,7 +82,7 @@ function kitStyle(it, look, h, T) {
       if (st.lower !== 'clap') st.trim = rgb('#6a4630');
       break;
     case 'timber': Object.assign(st, { front: Wp <= 48 && b(11, 3) === 0, H: 33, R: 27 }); st.top = st.H + st.R + 30; break;
-    case 'townhouse': { const n = 3 + b(11, 2), front = b(12, 4) !== 0; Object.assign(st, { n, front, H: 16 + 14 * (n - 1), R: front ? Math.round(Wp * 1.05) : Math.round(Dp * 0.62), e: front ? 1.5 : 2.5 }); st.top = st.H + st.R + 24; break; }
+    case 'townhouse': { const n = 3, front = b(12, 4) !== 0; Object.assign(st, { n, front, H: 16 + 14 * (n - 1), R: front ? Math.round(Wp * 0.9) : Math.round(Dp * 0.62), e: front ? 1.5 : 2.5 }); st.top = st.H + st.R + 24; break; }
     case 'manor': { const three = b(11, 3) === 0; Object.assign(st, { three, H: three ? 48 : 34, R: 26, roof: b(15, 2) ? 'slate' : 'tile', trim: rgb('#f3e7cd') }); st.top = st.H + st.R + 32; break; }
     case 'barn': { const red = b(11, 3) !== 0; Object.assign(st, { red, gamb: b(12, 2) === 1, H: 22, R: 28, roof: red ? 'shingle' : 'thatch', roofC: red ? SHAKE : THATCH, trim: red ? rgb('#f1e8d6') : rgb('#5a3a26'), paint: red ? REDBARN : OLDWOOD }); st.top = 22 + 28 + 32; break; }
     case 'windmill': Object.assign(st, stone, { H: 60, R: 18, roof: 'shingle', roofC: b(11, 2) ? SHAKE : rgb('#9a4a3a'), paint: b(12, 3) ? rgb('#efe9dc') : rgb('#4f4a52') }); st.top = 98; break;

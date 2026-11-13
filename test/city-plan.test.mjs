@@ -103,6 +103,55 @@ for (const tier of TIER_LIST) {
           doors.add(key(dx, dy))
         }
 
+        // v2: forecourt (town/city): door tile and the tile directly south are WALKABLE
+        if (tier >= 2) {
+          for (const it of plan.lots) {
+            const [dx, dy] = doorTile(it)
+            assert.ok(inPlot(plan, dx, dy + 1), `${it.id} forecourt tile outside plot`)
+            assert.ok(WALKABLE.has(tileOf(plan, dx, dy)), `${it.id} door tile not walkable`)
+            assert.ok(WALKABLE.has(tileOf(plan, dx, dy + 1)), `${it.id} forecourt (tile south of door) not walkable`)
+          }
+        }
+
+        // v2: diagonal clearance, all tiers: (dx+k, dy+k) for k=1,2 not under any footprint
+        for (const it of plan.lots) {
+          const [dx, dy] = doorTile(it)
+          for (const k of [1, 2]) {
+            assert.ok(!owner.has(key(dx + k, dy + k)), `${it.id}: diagonal tile ${dx + k},${dy + k} is under ${owner.get(key(dx + k, dy + k))}`)
+          }
+        }
+
+        // v2: town/city: at most 2 house lots touching side by side in a row
+        if (tier >= 2) {
+          const byRow = new Map()
+          for (const l of plan.lots) {
+            if (!byRow.has(l.y)) byRow.set(l.y, [])
+            byRow.get(l.y).push(l)
+          }
+          for (const [y, row] of byRow) {
+            row.sort((a, b) => a.x - b.x)
+            let run = 1
+            for (let i = 1; i < row.length; i++) {
+              run = row[i - 1].x + row[i - 1].w === row[i].x ? run + 1 : 1
+              assert.ok(run <= 2, `row y=${y}: 3+ house lots touching side by side (ending at ${row[i].id})`)
+            }
+          }
+        }
+
+        // v2 (LENIENT proxy): town/city: street in front of each door is wide enough:
+        // the tile 2 south of the door is WALKABLE, or the door row is a PLAZA/MARKET square
+        if (tier >= 2) {
+          for (const it of plan.lots) {
+            const [dx, dy] = doorTile(it)
+            if (!inPlot(plan, dx, dy + 2)) continue
+            const row = tileOf(plan, dx, dy)
+            // ...or the door opens straight onto a 2-row lane running past it (the cathedral close's lanes)
+            const W2 = (x, y) => WALKABLE.has(tileOf(plan, x, y))
+            const laneAtDoor = W2(dx, dy) && W2(dx, dy + 1) && W2(dx - 1, dy) && W2(dx + 1, dy) && W2(dx - 1, dy + 1) && W2(dx + 1, dy + 1)
+            assert.ok(W2(dx, dy + 2) || laneAtDoor || row === GROUND.PLAZA || row === GROUND.MARKET, `${it.id}: street in front of the door looks narrower than 2 tiles`)
+          }
+        }
+
         // gates
         assert.ok(plan.gates.length >= 1, 'at least one gate')
         for (const [gx, gy] of plan.gates) {
@@ -172,12 +221,19 @@ test('town character: fountain and a paved square or market', () => {
   }
 })
 
-test('city character: wall civic items and a cathedral', () => {
+test('city character: no walls anywhere, and a cathedral', () => {
+  for (const tier of TIER_LIST) {
+    for (const seed of SEEDS) {
+      const plan = planSettlement({ tier, seed, lots: tier === 3 ? 120 : 12 })
+      for (const c of plan.civic) {
+        assert.ok(!/^(wall|walltower|gatehouse)$/.test(c.id) && !/^(wall|walltower|gatehouse)/.test(c.id), `tier ${tier}: civic id ${c.id} is a wall piece`)
+        assert.ok(!/^(wall|walltower|gatehouse)$/.test(c.look || ''), `tier ${tier}: civic look ${c.look} is a wall piece`)
+      }
+      for (let i = 0; i < plan.ground.length; i++) assert.notEqual(plan.ground[i], GROUND.WALL, `tier ${tier}: WALL ground at index ${i}`)
+    }
+  }
   for (const seed of SEEDS) {
-    const plan = planSettlement({ tier: 3, seed, lots: 120 })
-    assert.ok(civicHas(plan, /^wall|wall$|walltower|wall/), 'wall civic items')
-    assert.ok(plan.civic.some((c) => /wall/.test(c.id) || /wall/.test(c.look || '')))
-    assert.ok(civicHas(plan, /cathedral/), 'cathedral')
+    assert.ok(civicHas(planSettlement({ tier: 3, seed, lots: 120 }), /cathedral/), 'cathedral')
   }
 })
 
