@@ -3,6 +3,7 @@
  * Ported and simplified from Bot Crossing server/harnesses/claude-code.mjs (MIT, Jarren Rocks).
  * How hierarchy is detected, and how reliable each signal is: docs/ARCHITECTURE.md.
  */
+import { modeOf } from './permmode.mjs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
@@ -518,6 +519,8 @@ export async function scan(now = Date.now()) {
       harness: 'claude-code',
       kind: 'job',
       jobId: j.short,
+      // Its permission mode from the saved respawn flags ('' = default). Never the flag values themselves.
+      permissionMode: modeOf(j.respawnFlags),
       name: j.name || '',
       title: meta.customTitle || meta.aiTitle || meta.firstPrompt || '',
       // The title part that is a name, never the first prompt (Restore after crash stores this).

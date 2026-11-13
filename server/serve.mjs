@@ -13,6 +13,10 @@ import { isLocalRequest } from './local-request.mjs'
 import { defaultDataDir } from './datadir.mjs'
 import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
+import { createLoops } from './loops.mjs'
+import { createTasks } from './tasks.mjs'
+import { createHelper } from './helper.mjs'
+import { createTaskNamer } from './task-names.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
 import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
@@ -24,6 +28,7 @@ import { createPrPoll } from './prpoll.mjs'
 import crypto from 'node:crypto'
 import { createProjectStore } from './projects.mjs'
 import { createAccount } from './account.mjs'
+import { createPermSwitch } from './permmode.mjs'
 import { createRestore, restoreBlocked, MESSAGE as RESTORE_MESSAGE } from './restore.mjs'
 import { accountsBlocked } from './accounts.mjs'
 import { createSpend } from './spend.mjs'
@@ -75,6 +80,11 @@ export { defaultDataDir }
 
 export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {} } = {}) {
   const store = createStore(dataDir)
+  const loops = createLoops(dataDir)
+  const tasks = createTasks(dataDir)
+  const helper = createHelper({ dir: dataDir, claudeHome: claude.home })
+  // transcriptOf (below) maps agent id -> transcript .jsonl path; the namer reads it lazily.
+  const namer = createTaskNamer({ helper, tasks, transcriptFor: (agentId) => transcriptOf.get(agentId) || null })
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
   const termActs = []
@@ -118,6 +128,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // Restore after crash (restore.mjs): the running-set snapshot and the lost crown/Important jobs.
   const restore = createRestore({ dataDir, claudeHome: claude.home })
   const account = createAccount({ dataDir, claudeHome: claude.home, onReading: research.usage, network })
+  // One background job to bypass-permissions mode, on the user's click (permmode.mjs).
+  const permSwitch = createPermSwitch({ dataDir, claudeHome: claude.home, busy: () => account.isBusy() })
   // Token spend is read when the page asks (every few seconds while it is open) and with each usage sample.
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
   const sampler = createSampler({ dataDir, account, network, agents: async () => (await snapshot()).agents })
@@ -195,7 +207,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
-    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState }
+    const taskStore = await tasks.sync(agents, now)
+    try { Promise.resolve(namer.kick()).catch(() => {}) } catch {}
+    const taskList = Object.entries(taskStore.items).map(([id, e]) => ({ id, ...e }))
+    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList, helper: { enabled: (await helper.status()).enabled } }
   }
 
   function messageProblem(a) {
@@ -393,6 +408,48 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const override = await store.patch(id, body)
         cached = null
         return send(res, 200, { id, override })
+      }
+      if (url.pathname === '/api/helper') {
+        if (req.method === 'GET') return send(res, 200, await helper.status())
+        if (req.method === 'POST') {
+          if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+          const status = await helper.setEnabled((await readBody(req))?.enabled)
+          cached = null
+          return send(res, 200, status)
+        }
+      }
+      const lm = /^\/api\/loops\/(.+)$/.exec(url.pathname)
+      if (lm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const entry = await loops.patch(decodeURIComponent(lm[1]), await readBody(req))
+        cached = null
+        return send(res, 200, entry)
+      }
+      if (url.pathname === '/api/tasks' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        const entry = await tasks.addIdea(body?.text)
+        cached = null
+        return send(res, 200, entry)
+      }
+      const tkm = /^\/api\/tasks\/(.+)$/.exec(url.pathname)
+      if (tkm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const entry = await tasks.patch(decodeURIComponent(tkm[1]), await readBody(req))
+        cached = null
+        return send(res, 200, entry)
+      }
+      // Switch one background job to bypass permissions. The job is looked up from the agent id here.
+      const bm = /^\/api\/agents\/([^/]+)\/bypass$/.exec(url.pathname)
+      if (bm && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        await readBody(req) // the body carries nothing we use
+        const a = (await snapshot()).agents.find((x) => x.id === decodeURIComponent(bm[1]))
+        if (!a) return send(res, 404, { error: 'No such agent' })
+        if (a.harness !== 'claude-code' || a.kind !== 'job' || !a.jobId) return send(res, 409, { error: 'Only background jobs can be switched here' })
+        const out = await permSwitch.toBypass(a.jobId, { live: a.live, reopened: Boolean(a.reopened) })
+        cached = null
+        return send(res, 200, out)
       }
       if (url.pathname === '/api/fleet/preview' && ['GET', 'POST'].includes(req.method)) {
         let action = url.searchParams.get('action')
