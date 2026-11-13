@@ -1,8 +1,8 @@
 // Procedural pixel-art props for the isometric village (original art, drawn in code, cached canvases).
 //
 //   const art = createPropArt();
-//   art.draw(ctx, { kind, v, dir, len }, x, y, t, night);  // (x, y) = foot point in VIEW px
-//   art.extent({ kind, v, dir, len }) -> [sx0, sy0, sx1, sy1] relative to the foot point
+//   art.draw(ctx, { kind, v, dir, len }, x, y, t, night, style);  // (x, y) = foot point in VIEW px
+//   art.extent({ kind, v, dir, len }, style) -> [sx0, sy0, sx1, sy1] relative to the foot point
 //
 // Every prop is modelled with a few flat faces (iso boxes, ellipse cylinders, domes) rasterised onto a
 // tiny RGBA pixel buffer with exact pixel rules, so it is crisp at every integer zoom. Colours follow
@@ -33,6 +33,11 @@ const IRON = ramp('#3d4150'), STRAW = ramp('#dcba5a'), LEAF = ramp('#5b9a3c'), L
 const SOIL = ramp('#7a5236'), CLOTH = ramp('#efe3c6'), WATER = [rgb('#2d5b93'), rgb('#3f78b0'), rgb('#5aa0d6'), rgb('#8cc8ec'), rgb('#e0f6fc')];
 const GLASS = ramp('#3d5687'), LIT = [rgb('#c9702c'), rgb('#f0a346'), rgb('#ffcd68'), rgb('#ffe7a0'), rgb('#fff8dc')];
 const AWNINGS = ['#c8503e', '#d8892f', '#e0b43e', '#b4604e', '#c9728a', '#7aa05a'].map(ramp);
+// Optional per-project style (styles-pool.js): style.accent tints awnings, noticeboard roofs and maypole
+// ribbons (mixed with the per-prop variety), style.lamp picks the lamp post look. Only these kinds read it.
+const STYLED = new Set(['stall', 'maypole', 'lamppost', 'noticeboard']);
+const sty = p => (p && p.style && typeof p.style === 'object' ? p.style : null);
+const accentOf = p => { const s = sty(p); return s && typeof s.accent === 'string' && /^#[0-9a-f]{6}$/i.test(s.accent) ? rgb(s.accent) : null; };
 const BLOOMS = [rgb('#ec5f74'), rgb('#f5cf4f'), rgb('#ef93cc'), rgb('#fbf6ea'), rgb('#9f7ff0'), rgb('#f0944a')];
 const RIBBONS = ['#e0525e', '#f2c64a', '#4f9ad6', '#7cc25a', '#ef93cc', '#f0944a'].map(rgb);
 
@@ -255,7 +260,9 @@ const GOODS = [
 ];
 
 B.stall = (S, p) => {
-  const v = p.v | 0, A = AWNINGS[((v % 6) + 6) % 6], goods = GOODS[((v % 6) + 6) % 6];
+  const v = p.v | 0, acc = accentOf(p), vi = ((v % 6) + 6) % 6;
+  // with a style the awning is the region's accent, nudged toward the per-stall colour so a row still varies
+  const A = acc ? ramp(mix(acc, AWNINGS[vi][2], 0.12 + (vi % 3) * 0.1)) : AWNINGS[vi], goods = GOODS[((v % 6) + 6) % 6];
   const back = -6, front = 7;
   // back shelf with small crates, then the table
   S.box(-10, back - 0.5, 10, back + 1.5, 0, 21, WOOD_D, { tex: faceTex(plankTex(2, 3)) });
@@ -354,9 +361,10 @@ B.noticeboard = (S, p) => {
     S.rect(px, py, 3, 4 + (h2(i, n, 3) % 2), c); S.set(px, py, lt(c, 0.5)); S.set(px + 1, py, i % 2 ? rgb('#d6453d') : IRON[2]); S.set(px + 1, py + 2, dk(c, 0.3)); S.set(px, py + 3, dk(c, 0.25));
   }
   // little shingled roof
-  S.wpoly([[-12, 3, 24.5], [12, 3, 24.5], [12, 0, 28], [-12, 0, 28]], rgb('#9d4a37'));
-  S.wpoly([[-12, 3, 24.5], [12, 3, 24.5], [12, 3, 23.3], [-12, 3, 23.3]], rgb('#6e342b'));
-  S.wpoly([[-12, 0, 28], [12, 0, 28], [12, -3, 24.5], [-12, -3, 24.5]], rgb('#7e3a2f'));
+  const roof = accentOf(p), R0 = roof ? ramp(mix(roof, rgb('#9d4a37'), 0.2)) : null;
+  S.wpoly([[-12, 3, 24.5], [12, 3, 24.5], [12, 0, 28], [-12, 0, 28]], R0 ? R0[2] : rgb('#9d4a37'));
+  S.wpoly([[-12, 3, 24.5], [12, 3, 24.5], [12, 3, 23.3], [-12, 3, 23.3]], R0 ? R0[0] : rgb('#6e342b'));
+  S.wpoly([[-12, 0, 28], [12, 0, 28], [12, -3, 24.5], [-12, -3, 24.5]], R0 ? R0[1] : rgb('#7e3a2f'));
 };
 
 B.signpost = (S, p) => {
@@ -408,12 +416,14 @@ B.trough = (S, p) => {
 };
 
 B.maypole = (S, p, f) => {
-  const H = 58;
+  const H = 58, acc = accentOf(p);
+  // styled: alternate ribbons take the regional accent (and a lighter/darker kin of it), the rest keep the festive mix
+  const ribc = i => (acc ? (i % 3 === 0 ? acc : i % 3 === 1 ? lt(acc, 0.3) : RIBBONS[i]) : RIBBONS[i]);
   S.cyl(0, 0, 9, 0, 2.2, STONE, { tex: stoneTex(12, 2, 5), top: STONE_W[3] });
   const rib = (i, back) => {
     const a = i * Math.PI / 3 + 0.5, depth = Math.cos(a) + Math.sin(a);
     if ((depth < 0) !== back) return;
-    const c = RIBBONS[i], sway = Math.sin((f / 4 + i / 6) * Math.PI * 2) * 2.2, R = 12.5;
+    const c = ribc(i), sway = Math.sin((f / 4 + i / 6) * Math.PI * 2) * 2.2, R = 12.5;
     for (let k = 0; k <= 60; k++) {
       const s = k / 60, e = s * s * 0.35 + s * 0.65, w = sway * Math.sin(s * Math.PI * 0.9);
       const wx = R * Math.cos(a) * e - Math.sin(a) * w, wy = R * Math.sin(a) * e + Math.cos(a) * w;
@@ -447,6 +457,9 @@ B.flowerbox = (S, p) => {
 };
 
 B.lamppost = (S, p, f, lit) => {
+  const kind = sty(p) && sty(p).lamp;
+  if (kind === 'lantern') return lampLantern(S, lit);
+  if (kind === 'post') return lampPost(S, lit);
   S.box(-2.4, -2.4, 2.4, 2.4, 0, 2.5, IRON);
   S.box(-1.7, -1.7, 1.7, 1.7, 2.5, 4, IRON);
   S.cyl(0, 0, 0.9, 4, 18, IRON, { top: IRON[3] });
@@ -463,6 +476,28 @@ B.lamppost = (S, p, f, lit) => {
   S.wpoly([[3.4, 3.4, 22], [3.4, -3.4, 22], [0, 0, 25]], IRON[1]);
   S.rect(0, -26, 1, 2, IRON[3]);
 };
+
+// lantern on a post: a wooden post with a bracket arm and a small lantern hanging from it
+function lampLantern(S, lit) {
+  S.box(-2, -2, 2, 2, 0, 2.5, STONE);
+  S.cyl(0, 0, 1.3, 2.5, 25, WOOD, { top: WOOD[3] });
+  S.box(-1.9, -1.9, 1.9, 1.9, 22, 24, WOOD_D);
+  S.line(0, -23, 5, -23, WOOD_D[2]); S.line(0, -22, 4, -23, WOOD_D[1]);
+  const g = lit ? LIT : GLASS;
+  S.rect(4, -22, 1, 1, IRON[2]);
+  S.rect(3, -21, 3, 1, IRON[2]); S.rect(3, -20, 3, 4, g[2]); S.set(3, -20, g[4]); S.set(5, -17, g[1]); S.rect(3, -16, 3, 1, IRON[2]);
+  if (lit) S.rect(4, -19, 1, 2, LIT[4]);
+}
+// simple wooden post lamp: a short post topped with a boxed flame under a little cap
+function lampPost(S, lit) {
+  S.cyl(0, 0, 1.6, 0, 3, STONE, { top: STONE[3] });
+  S.box(-1.1, -1.1, 1.1, 1.1, 3, 18, WOOD, { tex: faceTex(plankTex(3, 4)) });
+  S.box(-2.6, -2.6, 2.6, 2.6, 18, 19, WOOD_D);
+  const gg = lit ? LIT : [dk(rgb('#8d7b52'), 0.3), dk(rgb('#8d7b52'), 0.1), rgb('#8d7b52'), lt(rgb('#8d7b52'), 0.2), lt(rgb('#8d7b52'), 0.4)];
+  S.box(-2, -2, 2, 2, 19, 22.5, gg, { top: gg[4] });
+  S.wpoly([[-3, 3, 22.5], [3, 3, 22.5], [0, 0, 25.5], [0, 0, 25.5]], WOOD_D[2]);
+  S.wpoly([[3, 3, 22.5], [3, -3, 22.5], [0, 0, 25.5]], WOOD_D[1]);
+}
 
 B.bridge = (S, p) => {
   const ax = p.dir === 'y' ? 'y' : 'x', HL = 10, DW = 4.6, WW = 6.6, step = 0.5;
@@ -515,7 +550,7 @@ const SIZE = {
   trough: () => [-14, -14, 14, 9],
   maypole: () => [-20, -70, 20, 14],
   flowerbox: () => [-12, -17, 12, 8],
-  lamppost: () => [-6, -30, 6, 6],
+  lamppost: () => [-8, -30, 8, 6],
   bridge: () => [-17, -24, 17, 14],
 };
 const FRAMES = { fountain: 4, maypole: 4 };
@@ -524,7 +559,7 @@ const GLOW = [-34, -48, 34, 18]; // lamppost halo rect (relative to the foot)
 
 export function createPropArt() {
   const cache = new Map();
-  const norm = p => ({ kind: p.kind, v: p.v | 0, dir: p.dir === 'y' ? 'y' : 'x', len: Math.max(1, p.len | 0 || 1) });
+  const norm = (p, style) => ({ kind: p.kind, v: p.v | 0, dir: p.dir === 'y' ? 'y' : 'x', len: Math.max(1, p.len | 0 || 1), style: STYLED.has(p.kind) && style && typeof style === 'object' ? style : null });
   const rectOf = q => SIZE[q.kind](q);
 
   function build(q, frame, lit) {
@@ -550,20 +585,20 @@ export function createPropArt() {
     return (glow = { cv, ox: -GLOW[0], oy: -GLOW[1] });
   }
 
-  function get(p, t, night) {
-    const q = norm(p);
+  function get(p, t, night, style) {
+    const q = norm(p, style);
     if (!B[q.kind]) return null;
     const nf = FRAMES[q.kind] || 1, frame = nf > 1 ? (((Math.floor((+t || 0) * FPS[q.kind])) % nf) + nf) % nf : 0;
     const lit = q.kind === 'lamppost' && !!night;
-    const key = `${q.kind}|${q.v}|${q.dir}|${q.len}|${frame}|${lit ? 1 : 0}`;
+    const key = `${q.kind}|${q.v}|${q.dir}|${q.len}|${frame}|${lit ? 1 : 0}${q.style ? `|${q.style.key}` : ''}`;
     let e = cache.get(key);
     if (!e) { e = build(q, frame, lit); cache.set(key, e); }
     return { e, lit };
   }
 
   return {
-    draw(ctx, p, x, y, t, night) {
-      const r = get(p, t, night);
+    draw(ctx, p, x, y, t, night, style) {
+      const r = get(p, t, night, style);
       if (!r) return;
       const fx = Math.round(x), fy = Math.round(y);
       ctx.drawImage(r.e.cv, fx - r.e.ox, fy - r.e.oy);
@@ -574,8 +609,8 @@ export function createPropArt() {
         ctx.globalCompositeOperation = prev;
       }
     },
-    extent(p) {
-      const q = norm(p);
+    extent(p, style) {
+      const q = norm(p, style);
       if (!SIZE[q.kind]) return [0, 0, 0, 0];
       const r = rectOf(q);
       return q.kind === 'lamppost' ? [GLOW[0], GLOW[1], GLOW[2] + 1, GLOW[3] + 1] : [r[0], r[1], r[2] + 1, r[3] + 1];

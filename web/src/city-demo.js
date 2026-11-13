@@ -7,13 +7,15 @@ export const DEMO_PREFIX = 'citydemo:';
 export const isDemoId = id => typeof id === 'string' && id.startsWith(DEMO_PREFIX);
 
 // [project, growth inputs, crews]. A crew is [role, bucket, subs?]: subs is a list of sub buckets.
+// Each project has a fixed architectural style (styles-pool.js FAMILIES): thatch 5, mediterranean 1, stone 2, canal 4.
+// The City has two bosses, so its plan gets two crown estates.
 // growth = 3·PRs + agentsEver + log2(transcript MB + 1): Hamlet 7, Village 30, Town 96, City 407.
 const PROJECTS = [
-  { name: 'Hamlet', prs: 1, live: 1, agentsEver: 4, mb: 2, crews: [['solo', 'building'], ['solo', 'waiting'], ['solo', 'resting']] },
-  { name: 'Village', prs: 4, live: 2, agentsEver: 18, mb: 40, crews: [['lead', 'waiting', ['building', 'building']], ['solo', 'stalled'], ['solo', 'building'], ['solo', 'resting'], ['solo', 'resting']] },
-  { name: 'Town', prs: 12, live: 3, agentsEver: 60, mb: 300, crews: [['lead', 'building', ['building', 'waiting', 'resting']], ['lead', 'stalled', ['building']],
+  { name: 'Hamlet', style: 5, prs: 1, live: 1, agentsEver: 4, mb: 2, crews: [['solo', 'building'], ['solo', 'waiting'], ['solo', 'resting']] },
+  { name: 'Village', style: 1, prs: 4, live: 2, agentsEver: 18, mb: 40, crews: [['lead', 'waiting', ['building', 'building']], ['solo', 'stalled'], ['solo', 'building'], ['solo', 'resting'], ['solo', 'resting']] },
+  { name: 'Town', style: 2, prs: 12, live: 3, agentsEver: 60, mb: 300, crews: [['lead', 'building', ['building', 'waiting', 'resting']], ['lead', 'stalled', ['building']],
     ['solo', 'waiting'], ['solo', 'building'], ['solo', 'building'], ['solo', 'stalled'], ['solo', 'waiting'], ['solo', 'resting'], ['solo', 'resting']] },
-  { name: 'City', prs: 45, live: 6, agentsEver: 260, mb: 4000, crews: [['boss', 'waiting'], ['lead', 'building', ['building', 'building', 'waiting']], ['lead', 'waiting', ['building', 'stalled', 'resting']],
+  { name: 'City', style: 4, prs: 45, live: 6, agentsEver: 260, mb: 4000, crews: [['boss', 'waiting'], ['boss', 'building'], ['lead', 'building', ['building', 'building', 'waiting']], ['lead', 'waiting', ['building', 'stalled', 'resting']],
     ['lead', 'building', ['building', 'building']], ['lead', 'stalled', ['waiting']], ['solo', 'building'], ['solo', 'building'], ['solo', 'waiting'], ['solo', 'waiting'],
     ['solo', 'stalled'], ['solo', 'building'], ['solo', 'waiting'], ['solo', 'building'], ['solo', 'resting', null, true], ['solo', 'resting'], ['solo', 'resting']] },
 ];
@@ -47,7 +49,7 @@ export function cityDemo(now = Date.now()) {
       if (role === 'boss') boss = a;
       for (const sb of subs || []) add('sub', sb, a);
     }
-    projects.push({ name: P.name, prs, agentsEver: P.agentsEver, transcriptBytes: P.mb * 1e6 });
+    projects.push({ name: P.name, style: { family: P.style }, prs, agentsEver: P.agentsEver, transcriptBytes: P.mb * 1e6 });
   }
   return { agents, byId: new Map(agents.map(a => [a.id, a])), projects };
 }

@@ -25,9 +25,155 @@ function seg(cum, u) { let lo = 0, hi = cum.length - 2; while (lo < hi) { const 
 // Shared out-parameter for positions (no allocation per call).
 const P = { x: 0, y: 0, dx: 0, dy: 0 };
 
+// ---- townsfolk outfits (style.folk): palette-swapped clothing + hats --------------------------------------------
+// Each actor sheet's body pixels (frame rows 11..15) are clustered into colour families (shade variants of one
+// hue). The biggest family becomes the "shirt", the next the "trousers", the rest the "accent"; skin, hair and the
+// ink outline are left alone (KEEP lists the skin/hair colours seen in each sheet). A recoloured pixel keeps its
+// shading: the palette colour is scaled by pixel luminance / family luminance.
+const BODY_Y = 11;
+const KEEP = {
+  Villager2: ['d14b34', '3b3643'], Woman: ['ef914f', 'd78b4a', 'f1c471'], OldMan: ['ef914f', 'f2ad7d', '4e484a'],
+  Villager4: ['f1c471', 'ef914f', 'd78b4a'], Hunter: ['ef914f'], Princess: ['a3754e', 'd78b4a', '3b3643', '4e484a'],
+  Villager3: ['a3754e', '965340', '3b3643', '4e484a'], Boy: ['ef914f', '965340'], Monk2: ['ef914f'],
+  Villager5: ['c8966b', 'fce2ca'], OldMan3: ['ef914f', 'e3f1f5', '9ba7aa', 'f1c471', '4e484a'],
+};
+const INK = '#141b1b';
+const hex3 = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const lum = (r, g, b) => (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+function hue(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  if (d < 28) return -1; // neutral
+  const h = mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return h * 60;
+}
+const shade = (c, k) => '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v * k))).toString(16).padStart(2, '0')).join('');
+// Hat pixel maps, 16 wide, from the top of the 16x16 frame. o ink, m main, s shade, h highlight, a accent, f feather.
+// Facing 0 (down) and 1 (up) use F/B; facing 2 (left) uses S, facing 3 mirrors it.
+const HATS = {
+  cap: {
+    F: ['.....oooooo.....', '....ommmmmmo....', '...ommmhmmmmo...', '..ommmmmmmmmmo..', '..osssssssssso..'],
+    B: ['.....oooooo.....', '....ommmmmmo....', '...ommmhmmmmo...', '..ommmmmmmmmmo..', '..ommmmmmmmmmo..'],
+    S: ['.....oooooo.....', '....ommmmmmo....', '...ommmhmmmmo...', '..ommmmmmmmmmo..', 'oosssssssso.....']
+  },
+  straw: {
+    F: ['......oooo......', '.....ommhmo.....', '....ommmmmmo....', '..ooobbbbbbooo..', '.ommmmmmmmmmmmo.', '..oooooooooooo..'],
+    S: ['......oooo......', '.....ommhmo.....', '....ommmmmmo....', '..ooobbbbbbooo..', '.ommmmmmmmmmmmo.', '..oooooooooooo..']
+  },
+  hood: {
+    F: ['....oooooooo....', '...ommmmmmmmo...', '..ommmhmmmmmmo..', '..ommmmmmmmmmo..', '..omm......mmo..', '..omm......mmo..'],
+    B: ['....oooooooo....', '...ommmmmmmmo...', '..ommmhmmmmmmo..', '..ommmmmmmmmmo..', '..ommmmmmmmmmo..', '..ommmmmmmmmmo..'],
+    S: ['....oooooooo....', '...ommmmmmmmo...', '..ommmhmmmmmmo..', '..ommmmmmmmmmo..', '..o...mmmmmmo...', '......mmmmmo....']
+  },
+  feather: {
+    F: ['..........fff...', '.....oooooofff..', '....ommmmmmofff.', '...ommmhmmmmo...', '..ommmmmmmmmmo..'],
+    B: ['..........fff...', '.....oooooofff..', '....ommmmmmofff.', '...ommmhmmmmo...', '..ommmmmmmmmmo..'],
+    S: ['..........fff...', '.....oooooofff..', '....ommmmmmofff.', '...ommmhmmmmo...', '..ommmmmmmmmmo..']
+  },
+  kerchief: {
+    F: ['....oooooooo....', '...oaaaaaaaao...', '..oaaahaaaaaao..', '..oaaaaaahaaao..', '..oaaaaaaaaaao..'],
+    B: ['....oooooooo....', '...oaaaaaaaao...', '..oaaahaaaaaao..', '..oaaaaaahaaao..', '..oaaaaaaaaaao..', '.....oaaao......'],
+    S: ['....oooooooo....', '...oaaaaaaaao...', '..oaaahaaaaaao..', '..oaaaaaaaaaaoo.', '..oaaaaaaaaaaao.', '.......ooaaao...']
+  },
+};
+const mirror = rows => rows.map(r => [...r].reverse().join(''));
+function hatRows(hat, dir) {
+  const H = HATS[hat]; if (!H) return null;
+  if (dir === 2) return H.S;
+  if (dir === 3) return mirror(H.S);
+  return dir === 1 ? (H.B || H.F) : H.F;
+}
+const mk = (w, h) => {
+  if (typeof document !== 'undefined') { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+  return null;
+};
+
 export function createAmbient({ IMG, actor }) {
   let vills = [];
   const looks = () => LOOKS.filter(l => IMG[l]);
+
+
+  // ---- folk dressing: per-sheet clothing analysis (once), recoloured + hatted + rimmed frames (cached) ----
+  const sheets = new Map(), dressed = new Map();
+  function analyse(look) {
+    if (sheets.has(look)) return sheets.get(look);
+    let out = null;
+    const im = IMG[look], c = im && mk(im.width, im.height);
+    if (c) {
+      const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(im, 0, 0);
+      const data = g.getImageData(0, 0, c.width, c.height).data, keep = new Set(KEEP[look] || []);
+      const cnt = new Map(), W = c.width;
+      for (let y = 0; y < c.height; y++) {
+        if (y % 16 < BODY_Y || ((y / 16) | 0) > 3) continue;
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4; if (data[i + 3] < 200) continue;
+          const r = data[i], gg = data[i + 1], b = data[i + 2], hx = ((r << 16) | (gg << 8) | b).toString(16).padStart(6, '0');
+          if (keep.has(hx) || lum(r, gg, b) < 0.17) continue;
+          cnt.set(hx, (cnt.get(hx) || 0) + 1);
+        }
+      }
+      // families: same hue (within 25 degrees) or both neutral
+      const fams = [];
+      for (const [hx, n] of [...cnt].sort((a, b) => b[1] - a[1])) {
+        const rgb = [parseInt(hx.slice(0, 2), 16), parseInt(hx.slice(2, 4), 16), parseInt(hx.slice(4, 6), 16)], h = hue(...rgb), L = lum(...rgb);
+        let f = fams.find(f => (h < 0 && f.h < 0) || (h >= 0 && f.h >= 0 && Math.min(Math.abs(h - f.h), 360 - Math.abs(h - f.h)) < 25));
+        if (!f) fams.push(f = { h, n: 0, lsum: 0, cols: [] });
+        f.n += n; f.lsum += L * n; f.cols.push([hx, L]);
+      }
+      fams.sort((a, b) => b.n - a.n);
+      out = new Map();
+      fams.forEach((f, i) => { const ref = f.lsum / f.n, role = Math.min(i, 2); for (const [hx, L] of f.cols) out.set(hx, { role, k: Math.max(0.55, Math.min(1.4, L / (ref || 1))) }); });
+    }
+    sheets.set(look, out);
+    return out;
+  }
+  // The 20x20 "sticker" for one dressed frame: ink outline + light rim like world.js rimmed(), around the
+  // recoloured, hatted 16x16 frame.
+  function dress(look, folk, dir, row) {
+    const key = `${look}|${folk.id}|${dir}|${row}`;
+    if (dressed.has(key)) return dressed.get(key);
+    const an = analyse(look), im = IMG[look], f = mk(16, 16);
+    let out = null;
+    if (an && im && f) {
+      const g = f.getContext('2d', { willReadFrequently: true });
+      g.drawImage(im, dir * 16, row * 16, 16, 16, 0, 0, 16, 16);
+      const id = g.getImageData(0, 0, 16, 16), d = id.data, pal = folk.rgb;
+      for (let y = BODY_Y; y < 16; y++) for (let x = 0; x < 16; x++) {
+        const i = (y * 16 + x) * 4; if (d[i + 3] < 200) continue;
+        const e = an.get(((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]).toString(16).padStart(6, '0')); if (!e) continue;
+        const p = pal[e.role];
+        d[i] = Math.min(255, Math.round(p[0] * e.k)); d[i + 1] = Math.min(255, Math.round(p[1] * e.k)); d[i + 2] = Math.min(255, Math.round(p[2] * e.k));
+      }
+      g.putImageData(id, 0, 0);
+      const rows = folk.hat !== 'none' && hatRows(folk.hat, dir);
+      if (rows) {
+        const m = pal[0], A = pal[2], hc = { o: INK, m: folk.hat === 'hood' ? shade(pal[0], 1) : folk.hat === 'straw' ? '#e0bd6c' : folk.hat === 'feather' ? shade(pal[1], 1) : shade(pal[2], 1), s: null, h: null, a: shade(pal[2], 1), b: shade(pal[2], 1), f: shade(pal[2], 1.15) };
+        const base = hat => hat === 'hood' ? m : hat === 'straw' ? [224, 189, 108] : hat === 'feather' ? pal[1] : A;
+        const bc = base(folk.hat); hc.s = shade(bc, 0.78); hc.h = shade(bc, 1.22);
+        if (folk.hat === 'straw') hc.b = shade(pal[1], 1);
+        if (folk.hat === 'feather') hc.f = shade(pal[2], 1.1);
+        rows.forEach((r, y) => { for (let x = 0; x < 16; x++) { const ch = r[x]; if (ch === '.') continue; g.fillStyle = hc[ch] || INK; g.fillRect(x, y, 1, 1); } });
+      }
+      out = mk(20, 20);
+      const o = out.getContext('2d'), sil = (color, pad) => {
+        const c = mk(16 + pad * 2, 16 + pad * 2), cg = c.getContext('2d');
+        for (let dy = -pad; dy <= pad; dy++) for (let dx = -pad; dx <= pad; dx++) if (Math.abs(dx) + Math.abs(dy) <= pad + (pad > 1 ? 1 : 0)) cg.drawImage(f, pad + dx, pad + dy);
+        cg.globalCompositeOperation = 'source-in'; cg.fillStyle = color; cg.fillRect(0, 0, c.width, c.height); return c;
+      };
+      o.globalAlpha = 0.55; o.drawImage(sil('#fff4dc', 2), 0, 0); o.globalAlpha = 1;
+      o.drawImage(sil('#140f1c', 1), 1, 1);
+      o.drawImage(f, 2, 2);
+    }
+    dressed.set(key, out);
+    return out;
+  }
+  // Pick a walker's outfit from a village style (undefined without v.style or without folk).
+  function folkOf(v, h) {
+    const fk = v?.style?.folk;
+    if (!fk || !Array.isArray(fk.palettes) || !fk.palettes.length) return null;
+    const pal = fk.palettes[h % fk.palettes.length];
+    return { pal, hat: fk.hat || 'none', rgb: pal.map(hex3), id: `${pal.join('')}|${fk.hat || 'none'}` };
+  }
 
   // ---- routes ----
   function makeRoute(plan, bx, by, r, steps, walkOK) {
@@ -95,13 +241,13 @@ export function createAmbient({ IMG, actor }) {
       for (let i = 0; i < n; i++) {
         const rt = makeRoute(plan, bx, by, r, 20 + Math.floor(r() * 40), c => WALK.has(c));
         if (!rt) break;
-        V.walkers.push({ rt, speed: 14 + r() * 6, phase: r() * rt.total, look: LK[Math.floor(r() * LK.length)], ox: (r() - 0.5) * 5, oy: (r() - 0.5) * 5, night: i < Math.max(1, Math.ceil(n * 0.2)), d: { amb: 1, kind: 'walker', x: 0, y: 0, dir: 0, row: 0, look: '', lantern: false, i } });
+        V.walkers.push({ rt, speed: 14 + r() * 6, phase: r() * rt.total, look: LK[Math.floor(r() * LK.length)], folk: folkOf(v, Math.floor(r() * 4096)), ox: (r() - 0.5) * 5, oy: (r() - 0.5) * 5, night: i < Math.max(1, Math.ceil(n * 0.2)), d: { amb: 1, kind: 'walker', x: 0, y: 0, dir: 0, row: 0, look: '', folk: null, lantern: false, i } });
       }
       // Vendors at stalls, fountains, pigeon spots
       for (const p of plan.props || []) {
         if (p.kind === 'stall' && LK.length) {
           const wx = (bx + p.x) * T, wy = (by + p.y) * T - 5, h0 = fnv(`${vi}|s${p.x}|${p.y}`);
-          V.vendors.push({ wx, wy, look: LK[h0 % LK.length], seed: h0 % 97, d: { amb: 1, kind: 'vendor', x: 0, y: 0, dir: 0, row: 0, look: '' } });
+          V.vendors.push({ wx, wy, look: LK[h0 % LK.length], folk: folkOf(v, (h0 >>> 7) % 4096), seed: h0 % 97, d: { amb: 1, kind: 'vendor', x: 0, y: 0, dir: 0, row: 0, look: '', folk: null } });
         } else if (p.kind === 'fountain') V.fountains.push({ wx: (bx + p.x) * T, wy: (by + p.y) * T, s: fnv(`${vi}|f${p.x}|${p.y}`) });
       }
       // Cart: the longest east-west street run, town and city.
@@ -152,7 +298,7 @@ export function createAmbient({ IMG, actor }) {
         along(k.rt, tt * k.speed + k.phase);
         const wx = P.x + k.ox, wy = P.y + k.oy, d = k.d, X = Math.round(isoX(wx, wy)), Y = Math.round(isoY(wx, wy));
         if (!inView(X - 14, Y - 24, 28, 30)) continue;
-        d.x = X - 8; d.y = Y - 16; d.look = k.look; d.dir = dirOf(P.dx, P.dy); d.row = f.still ? 0 : Math.floor(tt * 8) % 4;
+        d.x = X - 8; d.y = Y - 16; d.look = k.look; d.folk = k.folk; d.dir = dirOf(P.dx, P.dy); d.row = f.still ? 0 : Math.floor(tt * 8) % 4;
         d.lantern = night > 0.4;
         push(d, wx, wy, X - 10, Y - 20, X + 10, Y + 3);
       }
@@ -162,7 +308,7 @@ export function createAmbient({ IMG, actor }) {
         // facing south, with a turn to one side now and then
         const c = Math.floor((tt + k.seed) / 7), s = (tt + k.seed) - c * 7;
         d.dir = !f.still && s > 5.4 ? (c & 1 ? 2 : 3) : 0;
-        d.x = X - 8; d.y = Y - 16; d.look = k.look; d.row = 0;
+        d.x = X - 8; d.y = Y - 16; d.look = k.look; d.folk = k.folk; d.row = 0;
         push(d, wx, wy, X - 10, Y - 20, X + 10, Y + 3);
       }
       if (V.cart && night < 0.6) {
@@ -202,7 +348,7 @@ export function createAmbient({ IMG, actor }) {
     switch (d.kind) {
       case 'walker': case 'vendor':
         ctx.fillStyle = 'rgba(16, 10, 24, 0.45)'; ctx.beginPath(); ctx.ellipse(d.x + 8, d.y + 15, 6, 2.5, 0, 0, 7); ctx.fill();
-        actor(ctx, d.look, d.dir, d.row, d.x, d.y);
+        { const sp = d.folk && dress(d.look, d.folk, d.dir, d.row); if (sp) ctx.drawImage(sp, Math.round(d.x) - 2, Math.round(d.y) - 2); else actor(ctx, d.look, d.dir, d.row, d.x, d.y); }
         if (d.lantern) glow(ctx, d.x + 14, d.y + 11, 0.5);
         return;
       case 'cart': {

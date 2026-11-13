@@ -173,14 +173,24 @@ function farmland(P, r, x0, x1, y0, y1, tier) {
     const code = kinds[P.farmK++ % kinds.length];
     fillOpen(P, x, y0, pw, y1 - y0 + 1, code);
     const freeCol = cx => { for (let y = y0; y <= y1; y++) if (isFoot(P, cx, y)) return false; return true; };
+    // An x-direction fence along row y0, split into runs that stop at building footprints (never through one).
+    const fenceX = v => {
+      for (let a = x; a < x + pw;) {
+        if (isFoot(P, a, y0)) { a++; continue; }
+        let b = a;
+        while (b + 1 < x + pw && !isFoot(P, b + 1, y0)) b++;
+        prop(P, 'fence', a, y0 + 0.05, v, { dir: 'x', len: b - a + 1 });
+        a = b + 1;
+      }
+    };
     if (code === G.FIELD) {
-      prop(P, 'fence', x, y0 + 0.05, 0, { dir: 'x', len: pw });
+      fenceX(0);
       if (pw >= 3) prop(P, 'scarecrow', x + 1 + Math.floor(r() * (pw - 2)) + 0.5, y0 + 1 + Math.floor(r() * Math.max(1, y1 - y0)) + 0.5, Math.floor(r() * 4));
     } else if (code === G.ORCHARD) {
       for (let yy = y0; yy <= y1; yy += 2) for (let xx = x + (yy % 2); xx < x + pw; xx += 2) prop(P, 'tree', xx + 0.5, yy + 0.5, 2 + Math.floor(r() * 2));
       if (r() < 0.6) prop(P, 'beehive', x + 0.5, y1 + 0.5, Math.floor(r() * 4));
     } else if (code === G.PASTURE) {
-      prop(P, 'fence', x, y0 + 0.05, 1, { dir: 'x', len: pw });
+      fenceX(1);
       if (freeCol(x)) prop(P, 'fence', x + 0.05, y0, 1, { dir: 'y', len: y1 - y0 + 1 });
       prop(P, r() < 0.5 ? 'haystack' : 'hay', x + 0.5 + Math.floor(r() * pw), y0 + 1.5, Math.floor(r() * 4));
       prop(P, 'trough', x + pw - 0.5, y1 + 0.5, 0);

@@ -21,10 +21,91 @@ const BRICK = ['#c08a68', '#b57e5e', '#cd9876', '#ad7656'];
 const GRASS_C = ['#70b04a', '#68a843', '#78b852'];
 const WHEAT = ['#e0b43c', '#d6a832', '#eac24c'];
 
-export function paintGround(g, code, tx, ty, dx, dy, near) {
+// ---- styled paving (style.paving = { kind, base, joint }); only STREET/LANE/PLAZA/MARKET read it ----
+const hx = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+const mixC = (a, b, k) => '#' + a.map((v, i) => Math.max(0, Math.min(255, Math.round(v + (b[i] - v) * k))).toString(16).padStart(2, '0')).join('');
+const WHITE = [255, 255, 255], BLACK = [20, 14, 30];
+const PAVING_KINDS = new Set(['cobble', 'flagstone', 'brick', 'earth']);
+
+function paintPaving(R, code, tx, ty, near, pv) {
+  const kind = pv.kind, base = hx(pv.base), joint = pv.joint;
+  // each code reads a little differently so streets, plazas, markets and lanes stay distinguishable
+  const role = code === PLAZA ? mixC(base, WHITE, 0.12) : code === MARKET ? mixC(base, BLACK, 0.12) : code === LANE ? mixC(base, BLACK, 0.06) : pv.base;
+  const rb = hx(role);
+  const tone = (n) => mixC(rb, n > 0 ? WHITE : BLACK, Math.abs(n));
+  const jit = h => [0, 0.06, -0.06, 0.11, -0.1][h % 5];
+  const lit = mixC(rb, WHITE, 0.28), shade = mixC(rb, BLACK, 0.22);
+  R(0, 0, 16, 16, joint);
+  if (kind === 'cobble') {
+    for (let r = 0; r < 4; r++) {
+      const y = r * 4, wid = r & 1 ? [2, 4, 4, 4, 2] : [4, 4, 4, 4];
+      let x = 0;
+      for (let i = 0; i < wid.length; i++) {
+        const w = wid[i], c = tone(jit(H(tx, ty, r * 7 + i + 1)));
+        if (w === 4) { R(x + 1, y, 2, 4, c); R(x, y + 1, 4, 2, c); R(x + 1, y + 1, 2, 2, lit); }
+        else R(x, y + 1, w, 2, c);
+        x += w;
+      }
+    }
+  } else if (kind === 'flagstone') {
+    for (let r = 0; r < 2; r++) {
+      const y = r * 8, off = ((ty * 2 + r) & 1) ? 4 : 0;
+      for (let i = -1; i < 2; i++) {
+        const x = i * 8 + off, c = tone(jit(H(tx, ty, r * 3 + i + 8))), x0 = Math.max(0, x), x1 = Math.min(16, x + 8);
+        if (x1 - x0 <= 0) continue;
+        R(x0, y, x1 - x0, 7, c); R(x0, y, x1 - x0, 1, lit);
+        if (x >= 0) R(x, y, 1, 7, lit);
+        if ((H(tx, ty, r * 5 + i + 20) & 7) === 0) R(x0 + 2, y + 3, 2, 1, shade);
+      }
+    }
+  } else if (kind === 'brick') {
+    // herringbone weave: 8x8 blocks of two 7x3 bricks, alternating direction, every other block-row shifted half a block
+    for (let cj = 0; cj < 2; cj++) for (let ci = -1; ci < 2; ci++) {
+      const bx = ci * 8 + (cj & 1 ? 4 : 0), by = cj * 8, vert = (ci + cj + tx + ty) & 1;
+      for (let k = 0; k < 2; k++) {
+        const c = tone(jit(H(tx, ty, cj * 9 + (ci + 1) * 2 + k + 60))), px = vert ? bx + k * 4 : bx, py = vert ? by : by + k * 4;
+        const w = vert ? 3 : 7, h = vert ? 7 : 3, x0 = Math.max(0, px), x1 = Math.min(16, px + w);
+        if (x1 <= x0) continue;
+        R(x0, py, x1 - x0, h, c); R(x0, py, x1 - x0, 1, lit);
+      }
+    }
+  } else { // earth: packed dirt with pebbles and a pair of faint ruts along the road
+    R(0, 0, 16, 16, role);
+    for (let i = 0; i < 14; i++) { const h = H(tx, ty, i + 40); R(h & 15, (h >> 4) & 15, 1 + (h >> 9) % 2, 1, (h >> 11) & 1 ? lit : shade); }
+    for (let i = 0; i < 3; i++) { const h = H(tx, ty, i + 70); R(h & 13, (h >> 4) & 13, 2, 1, joint); }
+    const road = c => c === LANE || c === STREET || c === PLAZA || c === MARKET || c === YARD;
+    const hz = road(near(-1, 0)) || road(near(1, 0)), vz = road(near(0, -1)) || road(near(0, 1));
+    const horiz = hz && !vz;
+    if ((code === LANE || code === STREET) && (hz !== vz)) {
+      if (horiz) { R(0, 4, 16, 2, joint); R(0, 10, 16, 2, joint); R(0, 6, 16, 1, lit); R(0, 12, 16, 1, lit); }
+      else { R(4, 0, 2, 16, joint); R(10, 0, 2, 16, joint); R(6, 0, 1, 16, lit); R(12, 0, 1, 16, lit); }
+    }
+  }
+  // edges: kerb for hard paving on streets; grass creeping in on lanes and earth
+  if (code === STREET && kind !== 'earth') {
+    const kerb = mixC(rb, WHITE, 0.34), kd = mixC(rb, BLACK, 0.3);
+    if (!PAVED.has(near(0, -1))) { R(0, 0, 16, 2, kerb); R(0, 2, 16, 1, kd); }
+    if (!PAVED.has(near(0, 1))) { R(0, 14, 16, 2, kerb); R(0, 13, 16, 1, kd); }
+    if (!PAVED.has(near(-1, 0))) { R(0, 0, 2, 16, kerb); R(2, 0, 1, 16, kd); }
+    if (!PAVED.has(near(1, 0))) { R(14, 0, 2, 16, kerb); R(13, 0, 1, 16, kd); }
+  } else if (code === LANE || kind === 'earth') {
+    const edge = (a, b, f) => { if (!PAVED.has(near(a, b))) for (let i = 0; i < 16; i += 2) { const h = H(tx, ty, i + a * 5 + b * 9 + 90); if (h & 3) f(i, 1 + (h >> 3) % 2); } };
+    edge(0, -1, (i, n) => R(i, 0, 2, n, '#6aa845'));
+    edge(0, 1, (i, n) => R(i, 16 - n, 2, n, '#6aa845'));
+    edge(-1, 0, (i, n) => R(0, i, n, 2, '#6aa845'));
+    edge(1, 0, (i, n) => R(16 - n, i, n, 2, '#6aa845'));
+  }
+}
+
+export function paintGround(g, code, tx, ty, dx, dy, near, style) {
   const R = (x, y, w, h, c) => { g.fillStyle = c; g.fillRect(dx + x, dy + y, w, h); };
   const h0 = H(tx, ty);
   const is = (a, b, c) => near(a, b) === c;
+  const pv = style && typeof style === 'object' ? style.paving : null;
+  if (pv && PAVING_KINDS.has(pv.kind) && (code === STREET || code === LANE || code === PLAZA || code === MARKET)) {
+    paintPaving(R, code, tx, ty, near, pv);
+    return;
+  }
 
   switch (code) {
     case STREET: {
