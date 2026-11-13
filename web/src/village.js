@@ -8,7 +8,7 @@ import { cityDemo, isDemoId } from './city-demo.js';
 import { GROUND } from './city-plan.js';
 import { visibleProjects } from './quiet.js';
 import { folds } from './important.js';
-import { dockData, dockDemo, demoDock, dockSig, dockRect, dockGeom } from './dock-art.js';
+import { dockData, dockDemo, demoDock, dockSig, dockRect, harbourFor, previewSlots } from './dock-art.js';
 
 const FPS = 8;
 // The simple fallback renderer's flat colour per plan GROUND code (city-plan.js).
@@ -38,7 +38,7 @@ export function createVillage(app) {
   let userMoved = !!savedCam;
   let W = null, sig = '', placed = { vill: new Map(), crowd: new Map() }, counts = new Map(), shownAgents = [], quiet = [];
   let state = { loading: true, offline: false };
-  let selected = null, hover = null, hoverVil = null, hoverDock = null, cursor = null, altTags = false;
+  let selected = null, hover = null, hoverVil = null, hoverDock = null, cursor = null, altTags = false, bubbles = true;
   let hits = [], houseHits = [], clusters = [], lastBadges = [], simpleDock = [];
   let timer = 0, raf = 0;
   let renderer = null, artState = 'loading';
@@ -111,10 +111,10 @@ export function createVillage(app) {
   const active = () => !document.hidden && (S.panel !== 'full' || S.peek || document.body.classList.contains('village-only')) && host.clientWidth > 0; // S.peek: peek.js; village-only: zen.js
   // Map (any zoom < 1) is a fit level: the largest of ½, ¼, ⅛ that shows the whole town (every
   // neighbourhood, its streets and the square), centred; the forest ring and the sea fill the rest.
-  // The dock's cove and first berths count as town, so the whole-town view shows them too.
+  // The harbour (at its current size) counts as town, so the whole-town view shows it too.
   const land = () => {
     if (!W.dock) return W.town;
-    const [a, b, c, d] = W.town, [e, g, h, i] = dockRect(W.dock);
+    const [a, b, c, d] = W.town, [e, g, h, i] = dockRect(W.dock, harbourFor(W.dock, dockData(S)));
     return [Math.min(a, e), Math.min(b, g), Math.max(c, h), Math.max(d, i)];
   };
   // View px: the isometric projection of world px (the simple fallback renderer draws in it too).
@@ -170,7 +170,7 @@ export function createVillage(app) {
       for (const it of W.items) if (restingHomes.has(it.id)) { const [x, y, w, h] = itemBox(it); houseHits.push({ ids: restingHomes.get(it.id), x, y, w, h }); }
     }
     const f = { ctx, k: v.k, vx: v.vx, vy: v.vy, bw: v.bw, bh: v.bh, zoom, t, still, night: nightAmount(), agents: placed.vill,
-      selected, cursor, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null, dock: dockData(S), dockHover: hoverDock };
+      selected, cursor, hover, bubbles, selectedHome: selV && (folds(selV.a) || selV.crowd) ? selV.home.id : null, dock: dockData(S), dockHover: hoverDock };
     if (W && artState === 'ready') hits = renderer.draw(f);
     else if (W && artState === 'failed') hits = drawSimple(f);
     else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = SEA_DEEP; ctx.fillRect(0, 0, cv.width, cv.height); hits = []; }
@@ -197,12 +197,14 @@ export function createVillage(app) {
     for (const v of W.villages) { const b = v.block; ctx.globalAlpha = 0.35; ctx.strokeStyle = v.accent; ctx.lineWidth = 1.5; ctx.strokeRect(b.x * T + 0.75, b.y * T + 0.75, b.w * T - 1.5, b.h * T - 1.5); ctx.globalAlpha = 1; }
     simpleDock = [];
     let ships = [];
-    if (W.dock) { // the dock: the pier on the water, and a hull at each berth with a PR loading
-      const G = dockGeom(W.dock, f.dock.level);
-      ctx.fillStyle = '#9a6a40'; ctx.fillRect(G.X0, G.Y0, G.X1 - G.X0, G.Y1 - G.Y0);
-      ships = G.berths.slice(0, (f.dock.loading || []).length);
-      const [a] = P(G.X0, G.Y1), [b] = P(G.X1, G.Y0), [, c] = P(G.X0, G.Y0), [, d] = P(G.X1, G.Y1);
-      simpleDock.push({ key: 'dock', x: a, y: c, w: b - a, h: d - c });
+    if (W.dock) { // the harbour: quay, piers and breakwater on the water, and a hull at a berth for each PR loading
+      const G = harbourFor(W.dock, f.dock), rs = [];
+      if (G.quay) { ctx.fillStyle = '#a39a8c'; ctx.fillRect(G.quay.x0, G.quay.y0, G.quay.x1 - G.quay.x0, G.quay.y1 - G.quay.y0); rs.push([G.quay.x0, G.quay.y0, G.quay.x1, G.quay.y1]); }
+      ctx.fillStyle = '#9a6a40';
+      for (const p of G.piers) { ctx.fillRect(p.X0, p.Y0, p.X1 - p.X0, p.Y1 - p.Y0); rs.push([p.X0, p.Y0, p.X1, p.Y1]); }
+      if (G.bw) { ctx.fillStyle = '#8a8276'; for (const sg of G.bw.segs) { ctx.beginPath(); sg.quad.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.fill(); } }
+      ships = previewSlots(G, (f.dock.loading || []).length);
+      for (const [x0, y0, x1, y1] of rs) { const [a] = P(x0, y1), [b] = P(x1, y0), [, c] = P(x0, y0), [, d] = P(x1, y1); simpleDock.push({ key: 'dock', x: a, y: c, w: b - a, h: d - c }); }
     }
     ctx.setTransform(k, 0, 0, k, -vx * k, -vy * k);
     for (const b of ships) {
@@ -278,6 +280,11 @@ export function createVillage(app) {
       if (W) for (const [homeId, n] of placed.crowd) { const it = W.items.find(i => i.id === homeId); if (it) add(`c:${homeId}`, 6, 'tag', `+${n} more`, ...at(it, it.x * T + it.doorX, (it.y + it.h) * T + 64)); }
       if (zoom >= 3 && W) for (const it of W.items) if (it.kind === 'pr') add(`p:${it.id}`, 5, 'tag prt', `#${it.pr}`, ...at(it, it.x * T + it.doorX, (it.y + it.h) * T + 14));
       if (zoom >= 3 && renderer && artState === 'ready') for (const g of renderer.dockTags()) add(g.key, 5, 'tag prt', g.text, g.x, g.y); // each ship's PR number
+    }
+    // Labels & status bubbles off: only the hovered item (and the selected / keyboard-cursor agent) keeps its text.
+    if (!bubbles) {
+      const keep = c => c.key === `t:${hover}` || c.key === `t:${selected}` || c.key === `t:${cursor}` || c.key === `v:${hoverVil}` || (hoverDock && c.key === `d:${hoverDock}`);
+      cands.splice(0, cands.length, ...cands.filter(keep));
     }
     cands.sort((a, b) => a.pri - b.pri);
     const rects = [], want = new Map(), plates = [];
@@ -533,12 +540,13 @@ export function createVillage(app) {
     refit() { if (!W || !host.clientWidth) return; if (!userMoved && !selected) home(false); else invalidate(); },
     key(k) { if (k === '+' || k === '=') zoomStep(1); else if (k === '-') zoomStep(-1); else if (k === '0') { home(); remember(); } },
     showAllTags(on) { altTags = on; invalidate(); },
+    setBubbles(on) { bubbles = !!on; invalidate(); },
     // The terminal view saves the camera on the way in and puts it back on the way out.
     camera: () => (tween ? { x: tween.x1, y: tween.y1, z: zoom } : { x: cam.x, y: cam.y, z: zoom }), // a pan in flight counts as done
     setCamera(c) { if (!c) return; zoom = c.z; cam.x = c.x; cam.y = c.y; tween = null; invalidate(); },
     debug: () => ({ zoom, iso: true, cam: { ...cam }, clusters,
       outdoors: [...placed.vill.values()].filter(p => !folds(p.a) && !p.crowd).map(p => p.a.id), homes: W?.items.filter(it => it.kind === 'home').map(it => it.agentId) || [], badges: lastBadges, hits: hits.map(h => ({ id: h.id, x: h.x, y: h.y, w: h.w, h: h.h, wx: h.wx, wy: h.wy, pose: placed.vill.get(h.id)?.pose, home: placed.vill.get(h.id)?.home.id })), bounds: W?.bounds, view: view(), villages: W?.villages.map(v => ({ name: v.name, plaza: v.plaza, block: { ...v.block }, accent: v.accent, growth: v.growth, cx: v.cx, cy: v.cy, tier: v.tier, cap: v.cap, need: v.need })), demo: DEMO,
-      town: W?.town, square: W?.square, quiet, dock: W?.dock ? { ...W.dock, rect: dockRect(W.dock) } : null, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
+      town: W?.town, square: W?.square, quiet, dock: W?.dock ? { ...W.dock, rect: dockRect(W.dock, harbourFor(W.dock, dockData(S))) } : null, fitZoom: W ? fitZoom() : null, townWater: W ? townWater() : null,
       ...(renderer && artState === 'ready' ? renderer.debug() : { walkers: [], flags: [] }), flagCheck: () => (renderer && artState === 'ready' ? renderer.flagCheck(ctx) : []), depthCheck: () => (renderer && artState === 'ready' ? renderer.depthCheck() : []),
       // Footprint tiles of each item that aren't land (0 = it stands on the island).
       items: W?.items.map(it => { let wet = 0; for (let j = it.y; j < it.y + it.h; j++) for (let i = it.x; i < it.x + it.w; i++) if (!W.land.has(`${i},${j}`)) wet++; return { id: it.id, x: it.x, y: it.y, w: it.w, h: it.h, village: it.village.name, kind: it.kind, building: it.building, look: it.look, lot: it.lot, doorX: it.doorX, tier: it.tier, wet }; }) }),

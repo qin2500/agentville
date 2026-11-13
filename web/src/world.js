@@ -67,7 +67,7 @@ const DAY = 864e5;
 const HOLD_MS = DAY / 2;     // a building that vanished holds its ground this long, then frees it
 const RESERVE_MS = 14 * DAY; // a hidden neighbourhood keeps its block this long before a newcomer may take it
 export const SEA_MID = '#2a7fae', SEA_DEEP = '#1b4a7a';
-// The village is drawn isometric (2.5D) only (owner, 2026-11-11: the top-down view is gone): the ground is
+// The village is drawn isometric (2.5D) only (the top-down view is gone): the ground is
 // the tile map turned 45° and squashed 2:1; buildings are boxes with walls and roofs drawn in that
 // projection (iso.js); trees, lamps and villagers stand upright on their spot like the sprites they are.
 // ISO is view px per world px along the ground. Layout stays in world px; "view px" are isoP of them.
@@ -481,8 +481,8 @@ function buildLand(W) {
   const cand = new Uint8Array(GW * GH), seen = new Uint8Array(GW * GH), sea = new Uint8Array(GW * GH), land = new Uint8Array(GW * GH);
   for (let y = ty0 - E; y <= ty1 + E; y++) for (let x = tx0 - E; x <= tx1 + E; x++) {
     const d = Math.hypot(Math.max(tx0 - x, 0, x - tx1), Math.max(ty0 - y, 0, y - ty1));
-    if (W.dock && x >= W.dock.x0 && x <= W.dock.x1 && y >= W.dock.sea) continue; // the dock's cove
-    if (d <= 5 + noise(x, y, 6) * 4) cand[at(x, y)] = 1;
+    if (W.dock && x >= W.dock.x0 && x <= W.dock.x1 && y >= W.dock.sea) continue; // the harbour's cove
+    if (d <= 5 + noise(x, y, 6) * 4 || (W.dock && x >= W.dock.x0 && x <= W.dock.x1 && y <= W.dock.foot && y > ty1)) cand[at(x, y)] = 1; // and its waterfront
   }
   for (const k of W.path) { const [x, y] = unkey(k), i = at(x, y); if (i >= 0) cand[i] = 1; }
   const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -526,20 +526,26 @@ function buildLand(W) {
     if (dist[i] === 3 && hash(k) % 3 === 0) W.waves.push([x, y]); // wave glints, a few tiles out
   }
 }
-// The dock (dock-art.js): a pier in a cove cut into the south shore, under the town square's column, so
-// it sits close to town and never moves unless the town itself grows south. The cove (x0..x1, from row
-// `sea` down) is open water all the way out; the pier starts on the land row `foot` just above it.
+// The harbour (dock-art.js): a cove cut into the south shore under the town square's column, so it
+// sits close to town and never moves unless the town itself grows south. It is cut wide and deep
+// enough for the biggest harbour (tier 4: five piers, the breakwater and its mole) from the start, so
+// nothing in the village moves when the harbour grows or shrinks. The cove (x0..x1, from row `sea`
+// down) is open water all the way out; above it a strip of waterfront (`foot` is its shore row, under
+// the quay) holds the crate yard and stays clear of forest.
 function dockSite(W) {
-  const cx = SQUARE.x + (SQUARE.w >> 1), foot = W.town[3] + 2;
-  return { cx, foot, sea: foot + 1, x0: cx - 5, x1: cx + 6 };
+  const cx = SQUARE.x + (SQUARE.w >> 1), foot = W.town[3] + 5;
+  return { cx, foot, sea: foot + 1, x0: cx - 20, x1: cx + 24 };
 }
-// A clearing round the cove (no forest in front of the ships) and a footpath from the pier to town.
+// A clearing along the waterfront (no forest by the quay or in front of the ships), a straight footpath
+// from the harbour up to the town, and room for the camera to pan out over the whole harbour.
 function dockShore(W) {
-  const D = W.dock;
-  for (let y = D.foot - 1; y <= D.sea + 12; y++) for (let x = D.x0 - 2; x <= D.x1 + 2; x++) { const k = key(x, y); if (W.land.has(k) && !W.occ.has(k)) W.occ.set(k, 'dock'); }
-  const from = [[D.cx, D.foot], [D.cx + 1, D.foot]];
-  for (const [x, y] of route(W, from, (x, y) => W.path.has(key(x, y)), [D.cx - 14, W.town[1], D.cx + 15, D.foot], [D.cx, W.town[3]], W.inBlock)) W.path.add(key(x, y));
-  for (const [x, y] of from) W.path.add(key(x, y));
+  const D = W.dock, top = W.town[3] + 1;
+  for (let y = D.foot - 3; y <= D.sea + 12; y++) for (let x = D.x0 - 2; x <= D.x1 + 2; x++) { const k = key(x, y); if (W.land.has(k) && !W.occ.has(k)) W.occ.set(k, 'dock'); }
+  const from = [[D.cx, top], [D.cx + 1, top]];
+  for (const [x, y] of route(W, from, (x, y) => W.path.has(key(x, y)), [D.cx - 14, W.town[1], D.cx + 15, top], [D.cx, W.town[3]], W.inBlock)) W.path.add(key(x, y));
+  for (let y = top; y <= D.foot; y++) { W.path.add(key(D.cx, y)); W.path.add(key(D.cx + 1, y)); }
+  const b = W.bounds;
+  W.bounds = [Math.min(b[0], D.x0 - 4), b[1], Math.max(b[2], D.x1 + 5), Math.max(b[3], D.sea + 28)];
 }
 // Plan prop kinds drawn with the R sprite table; every other kind is procedural art (props-art.js).
 const PROP_SPRITE = {
@@ -1004,7 +1010,7 @@ function createRenderer(IMG) {
       else if (d.lamp) drawLamp(ctx, d.x, d.y, f.night);
       else blit(ctx, d.r, d.x, d.y);
     }
-    dock.drawSky(ctx); // gulls over the dock
+    dock.drawSky(ctx); // gulls over the harbour
     amb.sky(ctx, f, W); // birds over the town
     if (!still && zoom >= 1) {
       stepFx(t, W, f, resting);
@@ -1067,7 +1073,7 @@ function createRenderer(IMG) {
     const up = a.role === 'boss' ? 6 : 0;
     const img = a.bucket === 'stalled' ? BADGE[a.severity === 'error' ? 'error' : a.prompt ? 'click' : 'need'] : a.bucket === 'waiting' ? BADGE.wait[still ? 0 : Math.floor((t + v.phase * 3) / 3) % 2]
       : a.bucket === 'building' ? BADGE.build[d.row === 4 ? 1 : 0] : null;
-    if (img) {
+    if (img && (f.bubbles !== false || a.id === f.hover || a.id === f.selected || a.id === f.cursor)) {
       const bob = a.bucket === 'stalled' && !still ? Math.round(Math.sin((t + v.phase) * 4) * 0.8 + 0.8) : 0;
       const wy = y - 2 - up - bob;
       badges.push([d.left + 8, wy, img]);
