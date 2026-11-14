@@ -46,7 +46,7 @@ test('the isometric (2.5D) view, the only one: no black patches, villagers still
   await page.goto('/?night=0&debug')
   await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
   await expect.poll(() => page.evaluate(() => window.villageDebug().iso)).toBe(true)
-  // The top-down view and its toggle were removed (owner, 2026-11-11).
+  // The top-down view and its toggle were removed.
   await expect(page.locator('#view-toggle')).toHaveCount(0)
   // Nothing drawn black behind the buildings (a bug once stacked dark patches there): ink outlines
   // and shadows are ~1.5% of the canvas, the black patches made it ~3.5%.

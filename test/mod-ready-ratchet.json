@@ -1,0 +1,11 @@
+{
+  "_note": "Max world-word count per file under web/src/engine/**. May only go down; the real gate: engine files a mod author touches are at 0; the listed render/nav/snapshot/art leftovers are tracked for MOD-4f and the nav venue diff. See docs/mod-boundary.md.",
+  "words": "dock|harbou?r|ship|sloop|island|shore|sea_?deep|forest|porter|palace|villager|townsfolk",
+  "files": {
+    "web/src/engine/art/props/pine.js": 1,
+    "web/src/engine/nav/roadgraph.js": 1,
+    "web/src/engine/render/actor-art.js": 8,
+    "web/src/engine/render/renderer.js": 4,
+    "web/src/engine/snapshot.js": 9
+  }
+}

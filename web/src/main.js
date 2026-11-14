@@ -17,6 +17,7 @@ import { createZen } from './zen.js';
 import { createBubbles } from './bubbles.js';
 import { transitions } from './notify.js';
 import { viewsFrom, nextView } from './views.js';
+import { worldSlotHtml, applyWorld } from './worlds.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) await import('./dev/mock.js');
@@ -132,7 +133,8 @@ const app = {
 };
 
 const panel = createPanel(app);
-const village = createVillage(app);
+// Village engine v2 (docs/village-engine-v2.md §6.1): ?engine=2 | ?engine=1 override; else Settings (va.engine, default classic).
+const village = ((e => (e ? e === '2' : store.get('va.engine', 1) === 2))(new URLSearchParams(location.search).get('engine')) ? (await import('./engine/index.js')).createEngine : createVillage)(app);
 const fleet = createFleet(app);
 const account = createAccount(app, panel);
 const spend = createSpend(app);
@@ -682,6 +684,7 @@ function fillPop(name) {
       <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked. Allow Agentville under System Settings › Notifications.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
       <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label>
+      ${worldSlotHtml(store, esc)}
       <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
       <p class="helper">Uses a small Haiku model, through your Claude login, for background jobs such as naming your tasks. Off by default.</p>
       <p class="helper" id="helper-status" role="status"></p></div>${update.menuHTML()}`;
@@ -730,7 +733,9 @@ async function setHelper(enabled, box) {
 }
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.set === 'helper') {
+  if (t.dataset.set === 'world') {
+    applyWorld(t.value, store);
+  } else if (t.dataset.set === 'helper') {
     setHelper(t.checked, t);
   } else if (t.dataset.f) {
     const set = S.filters[t.dataset.f];

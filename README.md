@@ -472,6 +472,19 @@ ones that matter.
   flags (fixed allowlist) under its saved provider settings, in its folder. Provider settings are
   shown by key name only. No shell, at most 3 restores a minute, and the log gets ids and outcomes only.
 
+## Make your own world
+
+The village is a mod: `mods/<id>/` holds a world's rules, layout and look, and the engine under `web/src/engine/` stays
+the same. Start your own in a few commands, with no browser needed until you want screenshots:
+
+```sh
+node tools/mod.mjs new yourname.autumn        # copy the template; prints ?engine=2&world=yourname.autumn
+node tools/mod.mjs check yourname.autumn      # boundary, resolve and determinism on the fixtures
+node tools/mod.mjs shots yourname.autumn      # hidden headless screenshots in out/mod-shots/
+```
+
+A mod imports only `#agentville/mod`. See [docs/make-your-own-world.md](docs/make-your-own-world.md).
+
 ## Development
 
 ```sh
