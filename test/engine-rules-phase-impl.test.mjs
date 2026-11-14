@@ -64,9 +64,9 @@ function twoPass(name, mod, withRules) {
 
 // Golden fingerprints of engine 554bbbf (before the split), re-pinned after m1g's stateless scatter (only wild-scatter objects/occ/cost changed; sig, lint and the other layers are as at 554bbbf), fantasy mod, WorldInput path, seed 7, two passes. Re-pinned after the harbour art (venue plan emits pier, bollard and skiff objects): only objects and occ changed.
 const GOLDEN = {
-  citydemo: { sig: '1bdac9cb8b690e6f', objects: 'edecea6b495f3716', lint: '402568c1d9c59f5d', grid: { cost: '65b147c4d6b64c05', cover: 'ee5e0790ce9afa21',
+  citydemo: { sig: '1052876b2985324b', objects: 'ab61d04c50c905e4', lint: '402568c1d9c59f5d', grid: { cost: '65b147c4d6b64c05', cover: 'ee5e0790ce9afa21',
     edges: '2f7697d7505ce49a', ground: '5eb21dfe9b69ca69', lot: 'd2a184597bb41229', occ: '01cb11a86d7ce21d', road: '1e255e6655bd7a28', slots: '599aac33df4b3572', terrain: 'd903f0b7631f9e12' } },
-  busy: { sig: 'd214f8475d2e4600', objects: 'ca21adf7f92a06f5', lint: '6cc0e0250ce0a055', grid: { cost: '63780a3c14534042', cover: '28ff20eb0ac20b74',
+  busy: { sig: 'd236d5bbe28b2e4f', objects: '4b9772ad70a8e1d7', lint: '6cc0e0250ce0a055', grid: { cost: '63780a3c14534042', cover: '28ff20eb0ac20b74',
     edges: '656731783cd6f486', ground: '0d2da4b7f5ac9243', lot: 'aed12d6ba4bf5e27', occ: 'd9c01a5ff5b2ffbb', road: '4bb2bb926ca4f69a', slots: '26acd9d92d3d54c8', terrain: '10dfc77920835b47' } },
 };
 

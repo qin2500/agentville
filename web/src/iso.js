@@ -17,6 +17,17 @@
 // px. View px are isoP(x, y) with z subtracted. A pixel's ray is ground point + t·(1, 1, ISO): larger t
 // is nearer the viewer.
 import { ISO, hash } from './world.js';
+import timber from './iso-fam/timber.js';
+import mediterranean from './iso-fam/mediterranean.js';
+import stone from './iso-fam/stone.js';
+import alpine from './iso-fam/alpine.js';
+import canal from './iso-fam/canal.js';
+import thatch from './iso-fam/thatch.js';
+import { turret as v5turret, ridgeTurret as v5ridge } from './iso-v5/turret.js';
+import { oriel as v5oriel } from './iso-v5/oriel.js';
+import { wing as v5wing } from './iso-v5/wing.js';
+import { fancyGable as v5gable } from './iso-v5/gables.js';
+import { cypress as v5cypress, pergola as v5pergola } from './iso-v5/yard.js';
 
 // ---------- colour ----------
 const rgb = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
@@ -65,35 +76,17 @@ const NOFIT = [];
 const GLYPH = { // 5x5 emblems for hanging signs
   mug: ['###..', '####.', '###.#', '####.', '###..'], anvil: ['#####', '.###.', '..#..', '.###.', '#####'],
   key: ['.#...', '#.###', '.#.#.', '.....', '.....'], wheat: ['#.#.#', '.###.', '..#..', '..#..', '..#..'],
+  fish: ['.....', '.##.#', '#####', '.##.#', '.....'], boot: ['..##.', '..##.', '..##.', '.####', '#####'],
+  loaf: ['.....', '.###.', '#####', '#.#.#', '#####'], moon: ['.###.', '##...', '#....', '##...', '.###.'],
 };
 
 // ---------- architectural styles (city v4): a project's houses share one, picked by world.js (it.style) ----------
 // 0 timber is the original look and is never touched. The others swap materials (walls, roofs, chimneys),
 // pitch and eaves, windows, and add a signature detail each (crow steps, balconies, arched windows...), but
 // share the light, the outlines, the ramps and the textures, so a mixed world still reads as one place.
-const SYS = [null,
-  { // 1 mediterranean: whitewash and warm plaster, low terracotta roofs, arched windows, blue/green shutters
-    walls: ['#f6f1e6', '#f3e6cc', '#efdcb6', '#f2e3d4', '#ecd6ae', '#f4ead2'], dress: '#e4cd9c', rubble: '#dccaa4', civic: ['#f1e8d6', '#ecdcbc'],
-    roofs: ['#c8643a', '#b9573a', '#cf7646'], rk: 0.55, de: 0.5, mat: { slate: 'tile', shingle: 'tile', thatch: 'tile' },
-    shutters: ['#3f73a8', '#3f8f6f', '#2f8590', '#5a86c0'], trim: '#f4ecdc', beam: '#8a5a3a', doors: ['#3f73a8', '#7a4a2a', '#3f8f6f'], chim: '#f0e9dc' },
-  { // 2 stone: grey-blue fieldstone, dark slate, steep, small deep-set windows, coped gables, big chimneys
-    walls: ['#a9aaa6', '#9ea5ad', '#b0aa9e', '#a3a69e'], dress: '#c4c3bc', rubble: '#a7a9a5', civic: ['#b4b4ae', '#a9adb0'],
-    roofs: ['#4a5672', '#525a6c', '#465068'], rk: 1.18, de: -0.5, mat: { tile: 'slate', shingle: 'slate', thatch: 'slate' },
-    shutters: ['#3f5f4a', '#6e3434', '#3c4f6e'], trim: '#e2dfd6', beam: '#4d4a5e', doors: ['#3c4f6e', '#6e3434', '#4a5a3a'], chim: '#9c9c96' },
-  { // 3 alpine: white ground floor, dark timber above with a balcony, wide low roofs, carved bargeboards
-    walls: ['#f5f1e8', '#f1ebdd', '#eee6d6'], wood: ['#6a4430', '#5c3c2a', '#76503a'], dress: '#efe9de', rubble: '#b3aa9a', civic: ['#f2ede2', '#ece4d4'],
-    roofs: ['#5e4a3e', '#56504c', '#6a4c3a'], rk: 0.5, de: 4, mat: { tile: 'shingle', slate: 'shingle', thatch: 'shingle' },
-    shutters: ['#3f7a4a', '#a8443c', '#2f6a5a'], trim: '#7a4e32', beam: '#5a3a2a', doors: ['#6a4430', '#3f7a4a', '#7a3a2e'], chim: '#d8d0c2' },
-  { // 4 canal: brick, stepped gables to the street, tall white-framed sash windows, narrow and tall
-    walls: ['#a9573f', '#964b3a', '#b4664a', '#8e4737'], dress: '#a5543e', rubble: '#9c5040', civic: ['#a9573f', '#9a4e3c'],
-    roofs: ['#6c3a30', '#4d4b55', '#7a4434'], rk: 1.15, de: -1, mat: { shingle: 'tile', thatch: 'tile' },
-    shutters: ['#2f5a3f', '#2f4a5a', '#7a2f2f'], trim: '#f7f4ec', beam: '#3f3a40', doors: ['#2f5a3f', '#2f4a5a', '#6a2f2f'], chim: '#8a4535' },
-  { // 5 thatch: cob and warm render, thick thatch, rustic timber, low and cosy
-    walls: ['#efdcb2', '#e9cfa2', '#f2e4c6', '#e6c89a', '#efd6b8'], dress: '#d8c49e', rubble: '#c9b89a', civic: ['#e4d2ac', '#dccaa6'],
-    roofs: ['#c9a25a', '#bf9850', '#d1ad66'], rk: 1.05, de: 1.5, mat: { tile: 'thatch', slate: 'thatch', shingle: 'thatch' },
-    civRoof: '#9a5a3c', civMat: { slate: 'tile', shingle: 'tile', thatch: 'tile' },
-    shutters: ['#5a7a4a', '#7a5a3a', '#4a6a7a'], trim: '#e9dcc0', beam: '#8a6446', doors: ['#6a4630', '#4a6a4a', '#7a4a2a'], chim: '#b9ab92' },
-];
+// Each family lives in its own file (web/src/iso-fam/*.js; the hook contract is at the top of timber.js).
+const FAMS = [timber, mediterranean, stone, alpine, canal, thatch];
+const SYS = FAMS.map(F => F.sys);
 const SMALLCIVIC = new Set(['barn', 'windmill', 'granary', 'chapel', 'smithy', 'inn']);
 /** The style family an item is drawn in (0 for looks that have no styles: the older houses). it.style is
  * undefined (today's look), a family number, or a Style object from styles-pool.js ({ key, family, roof, wall, ... }). */
@@ -123,36 +116,86 @@ function styleKit(st, it, look) {
     return;
   }
   const R0 = st.R;
+  const F = FAMS[st.sty];
   st.SY = S; st.dressC = rgb(S.dress); st.rubbleC = rgb(S.rubble); st.wood = pick(S.wood ?? [S.beam], 5);
-  st.win ??= ['', 'arched', 'small', 'square', 'tall', 'square'][st.sty];
+  st.win ??= F.window;
   st.mats = big && S.civMat ? S.civMat : S.mat;
-  if (st.sty !== 5) st.frame = -1; // only the thatch family keeps (rustic) half-timbering
+  if (!F.halfTimber) st.frame = -1; // only the thatch family keeps (rustic) half-timbering
   st.roofC = big && S.civRoof ? rgb(S.civRoof) : roofPick(25);
   if (st.civic) {
     if (!['barn', 'windmill', 'granary'].includes(look)) st.paint = pick(S.civic, 3);
-    if (look === 'chapel' && st.sty === 1) st.spire = false; // a bell gable, not a spire
+    if (look === 'chapel' && !F.chapelSpire) st.spire = false; // a bell gable, not a spire
   } else {
     st.paint = wallPick(3); st.trim = hx(P?.trim) ?? rgb(S.trim); st.beam = rgb(S.beam);
-    if (st.sty === 3 && P && hx(P.wall?.alt)) st.wood = hx(P.wall.alt).reduce((a, b) => a + b) < 360 ? hx(P.wall.alt) : st.wood;
-    if (st.sty === 4) st.paint = walls ? walls[(h >>> 3) % 2] : st.paint;
     st.shutter = hx(P?.shutter) ?? mix(pick(S.shutters, 9), acc, 0.15); st.doorC = mix(hx(P?.door) ?? pick(S.doors, 7), acc, 0.4);
     st.roof = S.mat[st.roof] ?? st.roof;
-    st.shutters = st.sty === 1 || st.sty === 3 || (st.sty === 5 && (h >>> 18) % 2 === 1);
-    st.flowers = st.sty === 3 || st.sty === 5;
-    if (look === 'farmhouse') {
-      st.lower = ['', 'white', 'stoneP', 'logs', 'brickP', (h >>> 16) % 3 ? 'white' : 'logs'][st.sty];
-      if (st.lower === 'logs') st.paint = st.sty === 3 ? st.wood : rgb('#a87447');
-    }
-    if (look === 'timber') st.front = st.sty === 3 || (st.sty === 4 && it.w <= 4);
+    F.house(st, look, it, { rgb, hx, P, walls, h });
     if (look === 'townhouse') {
-      const front = st.sty === 3 || st.sty === 4 || (st.sty !== 1 && st.front), Wp = it.w * 16, Dp = it.h * 16;
-      Object.assign(st, { front, R: front ? Math.round(Wp * (st.sty === 3 ? 0.75 : 0.9)) : Math.round(Dp * 0.62), e: front ? 1.5 : 2.5 });
+      const front = st.front, Wp = it.w * 16, Dp = it.h * 16;
+      Object.assign(st, { front, R: front ? Math.round(Wp * (F.townPitch ?? 0.9)) : Math.round(Dp * 0.62), e: front ? 1.5 : 2.5 });
       st.top = st.H + st.R + 24;
     }
   }
   const rk = st.civic ? 1 + (S.rk - 1) * 0.5 : S.rk;
   st.top = Math.ceil((st.top ?? st.H + R0 + 32) + Math.max(0, st.R - R0) + Math.max(0, rk - 1) * st.R * 1.2 + 8);
-  st.pad = Math.max(0, Math.ceil(S.de * 0.8) + (S.de > 0 ? 1 : 0)); // deep eaves reach past the usual margin
+  st.pad = Math.max(0, Math.ceil(S.de * 0.8) + (S.de > 0 ? 1 : 0) + Math.max(0, S.de - 4) * 2); // deep eaves reach past the usual margin (de > 4 widens faster)
+}
+
+// ---------- storybook massing (city v5): styled houses only; the unstyled look never comes through here ----------
+// Each house of a styled project draws its own silhouette from its variant: a steeper or gentler roof, maybe a
+// half-hip, one big feature (a cross wing, a corner turret, an oriel, a loggia...), a taller chimney, ivy, a
+// hanging sign, and a step of tone in its walls and roof, so no two neighbours in a row come out the same.
+const GLYPHS = ['mug', 'wheat', 'fish', 'boot', 'loaf', 'key', 'moon'];
+function whimsy(st, it, look) {
+  const g = h2(st.h, 0x5eed, 0xc17e5), b = (n, m) => (g >>> n) % m, f = st.sty, V = FAMS[f].v5, W = it.w * 16, D = it.h * 16;
+  const mass = look === 'farmhouse' || look === 'cottage' || look === 'timber' || look === 'townhouse';
+  Object.assign(st, { wh: true, g, V, lead: V.lead, cross: V.cross, crownW: V.crown, heavy: V.heavy });
+  // weathered and warmer, a step of tone per house
+  st.paint = jit(mix(st.paint, rgb('#b98f62'), 0.05 + b(0, 3) * 0.03), (b(2, 5) - 2) * 0.032);
+  if (st.roofC) st.roofC = jit(mix(st.roofC, rgb('#6e5a4a'), 0.08 + b(5, 3) * 0.04), (b(7, 5) - 2) * 0.045);
+  // a climber up a front corner (roses on thatch, bougainvillea in the south), sometimes the side too
+  const away = (it.doorX ?? W / 2) > W / 2 ? 5 : W - 5, hw = st.H ?? 24, fl = V.climber === 'rose' ? FLOWERS[0] : V.climber === 'bougainvillea' ? rgb('#c2408f') : V.climber === 'yellow?' && b(8, 2) ? FLOWERS[1] : null;
+  st.ivy = [];
+  if (b(9, 10) < V.ivy) st.ivy.push({ dir: 'S', at: D, c: away, w: 5 + b(11, 3) * 2, h: hw * (0.7 + b(13, 3) * 0.18), fl });
+  if (b(15, 10) < V.ivy - 2) st.ivy.push({ dir: 'E', at: W, c: D - 7 - b(17, 3) * 6, w: 5 + b(18, 2) * 3, h: hw * 0.85, fl });
+  if (!mass) return;
+  st.sign = !st.pr && look !== 'farmhouse' && b(20, 4) === 0 ? GLYPHS[b(22, 7)] : null;
+  st.chimT = [0, 3, 6, 9][b(25, 4)];
+  // one big feature per house: the massing archetype comes from variant % 4 (variety.js keeps neighbours apart
+  // in it), the details and tone from the rest of the variant and the hash
+  const arch = it.variant != null ? ((it.variant % 4) + 4) % 4 : b(27, 4);
+  let feat = look === 'townhouse' ? ['turret', 'oriel', 'gable', 'none'][arch]
+    : look === 'farmhouse' ? ['none', 'turret', 'none', 'none'][arch]
+    : ['wing', 'turret', 'oriel', 'none'][arch];
+  if (look === 'townhouse') { // storeys by archetype (never above the city2 cap of three)
+    const n = arch === 3 ? 2 : arch === 1 ? 3 : 2 + (b(23, 2));
+    if (n !== st.n) { st.H -= (st.n - n) * 14; st.top -= (st.n - n) * 14; st.n = n; }
+  }
+  if (look === 'cottage' && feat === 'oriel') feat = 'bay';
+  if (V.loggia && (feat === 'oriel' || feat === 'gable')) feat = look === 'cottage' ? 'none' : 'loggia';
+  if (V.ridgeTurret && feat === 'turret') feat = 'ridge'; // a little bell turret astride the ridge
+  st.feat = feat;
+  // the roof: a family push plus a per-house pitch; townhouses never grow (the city2 height cap), only lean
+  let pf = V.steep * [1.04, 1.12, 0.94, 1.22][arch] * (1 + (b(29, 3) - 1) * 0.04);
+  if (look === 'townhouse') pf = Math.min(pf, st.n === 2 ? 1.25 : Math.max(1, V.steep * 0.92));
+  const rk = st.SY ? st.SY.rk : 1, R0 = st.R;
+  st.R = Math.round(st.R * pf);
+  st.top += Math.max(0, Math.ceil((st.R - R0) * rk * 1.2));
+  // a half-hip on some timber, alpine and thatch gables
+  if (V.halfHip && h2(g, 3, 1) % 3 !== 0) st.jerk = 0.3 + (h2(g, 4, 1) % 3) * 0.06;
+  if (V.gables) st.gtype = V.gables[h2(g, 5, 1) % V.gables.length];
+  st.cypress = V.cypress && h2(g, 6, 1) % 3 !== 2;
+  st.pergola = V.pergola && look !== 'townhouse' && h2(g, 7, 1) % 2 === 0;
+  // turret geometry (decided here so isoExtent agrees with the drawing)
+  const H = st.H;
+  if (feat === 'turret') {
+    const tw = look === 'townhouse', r = tw ? 5 : look === 'cottage' || look === 'farmhouse' ? 5.5 : 6.5, camp = V.turret === 'campanile';
+    const zt = tw ? H + (camp ? 10 : 6) : H + (look === 'timber' ? 10 : 9) + (camp ? 6 : 0);
+    const cone = camp ? r * 1.25 : r * (V.turret === 'round' ? 2.5 : 2.9);
+    st.tur = { r, z0: tw && !camp ? 16 : 0, zt, cone };
+    st.top = Math.max(st.top, Math.ceil(zt + 2.5 + cone + 14));
+  }
+  if (feat === 'ridge') st.top = Math.max(st.top, Math.ceil(H + Math.min(st.R * rk, Math.max(W, D) * 0.95) + 30));
 }
 
 /** A newer look's style: picked from look + variant (+ size), never from the id when a variant is given. */
@@ -191,6 +234,7 @@ function kitStyle(it, look, h, T) {
   st.sty = famOf(it); st.pal = palOf(it);
   if (st.sty || st.pal) styleKit(st, it, look);
   st.top ??= st.H + st.R + 32;
+  if ((st.sty || st.pal) && !st.civic && look !== 'palace') whimsy(st, it, look);
   return st;
 }
 
@@ -229,7 +273,7 @@ function styleOf(it, T = 16) {
 export function isoExtent(it, T, S = 1) {
   const s = ISO * S, st = styleOf(it, T), W = it.w * T, D = it.h * T;
   const p = st.pad ?? 0;
-  return [-D * s - 8 - p, -(st.top ?? st.H + st.R + 44), W * s + 8 + p, (W + D) * s / 2 + 8];
+  return [-D * s - 8 - p, -(st.top ?? st.H + st.R + 44), W * s + 8 + p, (W + D) * s / 2 + 8 + p];
 }
 const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
 const cache = new Map();
@@ -252,9 +296,9 @@ export function isoBuilding(it, T, lit, S = 1) {
 
 function make(it, T, lit, site, S = 1) {
   const s = ISO * S, W = it.w * T, D = it.h * T, st = styleOf(it, T);
-  const H = st.H, R = st.R, e = st.e;
+  const H = st.H, R = st.R, e = st.e, FS = st.sty || st.pal ? FAMS[st.sty] : null; // FS: the family, styled buildings only
   const Q = (x, y, z = 0) => [(x - y) * s, (x + y) * s / 2 - z];
-  const top = -(st.top ?? H + R + 44), left = Math.floor(-D * s) - 8 - (st.pad ?? 0), right = Math.ceil(W * s) + 8 + (st.pad ?? 0), bottom = Math.ceil((W + D) * s / 2) + 8;
+  const top = -(st.top ?? H + R + 44), left = Math.floor(-D * s) - 8 - (st.pad ?? 0), right = Math.ceil(W * s) + 8 + (st.pad ?? 0), bottom = Math.ceil((W + D) * s / 2) + 8 + (st.pad ?? 0);
   const w = right - left, h = bottom - top;
   const accent = rgb(it.village.accent);
   // Roofs carry the neighbourhood's accent (so a project's houses match), warmed toward an earthy tone
@@ -390,6 +434,23 @@ function make(it, T, lit, site, S = 1) {
     if (lit) { const cx = (f.c0 + f.c1) / 2, cz = (f.z0 + f.z1) / 2, d = Math.abs(col - cx) / (f.c1 - f.c0 + 1) + Math.abs(zi - cz) / (f.z1 - f.z0 + 1); return [d < 0.25 ? LIT[4] : d < 0.45 ? LIT[3] : LIT[2], 1]; }
     return [diag === 2 || diag === 3 ? GLASS[4] : dz <= 1 ? GLASS[0] : dx <= 1 ? GLASS[1] : GLASS[2], 0];
   };
+  // A storybook door: a heavy timber or stone frame (round-headed, voussoirs and a keystone, if roundDoor),
+  // a plank leaf with iron strap hinges and a ring handle.
+  const heavyDoor = (f, col, zi) => {
+    const { c0, c1, z1 } = f, cx = (c0 + c1) / 2, dx = col - cx, ri = (c1 - c0 + 1) / 2, zs = f.roundDoor ? z1 - ri + 1 : z1;
+    const inside = rr => Math.abs(dx) <= rr - 0.5 && zi >= 0 && (zi <= zs || (f.roundDoor ? dx * dx + (zi - zs) ** 2 <= (rr - 0.2) ** 2 : zi <= zs + rr - ri));
+    if (!inside(ri + 2)) return null;
+    const FR = f.heavy === 'wood' ? ramp(dk(st.beam ?? BEAM, 0.05)) : ramp(lt(st.dressC ?? STONE, 0.06));
+    if (!inside(ri)) { // the frame
+      if (zi > zs && Math.abs(dx) < 1) return [FR[4], 0]; // keystone or lintel boss
+      if (f.heavy !== 'wood' && (zi > zs ? Math.floor(Math.atan2(zi - zs, dx) * 3) % 2 === 0 : Math.floor(zi / 4) % 2 === 0)) return [dx < 0 ? FR[2] : FR[1], 0];
+      return [dx < 0 ? FR[3] : FR[1], 0];
+    }
+    if (!inside(ri - 1) || zi === 0) return [DOOR[0], 0]; // the reveal
+    if (zi === Math.round(z1 * 0.28) || zi === Math.round(z1 * 0.66)) return [Math.abs(dx) > ri - 3 ? lt(IRON, 0.15) : IRON, 0]; // strap hinges
+    if (Math.round(dx) === Math.round(ri * 0.45) && zi === Math.round(z1 * 0.45)) return [GOLD, 0];
+    return [(col - c0) % 2 ? DOOR[2] : DOOR[3], 0];
+  };
   const paintFitting = (f, col, zi) => {
     if (f.zb) zi -= f.zb; // a fitting on a raised floor (the granary's door)
     if (f.kind === 'round') {
@@ -410,6 +471,20 @@ function make(it, T, lit, site, S = 1) {
           return col === mid ? [TR[2], 0] : glass(col, zi, f);
         }
       }
+      const tz = f.cross ? z0 + Math.round((z1 - z0) * 0.6) : 1e9; // a cross window's transom
+      if (f.crown && !f.arch) { // a window head: a stone lintel with a keystone, a brick arch, or a painted crown
+        const md = (c0 + c1) / 2, dx = Math.abs(col - md);
+        if (f.crown === 'paint') {
+          const PC = mix(st.shutter, rgb('#c98a3a'), 0.4);
+          if (zi === z1 + 2 && col >= c0 - 2 && col <= c1 + 2) return [PC, 0];
+          if (zi === z1 + 3 && dx <= 2.5) return [lt(PC, 0.12), 0];
+          if (zi === z1 + 4 && dx < 1) return [PC, 0];
+        } else if (zi >= z1 + 1 && zi <= z1 + 2 && col >= c0 - 1 && col <= c1 + 1) {
+          const SC = f.crown === 'brick' ? dk(st.paint, 0.22) : lt(st.dressC ?? STONE, 0.1);
+          if (dx < 1) return [lt(st.dressC ?? STONE, 0.22), 0]; // the keystone
+          return [zi === z1 + 2 ? lt(SC, 0.08) : f.crown === 'brick' && (col & 1) ? dk(SC, 0.15) : SC, 0];
+        }
+      }
       if (zi === z1 + 1 && col >= c0 - 1 && col <= c1 + 1) return [TR[1], 0]; // lintel
       if (zi === z0 - 1 && col >= c0 - 1 && col <= c1 + 1) return [TR[3], 0]; // sill
       const flw = f.flowers ?? st.flowers, shut = f.shutters ?? st.shutters;
@@ -419,15 +494,23 @@ function make(it, T, lit, site, S = 1) {
         if (zi === z0 - 3) return [col === c0 - 1 || col === c1 + 1 ? dk(WOOD, 0.3) : lt(WOOD, 0.1), 0];
         if (zi === z0 - 4) return [dk(WOOD, 0.25), 0];
       }
-      if (shut && zi >= z0 && zi <= z1 && (col === c0 - 3 || col === c0 - 2 || col === c1 + 2 || col === c1 + 3)) {
+      if (shut && zi >= z0 && zi <= Math.min(z1, tz) && (col === c0 - 3 || col === c0 - 2 || col === c1 + 2 || col === c1 + 3)) {
         const outer = col === c0 - 3 || col === c1 + 3;
         return [outer ? SHU[1] : (zi - z0) % 2 ? SHU[2] : SHU[1], 0]; // louvred shutters
       }
       if (col < c0 || col > c1 || zi < z0 || zi > z1) return null;
       if (col === c0 || col === c1 || zi === z0 || zi === z1) return f.deep ? [col === c0 || zi === z1 ? dk(TR[1], 0.45) : TR[2], 0] : [col === c0 || zi === z1 ? TR[3] : TR[1], 0]; // frame, lit top-left (a deep reveal: in shadow)
+      if (f.cross && (col === mid || zi === tz)) return [col === mid && zi !== tz ? TR[1] : TR[3], 0]; // mullion and transom, the transom lit
+      if ((f.lead && !f.cross) || (f.cross && zi > tz)) { // leaded lights: a diamond lattice
+        const a = col - c0, bz = zi - z0;
+        if ((a + bz) % 3 === 0 || (a - bz + 300) % 3 === 0) return lit ? [dk(LIT[0], 0.42), 1] : [mix(GLASS[0], OUTLINE, 0.55), 0];
+        return glass(col, zi, f);
+      }
+      if (f.cross) return glass(col, zi, f);
       if (f.panes ? (col - c0) % f.panes === 0 || (z1 - zi) % 4 === 0 : col === mid || zi === ((z0 + z1) >> 1)) return [TR[2], 0]; // mullions
       return glass(col, zi, f);
     }
+    if (f.kind === 'door' && f.heavy) return heavyDoor(f, col, zi);
     if (f.kind === 'door') {
       const { c0, c1, z1, dbl, barn } = f; // the leaf is c0..c1 by 0..z1; the frame goes round it
       if (col < c0 - 1 || col > c1 + 1 || zi < 0 || zi > z1 + 1) return null;
@@ -553,8 +636,8 @@ function make(it, T, lit, site, S = 1) {
     let base = opt.base ?? RB;
     const u = along === 'x' ? P[0] * s : -P[1] * s;
     let c;
-    if (edge && edge(P)) c = st.hall || opt.gild ? (edge(P, 0.6) ? dk(GOLD, 0.2) : GOLD) : st.sty === 3 ? (edge(P, 0.6) ? dk(st.wood, 0.2) : Math.floor(r) % 3 === 0 ? lt(st.wood, 0.3) : st.wood) : (edge(P, 0.6) ? TR[1] : TR[3]); // barge board (carved on the alpine family)
-    else if (st.sty === 5 && mat === 'thatch' && !opt.noCap && r > rmax - 6 && rmax - r < 3 + Math.abs(((Math.floor(u) + 600) % 8) - 4) * 0.55) { // a block-cut ridge, scalloped
+    if (edge && edge(P)) c = st.hall || opt.gild ? (edge(P, 0.6) ? dk(GOLD, 0.2) : GOLD) : FS?.barge === 'carved' ? ((BW => edge(P, 0.6) ? dk(BW, 0.2) : Math.floor(r) % 3 === 0 ? lt(BW, 0.3) : BW)(st.wood ?? st.beam ?? DARKWOOD)) : (edge(P, 0.6) ? TR[1] : TR[3]); // barge board (carved on the alpine family)
+    else if (FS?.thatchRidge && mat === 'thatch' && !opt.noCap && r > rmax - 6 && rmax - r < 3 + Math.abs(((Math.floor(u) + 600) % 8) - 4) * 0.55) { // a block-cut ridge, scalloped
       const rr = rmax - r, bot = 3 + Math.abs(((Math.floor(u) + 600) % 8) - 4) * 0.55;
       c = rr < 1.2 ? lt(base, 0.14) : rr > bot - 1 ? dk(base, 0.42) : lt(base, 0.04);
     } else if (mat === 'thatch' && r < 2.5) c = r < 1 ? dk(base, 0.5) : h2(Math.floor(u), 1, st.seed) % 2 ? dk(base, 0.25) : lt(base, 0.1); // the thick, ragged eave
@@ -562,7 +645,11 @@ function make(it, T, lit, site, S = 1) {
       const rr = rmax - r;
       if (st.ridgeC && mat !== 'thatch') base = mix(base, st.ridgeC, 0.6);
       c = mat === 'thatch' ? (rr < 1.5 ? lt(base, 0.05) : dk(base, 0.3)) : rr < 1 ? lt(base, 0.32) : rr < 2 ? (Math.floor(u + 600) % 6 === 0 ? dk(base, 0.25) : lt(base, 0.08)) : dk(base, 0.38);
-    } else c = roofTex(mat, u, r + 1, rmax, base);
+    } else {
+      c = roofTex(mat, u, r + 1, rmax, base);
+      const ms = st.wh ? Math.min(0.7, st.V.moss) * (mat === 'shingle' ? 0.5 : 1) : 0; // clamped: shingle takes it lightly, thatch not at all
+      if (ms > 0 && mat !== 'thatch' && h2(Math.floor(u / 5), Math.floor(r / 4), st.seed + 21) % 100 < ms * 45 * (1.2 - r / Math.max(1, rmax)) && h2(Math.floor(u), Math.floor(r), st.seed + 22) % 3) c = mix(c, h2(Math.floor(u), Math.floor(r), 7) % 3 ? rgb('#6f8a3c') : rgb('#8f9a4c'), 0.5); // moss and lichen
+    }
     return [dk(c, shade), 0];
   };
 
@@ -790,9 +877,11 @@ function make(it, T, lit, site, S = 1) {
     }
   }
   function chimney(x, y, zr, zb = H - 2, B0 = null, tall = 5, rad = 3) {
-    if (st.sty && !st.civic) { // the family's chimney: low and white, big and stone, brick
-      B0 = st.sty === 4 ? dk(st.paint, 0.08) : rgb(st.SY.chim);
-      if (st.sty === 1) tall = Math.min(tall, 3); else if (st.sty === 2) { rad += 1; tall += 2; }
+    if (FS && !st.civic) { // the family's chimney: low and white, big and stone, brick
+      const c = { B0: st.SY ? rgb(st.SY.chim) : B0, tall, rad };
+      FS.chimney(c, st, { rgb, dk, h: st.h });
+      ({ B0, tall, rad } = c);
+      if (st.wh) tall += st.chimT ?? 0;
     }
     const B = B0 ?? (st.pr || st.hall || st.lower === 'stone' ? rgb('#9d9486') : rgb('#a95b3e')), z1 = zr + tall;
     const bricks = sh => q => {
@@ -800,9 +889,12 @@ function make(it, T, lit, site, S = 1) {
       const c = zi % 3 === 0 || u % 4 === 0 ? dk(B, 0.28) : zi % 3 === 2 ? lt(B, 0.14) : B;
       return [dk(c, sh), 0];
     };
+    const kx = st.wh && st.V.crookedChimney && tall >= 7 ? ((st.g >>> 4) & 1 ? 1.6 : -1.6) : 0, zk = zr + Math.round(tall * 0.45);
+    if (kx) { box(x - rad, x + rad, y - rad, y + rad, zb, zk, bricks(0), bricks(0.24), flat(B)); x += kx; zb = zk - 1; } // a kink in the stack
     box(x - rad, x + rad, y - rad, y + rad, zb, z1, bricks(0), bricks(0.24), flat(B));
+    if (st.wh && rad >= 2.5) for (const px of (st.g >>> 6) & 1 ? [x - 1.2, x + 1.3] : [x]) cyl(px, y, 1.1, z1 + 2, z1 + 5, q => [q.cap ? OUTLINE : byLight(ramp(POT), q.N, 0.1), 0]); // chimney pots
     box(x - rad - 1, x + rad + 1, y - rad - 1, y + rad + 1, z1, z1 + 2, flat(lt(FOOT[2], 0.05)), flat(FOOT[1]), q => [q.P[0] > x - rad + 1 && q.P[0] < x + rad - 1 && q.P[1] > y - rad + 1 && q.P[1] < y + rad - 1 ? OUTLINE : FOOT[3], 0]); // the cap
-    out.chimney = Q(x, y, z1 + 3);
+    out.chimney = Q(x, y, z1 + (st.wh && rad >= 2.5 ? 6 : 3));
   }
   // A building site: a stone foundation and plank floor, framed walls to a ragged half height (all four
   // show, the roof isn't on yet), with corner posts and a roof truss drawn over the top.
@@ -831,7 +923,30 @@ function make(it, T, lit, site, S = 1) {
   // kind, dormers, prisms and cones (towers, spires, the windmill), crenellations. Everything lands in the
   // same depth buffer, so pieces may simply intersect (a dormer into a roof, a tower into a nave).
   // ======================================================================================================
-  const finfo = {};
+  const finfo = {}, gcut = {};
+  // A climber (ivy, roses, bougainvillea) on a wall: patches from st.ivy, in world coordinates along the wall.
+  const ivyAt = (name, col, zi) => {
+    const F = finfo[name]; if (!F) return null;
+    const a = F.dir === 'S' ? F.x0 + (col + 0.5) / s : F.y1 - (col + 0.5) / s;
+    for (const v of st.ivy) {
+      if (v.dir !== F.dir || Math.abs((F.dir === 'S' ? F.Y : F.X) - v.at) > 8 || zi >= v.h) continue;
+      const rel = zi / v.h, k = h2(col >> 1, zi >> 1, st.seed + 11), half = v.w * (1 - rel * rel * 0.75) * (0.7 + (k % 5) * 0.1);
+      if (Math.abs(a - v.c) > half) continue;
+      const k2 = h2(col, zi, st.seed + 13) % 7;
+      return v.fl && k2 === 0 ? v.fl : k2 === 1 ? dk(LEAF, 0.38) : k2 === 2 ? lt(LEAF, 0.14) : k2 < 5 ? dk(LEAF, 0.14) : LEAF;
+    }
+    return null;
+  };
+  // Drop the fittings on a named wall whose span overlaps world a0..a1 (a feature now hides that stretch).
+  const clearFits = (name, a0, a1) => {
+    const F = finfo[name]; if (!F) return;
+    for (let i = fittings.length - 1; i >= 0; i--) {
+      const f = fittings[i]; if (f.face !== name || f.kind === 'door') continue;
+      const p0 = F.dir === 'S' ? F.x0 + f.c0 / s : F.y1 - (f.c1 + 1) / s, p1 = F.dir === 'S' ? F.x0 + (f.c1 + 1) / s : F.y1 - f.c0 / s;
+      if (p1 > a0 && p0 < a1) fittings.splice(i, 1);
+    }
+    fmap = null;
+  };
   let fmap = null, nD = 0;
   const fitsOf = name => { if (!fmap) { fmap = {}; for (const f of fittings) (fmap[f.face] ||= []).push(f); } return fmap[name] || NOFIT; };
   const vb = (n, m) => (st.h >>> n) % m;
@@ -866,14 +981,10 @@ function make(it, T, lit, site, S = 1) {
     let tex = t0, paint = o.paint ?? st.paint;
     if (paint === SAND) paint = st.dressC; else if (paint === GREY) paint = st.rubbleC;
     const up = (o.zb ?? 0) >= 12, house = !st.civic;
-    switch (st.sty) {
-      case 1: tex = t0 === 'ashlar' ? 'ashlar' : 'white'; break;
-      case 2: tex = t0 === 'ashlar' || !house ? 'ashlar' : 'stoneP'; break;
-      case 3: if (house && up) { tex = 'planks'; paint = st.wood; } else if (t0 !== 'logs') tex = 'white'; break;
-      case 4: tex = 'brickP'; if (paint === st.dressC || paint === LIME) paint = st.paint; break;
-      case 5: tex = t0 === 'logs' || t0 === 'ashlar' ? t0 : 'white'; break;
-    }
-    return { ...o, tex, paint, beam: o.beam ?? st.beam };
+    const r = FAMS[st.sty].wallTex(t0, o, st, { house, up, paint, LIME });
+    ({ tex, paint } = r);
+    const cq = 'corner' in r ? { corner: r.corner, quoinC: r.quoinC ?? o.quoinC } : null; // a family may dress the corners too
+    return { ...o, tex, paint, beam: o.beam ?? st.beam, ...cq };
   };
   const wm = (name, o) => {
     if (st.sty) o = restyle(o);
@@ -884,6 +995,7 @@ function make(it, T, lit, site, S = 1) {
       const col = q.col, zi = Math.floor(q.z);
       let c = null, g = 0;
       for (const f of fitsOf(name)) { const p = paintFitting(f, col, zi); if (p) { c = p[0]; g = p[1]; break; } }
+      const fit = !!c;
       if (!c) {
         if (o.foot && zi < tb) {
           const u = col + 600, cell = Math.floor(u / 6), cc = u - cell * 6, b = jit(FOOT[2], ((h2(cell, 0, st.seed) % 5) - 2) * 0.06), r = zi - zb;
@@ -898,6 +1010,7 @@ function make(it, T, lit, site, S = 1) {
           else if (quo && zi >= tb) { const blk = Math.floor((zi - tb) / 5), wq = blk & 1 ? 4 : 2, rr = (zi - tb) % 5; if (col < wq || col >= cols - wq) c = rr === 0 ? dk(quo, 0.3) : rr === 4 ? lt(quo, 0.14) : quo; }
         }
       }
+      if (!fit && st.ivy?.length) c = ivyAt(name, col, zi) ?? c;
       if (!g && o.under && zi >= zt - o.under) c = dk(c, zi >= zt - 2 ? 0.36 : 0.2);
       if (!g && o.eave && zi >= zt - o.eave) c = dk(c, zi >= zt - 3 ? 0.38 : 0.24);
       return g ? [c, g] : [shade(c, sh), 0];
@@ -917,25 +1030,38 @@ function make(it, T, lit, site, S = 1) {
   }
   // Windows spaced evenly along a named face, leaving a gap (the door) free.
   function winRow(name, z0, o = {}) {
-    if (st.sty && (o.kind ?? 'win') === 'win') { // the family's windows: arched, small and deep-set, or tall sashes
+    if (FS && (o.kind ?? 'win') === 'win') { // the family's windows: arched, small and deep-set, or tall sashes
       o = { ...o };
-      if (st.win === 'arched') o.arch = true;
-      else if (st.win === 'small') { o.wd = (o.wd ?? 7) - 2; o.ht = (o.ht ?? 8) - 1; o.deep = true; }
-      else if (st.win === 'tall') { o.ht = (o.ht ?? 8) + 2; o.panes ??= 3; }
-      if (!st.civic) { o.shutters = st.shutters; o.flowers = st.flowers || (st.sty === 1 && !!o.flowers && (st.h >>> 26) % 2 === 0); }
+      if (st.SY) {
+        if (st.win === 'arched') o.arch = true;
+        else if (st.win === 'small') { o.wd = (o.wd ?? 7) - 2; o.ht = (o.ht ?? 8) - 1; o.deep = true; }
+        else if (st.win === 'tall') { o.ht = (o.ht ?? 8) + 2; o.panes ??= 3; }
+        if (!st.civic) { o.shutters = st.shutters; o.flowers = st.flowers || (FS.flowerRoll && !!o.flowers && (st.h >>> 26) % 2 === 0); }
+      } else if (!st.civic && FS.flowerRoll) o.flowers = !!o.flowers && (st.h >>> 26) % 2 === 0;
+      if (st.wh) { o.lead ??= st.lead; o.cross ??= st.cross; o.crown ??= st.crownW; if (o.lead || o.cross) o.panes = undefined; }
     }
     const cols = finfo[name].cols, wd = o.wd ?? 7, ht = o.ht ?? 8, shut = o.shutters ?? false, pad = o.pad ?? (shut ? 6 : 4), step = wd + (shut ? 6 : 0) + (o.space ?? 7);
     const fill = (a, b) => { const len = b - a; if (len < wd + 2) return []; const n = Math.min(o.max ?? 99, Math.max(1, Math.floor((len + 4) / step))); return Array.from({ length: n }, (_, i) => Math.round(a + len * (i + 0.5) / n)); };
-    const cs = o.at ?? (o.gap ? [...fill(pad, o.gap[0] - pad), ...fill(o.gap[1] + pad, cols - pad)] : fill(pad, cols - pad));
-    for (const c of cs) fittings.push({ face: name, kind: o.kind ?? 'win', c0: c - (wd >> 1), c1: c - (wd >> 1) + wd - 1, z0, z1: z0 + ht - 1, flowers: o.flowers ?? false, shutters: shut, panes: o.panes, round: o.round, stained: o.stained, goods: o.goods, bell: o.bell, arch: o.arch, deep: o.deep });
+    let cs = o.at ?? (o.gap ? [...fill(pad, o.gap[0] - pad), ...fill(o.gap[1] + pad, cols - pad)] : fill(pad, cols - pad));
+    if (st.wh && st.V.winJitter && !o.at && (o.kind ?? 'win') === 'win') { // break the even grid: a px of wobble, now and then a blank slot
+      const jh = h2(st.g, z0, name.length);
+      cs = cs.map((c, i) => c + ((h2(jh, i, 3) % 3) - 1)).filter((c, i) => cs.length < 3 || i !== jh % (cs.length * 3));
+    }
+    for (const c of cs) fittings.push({ face: name, kind: o.kind ?? 'win', c0: c - (wd >> 1), c1: c - (wd >> 1) + wd - 1, z0, z1: z0 + ht - 1, flowers: o.flowers ?? false, shutters: shut, panes: o.panes, round: o.round, stained: o.stained, goods: o.goods, bell: o.bell, arch: o.arch, deep: o.deep, lead: o.lead, cross: o.cross, crown: o.crown });
     return cs;
   }
   const colOf = (name, x) => { const F = finfo[name]; return F.dir === 'S' ? Math.round((x - F.x0) * s) : Math.round((F.y1 - x) * s); };
   const stoneStep = sh => q => { const k = h2(Math.floor(q.P[0] / 3), Math.floor(q.P[1] / 3), st.seed); return [dk(jit(FOOT[2], (k % 3 - 1) * 0.06), sh), 0]; };
   // The front door on a named south face: the door (or a portal, a barn door), its step, mat and lamp.
   function frontDoor(name, Y, u, o = {}) {
+    if (st.wh) { // storybook doors: a heavy frame, maybe round-topped; a hanging sign (the lamp then goes left)
+      o = { ...o };
+      if ((o.kind ?? 'door') === 'door' && !o.dbl && !o.barn) { o.heavy = st.heavy; o.roundDoor = st.V.roundDoor; }
+      if (!o.board && st.sign) o.board = st.sign;
+      if (o.board && o.lamp) { o.lamp = false; o.lampL = true; }
+    }
     const dw = o.dw ?? 7, dh = o.dh ?? 13, dc = colOf(name, u), c0 = dc - (dw >> 1), c1 = c0 + dw - 1;
-    fittings.push({ face: name, kind: o.kind ?? 'door', c0, c1, z0: 0, z1: dh, dbl: o.dbl, barn: o.barn, round: o.round });
+    fittings.push({ face: name, kind: o.kind ?? 'door', c0, c1, z0: 0, z1: dh, dbl: o.dbl, barn: o.barn, round: o.round, heavy: o.heavy, roundDoor: o.roundDoor });
     out.door = Q(u, Y, 0);
     if (o.lamp) fittings.push({ face: name, kind: 'lamp', c0: c1 + 4, z0: dh - 7 });
     if (o.lampL) fittings.push({ face: name, kind: 'lamp', c0: c0 - 6, z0: dh - 7 });
@@ -943,7 +1069,7 @@ function make(it, T, lit, site, S = 1) {
     const sw = o.sw ?? 5, sd = o.sd ?? 3;
     if (o.step !== false) box(u - sw, u + sw, Y, Y + sd, 0, 2, stoneStep(0.05), stoneStep(0.3), q => [Math.floor(q.P[0] * s) % 5 === 0 ? FOOT[1] : FOOT[3], 0]);
     if (o.step2) box(u - sw + 2, u + sw - 2, Y, Y + sd - 1.5, 2, 4, stoneStep(0), stoneStep(0.28), flat(FOOT[3]));
-    if (st.sty === 1 && !st.civic && o.step !== false) { pot(u - sw - 3, Y + 3.5, true); if (!o.lamp && !o.board) pot(u + sw + 3, Y + 3.5, true); } // potted plants by a Mediterranean door
+    if (FS?.doorPots && !st.civic && o.step !== false) { pot(u - sw - 3, Y + 3.5, true); if (!o.lamp && !o.board) pot(u + sw + 3, Y + 3.5, true); } // potted plants by a Mediterranean door
     if (o.mat) { const mw = 3.5, mz = o.step2 ? 4 : 2; box(u - mw, u + mw, Y + 0.3, Y + 2.6, mz, mz + 0.5, flat(dk(accent, 0.45)), flat(dk(accent, 0.5)), q => [Math.floor(q.P[0] * s) % 2 ? dk(mix(accent, rgb('#c9a070'), 0.5), 0.2) : mix(accent, rgb('#c9a070'), 0.5), 0]); }
     return [c0 - (o.lampL ? 9 : 3), c1 + (o.lamp || o.board ? 12 : 3)];
   }
@@ -951,7 +1077,7 @@ function make(it, T, lit, site, S = 1) {
   // east with o.jetE). Faces are named `${name}S${i}` and `${name}E${i}`.
   function storeys(o) {
     let z = o.z0 ?? 0, j = 0, jE = 0;
-    const fl = [], nm = o.name ?? '', floors = st.sty && st.sty !== 5 ? o.floors.map(F => (F.jet ? { ...F, jet: 0 } : F)) : o.floors; // only timber jetties
+    const fl = [], nm = o.name ?? '', floors = FS && !FS.jetties ? o.floors.map(F => (F.jet ? { ...F, jet: 0 } : F)) : o.floors; // only timber jetties
     floors.forEach((F, i) => {
       if (i && F.jet) { j += F.jet; if (o.jetE) jE += F.jet; }
       const next = floors[i + 1], last = i === floors.length - 1, xb = o.x1 + jE, yb = o.y1 + j;
@@ -971,7 +1097,7 @@ function make(it, T, lit, site, S = 1) {
     // A family's pitch and eaves (civic buildings only half as much); stone and canal gables rise as parapets.
     const rk = SY ? (st.civic ? 1 + (SY.rk - 1) * 0.5 : SY.rk) : 1, span = o.ridge === 'EW' ? y1 - y0 : x1 - x0;
     const Rr = SY ? Math.min(o.R * rk, span * 0.95) : o.R, e = SY && !st.civic ? Math.max(1, (o.e ?? 3) + SY.de) : o.e ?? 3;
-    const dress = SY && (st.sty === 2 || st.sty === 4) && !o.noDress && !o.gambrel && (!st.civic || st.look === 'inn'), eg = dress ? 0.6 : e;
+    const dress = SY && !!FAMS[st.sty].gable && !o.noDress && !o.gambrel && (!st.civic || st.look === 'inn'), eg = dress ? 0.6 : e;
     const rm = (sh, edge, along, x) => roofMat(sh, edge, along, { mat, base, gild: o.gild, ...x });
     const gm = (cols, sh) => o.gable ? o.gable(gname, cols, sh) : wm(gname, { tex: 'planks', paint: mix(st.paint, WOOD, 0.5), zb, cols, shade: sh });
     if (o.ridge === 'EW') {
@@ -988,6 +1114,19 @@ function make(it, T, lit, site, S = 1) {
         return I;
       }
       const barge = (P, w = 1.1) => P[0] < x0 - eg + w || P[0] > x1 + eg - w;
+      if (o.jerk && !dress && !o.gambrel) { // a half-hip: the gable cut off below the ridge, a little hip over it
+        const zc = zb + Rr * (1 - o.jerk), d = (zc - zb) / k, ya = y0 + d, yb = y1 - d, xr = x1 + eg - (zr - zc) / k;
+        face([[x0 - eg, y0 - e, zE], [x1 + eg, y0 - e, zE], [x1 + eg, ya, zc], [xr, ym, zr], [x0 - eg, ym, zr]], 'S', rm(0.3, barge, 'x', {}));
+        face([[x0 - eg, y1 + e, zE], [x1 + eg, y1 + e, zE], [x1 + eg, yb, zc], [xr, ym, zr], [x0 - eg, ym, zr]], 'S', rm(-0.04, barge, 'x', {}));
+        face([[x1 + eg, yb, zc], [x1 + eg, ya, zc], [xr, ym, zr]], 'E', rm(0.18, null, 'y', { noCap: true }));
+        const cols = Math.round((y1 - y0) * s);
+        finfo[gname] = { dir: 'E', X: x1, y1, cols };
+        face([[x1, y0, zb], [x1, ya, zc], [x1, yb, zc], [x1, y1, zb]], 'E', gm(cols, 0.3), { col0: (x1 - y1) * s });
+        fasciaS(x0 - eg, x1 + eg, y1 + e, zE, 0, mat); fasciaE(x1 + eg, ya, yb, zc, 0.3, mat);
+        rake('E', [[x1 + eg, y1 + e, zE], [x1 + eg, yb, zc]], 0.3); rake('E', [[x1 + eg, ya, zc], [x1 + eg, y0 - e, zE]], 0.3);
+        gcut[gname] = zc; I.zc = zc; I.ridgePt = [Math.min(I.ridgePt[0], xr), ym, zr];
+        return I;
+      }
       let prof; // across the roof, north eave to south eave: [y, z]
       if (o.gambrel) {
         const kn = (y1 - y0) * 0.17, zk = zb + Rr * 0.6, kl = (zk - zb) / kn, zEl = zb - e * kl;
@@ -1021,6 +1160,19 @@ function make(it, T, lit, site, S = 1) {
       return I;
     }
     const barge = (P, w = 1.1) => P[1] < y0 - eg + w || P[1] > y1 + eg - w;
+    if (o.jerk && !dress) { // a half-hip over the street gable
+      const zc = zb + Rr * (1 - o.jerk), d = (zc - zb) / k, xa = x0 + d, xb = x1 - d, yr = y1 + eg - (zr - zc) / k;
+      face([[x0 - e, y0 - eg, zE], [x0 - e, y1 + eg, zE], [xa, y1 + eg, zc], [xm, yr, zr], [xm, y0 - eg, zr]], 'E', rm(0.3, barge, 'y'));
+      face([[x1 + e, y0 - eg, zE], [x1 + e, y1 + eg, zE], [xb, y1 + eg, zc], [xm, yr, zr], [xm, y0 - eg, zr]], 'E', rm(0.16, barge, 'y'));
+      face([[xa, y1 + eg, zc], [xb, y1 + eg, zc], [xm, yr, zr]], 'S', rm(-0.04, null, 'x', { noCap: true }));
+      const cols = Math.round((x1 - x0) * s);
+      finfo[gname] = { dir: 'S', Y: y1, x0, cols };
+      face([[x0, y1, zb], [x1, y1, zb], [xb, y1, zc], [xa, y1, zc]], 'S', gm(cols, 0), { col0: (x0 - y1) * s });
+      fasciaE(x1 + e, y0 - eg, y1 + eg, zE, 0.3, mat); fasciaS(xa, xb, y1 + eg, zc, 0, mat);
+      rake('S', [[x0 - e, y1 + eg, zE], [xa, y1 + eg, zc]], 0); rake('S', [[xb, y1 + eg, zc], [x1 + e, y1 + eg, zE]], 0);
+      gcut[gname] = zc; I.zc = zc; I.ridgePt = [xm, Math.min(I.ridgePt[1], yr), zr];
+      return I;
+    }
     face([[x0 - e, y0 - eg, zE], [x0 - e, y1 + eg, zE], [xm, y1 + eg, zr], [xm, y0 - eg, zr]], 'E', rm(0.3, barge, 'y'));
     const cols = Math.round((x1 - x0) * s);
     finfo[gname] = { dir: 'S', Y: y1, x0, cols };
@@ -1028,13 +1180,13 @@ function make(it, T, lit, site, S = 1) {
     face([[x1 + e, y0 - eg, zE], [x1 + e, y1 + eg, zE], [xm, y1 + eg, zr], [xm, y0 - eg, zr]], 'E', rm(0.16, barge, 'y'));
     fasciaE(x1 + e, y0 - eg, y1 + eg, zE, 0.3, mat);
     rake('S', [[x0 - e, y1 + eg, zE], [xm, y1 + eg, zr], [x1 + e, y1 + eg, zE]], 0, o.gild);
-    if (dress) gableDress(I, 'x');
+    if (dress) { if (st.wh && (st.gtype === 'bell' || st.gtype === 'neck')) v5gable(kit5(), I, st.gtype); else gableDress(I, 'x'); }
     return I;
   }
   // Stone and canal gables: a parapet rising over the roof, coped in small steps with kneelers (stone) or
   // in big crow steps with pale copings (canal). along 'y': the gable at x = I.x1; 'x': at y = I.y1.
   function gableDress(I, along) {
-    const crow = st.sty === 4, paint = st.paint, tex = crow ? 'brickP' : 'ashlar', a0 = along === 'y' ? I.y0 : I.x0, a1 = along === 'y' ? I.y1 : I.x1, half = (a1 - a0) / 2, P0 = along === 'y' ? I.x1 : I.y1;
+    const crow = FAMS[st.sty].gable === 'crow', paint = st.paint, tex = crow ? 'brickP' : 'ashlar', a0 = along === 'y' ? I.y0 : I.x0, a1 = along === 'y' ? I.y1 : I.x1, half = (a1 - a0) / 2, P0 = along === 'y' ? I.x1 : I.y1;
     const cap = capM(crow ? rgb('#ece6da') : lt(paint, 0.12)), mS = stoneM(paint, 0, tex), mE = stoneM(paint, 0.3, tex);
     const blk = (a, b, z0, z1) => (along === 'y' ? box(P0 - 2.6, P0 + 0.8, a, b, z0, z1, mS, mE, cap) : box(a, b, P0 - 2.6, P0 + 0.8, z0, z1, mS, mE, cap));
     const n = crow ? Math.max(2, Math.round(half / 5.5)) : Math.max(3, Math.round(half / 2.2)), sw = half / n;
@@ -1060,7 +1212,7 @@ function make(it, T, lit, site, S = 1) {
   }
   // A gabled dormer on the roof's visible long slope (south for an EW ridge, east for NS), centred at c.
   function dormer(I, c, dw, o = {}) {
-    if (st.sty === 1 || st.sty === 3) return; // low wide roofs carry no dormers
+    if (FS && !FS.dormers) return; // low wide roofs carry no dormers
     const de = 1.4, dh = o.dh ?? 11, rr = dw * 0.5 * (o.pitch ?? 1), kk = rr / (dw / 2), name = `D${nD++}`, rmo = { mat: I.mat, base: I.base, noCap: true };
     const mo = { tex: o.tex ?? 'plaster', paint: o.paint ?? st.paint, corner: 'post', frame: -1 };
     if (I.ridge === 'EW') {
@@ -1261,9 +1413,55 @@ function make(it, T, lit, site, S = 1) {
     return null;
   }
   // ---------- the looks ----------
+  // ---------- city v5: the storybook features (drawn by iso-v5/*.js through K; placed here) ----------
+  let K5 = null;
+  const kit5 = () => K5 ??= {
+    st, it, FAM: FS, V: st.V, W, D, s, lit, out, Q, face, box, cyl, ball, prism, wallS, wallE, wm, fit: (...f) => fittings.push(...f), finfo, clearFits,
+    storeys, roof2, winRow, dormer, roofMat, coneMat, stoneM, capM, roundWall, winOp, slitOp, flat, shOf, shade, rgb, mix, lt, dk, jit, ramp, byLight, h2, mm,
+    RB, TR, LEAF, FLOWERS, WOOD, DARKWOOD, BEAM, IRON, GOLD, SHADE, STONE, SAND, LEAD, GLASS, LIT, FOOT,
+  };
+  // A hoist beam with a rope and hook under a street gable's apex.
+  const hoist = (xm, Y, zh) => {
+    box(xm - 1, xm + 1, Y, Y + 5, zh, zh + 2, flat(st.beam), flat(dk(st.beam, 0.3)), flat(lt(st.beam, 0.15)));
+    box(xm - 0.3, xm + 0.3, Y + 4, Y + 4.6, zh - 6, zh, flat(rgb('#b49a6a')), flat(rgb('#8a744e')), flat(rgb('#b49a6a')));
+    box(xm - 0.9, xm + 0.9, Y + 3.9, Y + 4.7, zh - 8, zh - 6, flat(IRON), flat(dk(IRON, 0.3)), flat(lt(IRON, 0.2)));
+  };
+  // One big feature per styled house (st.feat, from whimsy), placed on the side away from the door, plus
+  // the yard dressing. o = { look, S (storeys), I (main roof), floors, front, u (door x), gable, Y (front wall) }.
+  function v5House(o) {
+    if (!st.wh) return;
+    const K = kit5(), { S, I, u } = o, F = st.feat, sideE = u <= W / 2, last = S.fl[S.fl.length - 1];
+    if (F === 'wing' && !o.front && o.floors) {
+      const ww = Math.min(W * 0.45, sideE ? S.x1 - u - 8 : u - 8 - S.x0);
+      if (ww >= 18) v5wing(K, S, o.floors, sideE ? 'E' : 'W', ww, { R, gable: o.gable, pj: Math.max(3.5, I.e + 1) });
+    } else if (F === 'turret' && st.tur) {
+      const T = st.tur, r = T.r, k = T.z0 > 0 ? 1 : 0.6;
+      const cx = sideE ? S.x1 - r * k : S.x0 + r * k, cy = S.y1 - r * (T.z0 > 0 ? 0.8 : 0.6);
+      for (const Fl of S.fl) { clearFits(Fl.nS, cx - r - 1.5, cx + r + 1.5); if (sideE) clearFits(Fl.nE, cy - r - 1.5, cy + r + 1.5); }
+      v5turret(K, cx, cy, T);
+    } else if (F === 'ridge') v5ridge(K, I);
+    else if (F === 'oriel' && S.fl.length > 1) {
+      const wd = Math.min(20, (S.x1 - S.x0) * 0.42), xc = o.look === 'townhouse' ? (S.x0 + S.x1) / 2 : sideE ? S.x1 - wd / 2 - 4 : S.x0 + wd / 2 + 4;
+      clearFits(last.nS, xc - wd / 2 - 2, xc + wd / 2 + 2);
+      v5oriel(K, 'OR', xc, finfo[last.nS].Y, last.z + 2, last.z + last.h - 1, wd, 3);
+    } else if (F === 'bay') {
+      const f0 = S.fl[0], wd = Math.min(18, (S.x1 - S.x0) * 0.36), xc = sideE ? S.x1 - wd / 2 - 3 : S.x0 + wd / 2 + 3;
+      if (sideE ? xc - wd / 2 > u + 6 : xc + wd / 2 < u - 6) { clearFits(f0.nS, xc - wd / 2 - 2, xc + wd / 2 + 2); v5oriel(K, 'BY', xc, finfo[f0.nS].Y, 0, Math.min(14, f0.h - 3), wd, 4); }
+    } else if (F === 'loggia' && S.fl.length > 1) { // an open arcade along the top floor
+      clearFits(last.nS, -1e3, 1e3);
+      winRow(last.nS, last.z + 2, { kind: 'arch', wd: 8, ht: last.h - 4, round: true, pad: 3, space: 3 });
+    } else if (F === 'gable' && I.ridge === 'EW' && o.gable) { // a big street gable breaking the eaves
+      roof2({ x0: W * 0.22, x1: W * 0.78, y0: I.ym, y1: S.y1, zb: S.z, R: R * 0.8, e: 2, ridge: 'NS', gname: 'XG', gable: o.gable, noDress: true, jerk: st.jerk });
+      const c = finfo.XG.cols >> 1; fittings.push({ face: 'XG', kind: 'win', c0: c - 3, c1: c + 3, z0: S.z + 3, z1: S.z + 11, lead: st.lead, cross: st.cross, flowers: false, shutters: false });
+    }
+    if (st.V.hoist && o.front && I.ridge === 'NS' && !I.zc && o.look !== 'townhouse') hoist(W / 2, S.y1, S.z + Math.round((I.zr - S.z) * 0.8));
+    if (st.pergola && o.look !== 'townhouse') v5pergola(K, u - 9, u + 9, o.Y, 6);
+    if (st.cypress && o.look !== 'townhouse') v5cypress(K, sideE ? 3 : W - 3, D + 2, 22 + ((st.g >>> 9) % 3) * 3);
+  }
   function buildKit() {
     const lk = st.look;
     ({ cottage: cottageKit, palace, farmhouse, timber: timberHouse, townhouse, manor, barn, windmill, granary, chapel, smithy, inn, guildhall, clocktower, markethall, cathedral, wall, walltower, gatehouse })[lk]();
+    for (let i = fittings.length - 1; i >= 0; i--) { const f = fittings[i], zc = gcut[f.face]; if (zc != null && f.z1 > zc - 2) fittings.splice(i, 1); } // windows above a half-hip's cut
     const WINK = new Set(['win', 'round', 'lancet', 'rose', 'shop', 'arch']);
     for (const f of fittings) if (WINK.has(f.kind) && finfo[f.face]) out.windows.push(fpt(f.face, (f.c0 + f.c1) / 2, (f.z0 + f.z1) / 2));
     if (!out.ridge) out.ridge = Q(W / 2, D / 2, H + R);
@@ -1281,7 +1479,7 @@ function make(it, T, lit, site, S = 1) {
     const gap = frontDoor(f0.nS, D, u, { dh: 12, mat: true, lamp: vb(14, 2) === 1 });
     winRow(f0.nS, 6, { gap, ht: 7, flowers: st.flowers, shutters: st.shutters });
     if (!lean || west) winRow(f0.nE, 6, { ht: 7, flowers: st.flowers, max: 2 });
-    const I = roof2({ x0: mx0, x1: mx1, y0: 0, y1: D, zb: H, R, e, ridge: 'EW', mat: 'thatch', gable: (nm, cols, sh) => wm(nm, { tex: tex === 'logs' ? 'logs' : 'planks', paint: tex === 'logs' ? st.paint : mix(st.paint, WOOD, 0.3), zb: H, cols, shade: sh }) });
+    const I = roof2({ x0: mx0, x1: mx1, y0: 0, y1: D, zb: H, R, e, ridge: 'EW', mat: 'thatch', jerk: st.jerk, gable: (nm, cols, sh) => wm(nm, { tex: tex === 'logs' ? 'logs' : 'planks', paint: tex === 'logs' ? st.paint : mix(st.paint, WOOD, 0.3), zb: H, cols, shade: sh }) });
     if (!lean || west) { const c = finfo.G.cols >> 1; fittings.push({ face: 'G', kind: 'round', c0: c - 3, c1: c + 3, z0: H + 3, z1: H + 9 }); }
     if (lean) {
       const lx0 = west ? 0 : W - lean, lx1 = west ? lean : W, zt = H - 3, zl = 11, hiX = west ? lx1 : lx0, loX = west ? lx0 - 3 : lx1 + 3, zlo = zl - 3 * (zt - zl) / lean;
@@ -1294,6 +1492,7 @@ function make(it, T, lit, site, S = 1) {
     }
     chimney(west ? mx1 - 7 : mx0 + 7, D * 0.36, I.zr, H - 2, rgb('#9d9486'));
     out.ridge = Q(...I.ridgePt);
+    v5House({ look: 'farmhouse', S, I, floors: null, front: false, u, gable: null, Y: D });
     props(u, 5);
   }
 
@@ -1309,8 +1508,8 @@ function make(it, T, lit, site, S = 1) {
     winRow(f1.nS, f1.z + 4, { flowers: true, shutters: vb(17, 2) === 1 });
     winRow(f0.nE, 6, { max: 3 });
     winRow(f1.nE, f1.z + 4, { flowers: vb(18, 2) === 1, max: 3 });
-    if (st.sty === 3) balcony(S.x0, S.x1, finfo[f1.nS].Y, f1.z + 1, 4);
-    const I = roof2({ x0: 0, x1: S.x1, y0: 0, y1: S.y1, zb: S.z, R, e: 3, ridge: front ? 'NS' : 'EW', gable: plasterGable(fr, S.z) });
+    if (FS?.balconies) balcony(S.x0, S.x1, finfo[f1.nS].Y, f1.z + 1, 4);
+    const I = roof2({ x0: 0, x1: S.x1, y0: 0, y1: S.y1, zb: S.z, R, e: 3, ridge: front ? 'NS' : 'EW', gable: plasterGable(fr, S.z), jerk: st.jerk });
     const gc = finfo.G.cols >> 1;
     if (front) {
       winRow('G', S.z + 4, { at: W >= 48 ? [gc - 7, gc + 7] : [gc], wd: 5, ht: 7 });
@@ -1320,6 +1519,7 @@ function make(it, T, lit, site, S = 1) {
       fittings.push({ face: 'G', kind: 'win', c0: gc - 2, c1: gc + 2, z0: S.z + 4, z1: S.z + 10, flowers: false, shutters: false });
       if (W >= 60) { dormer(I, W * 0.3, 12); dormer(I, W * 0.72, 12); } else dormer(I, W * (vb(19, 2) ? 0.36 : 0.62), 12);
     }
+    v5House({ look: 'timber', S, I, floors, front, u, gable: plasterGable(fr, S.z), Y: D - 2 });
     chimney(front ? W * 0.3 : W * (vb(21, 2) ? 0.2 : 0.82), front ? D * 0.25 : D * 0.3, I.zr, S.z - 2, null, 5);
     out.ridge = Q(...I.ridgePt);
     props(u, 5);
@@ -1346,20 +1546,21 @@ function make(it, T, lit, site, S = 1) {
     } else winRow(f0.nS, 6, { gap, max: 1, shutters: false, flowers: vb(18, 2) === 1 });
     S.fl.slice(1).forEach((F, i) => winRow(F.nS, F.z + 3, { max: W >= 48 ? 3 : 2, flowers: vb(19 + i, 2) === 1, shutters: W >= 48 && vb(23, 2) === 1, ht: 8 }));
     S.fl.forEach(F => winRow(F.nE, F.z + (F === f0 ? 6 : 3), { max: 3, ht: 8 }));
-    if (st.sty === 3) balcony(0, W, finfo[S.fl[1].nS].Y, S.fl[1].z + 1, 3.5);
-    const I = roof2({ x0: 0, x1: W, y0: 0, y1: S.y1, zb: S.z, R, e, ridge: front ? 'NS' : 'EW', mat: st.roof === 'shingle' ? 'slate' : st.roof, gable: fr >= 0 ? plasterGable(fr, S.z) : stoneGable('plaster', st.paint, S.z) });
-    const gc = finfo.G.cols >> 1, Rg = I.zr - S.z; // the gable's real rise (a family may change the pitch)
+    if (FS?.balconies) balcony(0, W, finfo[S.fl[1].nS].Y, S.fl[1].z + 1, 3.5);
+    const I = roof2({ x0: 0, x1: W, y0: 0, y1: S.y1, zb: S.z, R, e, ridge: front ? 'NS' : 'EW', mat: st.roof === 'shingle' ? 'slate' : st.roof, gable: fr >= 0 ? plasterGable(fr, S.z) : stoneGable('plaster', st.paint, S.z), jerk: st.jerk });
+    const gc = finfo.G.cols >> 1, Rg = (I.zc ?? I.zr) - S.z; // the gable's real rise (a family may change the pitch)
     if (front) {
       winRow('G', S.z + 4, { at: W >= 48 ? [gc - 8, gc, gc + 8] : [gc - 5, gc + 5], wd: 5, ht: 8 });
       if (Rg >= 24) fittings.push({ face: 'G', kind: 'win', c0: gc - 2, c1: gc + 2, z0: S.z + Math.round(Rg * 0.5), z1: S.z + Math.round(Rg * 0.5) + 6, flowers: false, shutters: false });
       if (vb(24, 2) && Rg >= 24) fittings.push({ face: 'G', kind: 'round', c0: gc - 2, c1: gc + 2, z0: S.z + Math.round(Rg * 0.74), z1: S.z + Math.round(Rg * 0.74) + 4 });
       const xm = W / 2, zh = S.z + Math.round(Rg * 0.86); // the hoist beam at the top of the gable
-      box(xm - 1, xm + 1, S.y1, S.y1 + 5, zh, zh + 2, flat(st.beam), flat(dk(st.beam, 0.3)), flat(lt(st.beam, 0.15)));
+      if (st.wh && st.V.hoist) hoist(xm, S.y1, zh); else if (!I.zc) box(xm - 1, xm + 1, S.y1, S.y1 + 5, zh, zh + 2, flat(st.beam), flat(dk(st.beam, 0.3)), flat(lt(st.beam, 0.15)));
       dormer(I, D * 0.42, 11, { dh: 10 });
     } else {
       fittings.push({ face: 'G', kind: 'win', c0: gc - 2, c1: gc + 2, z0: S.z + 4, z1: S.z + 10, flowers: false, shutters: false });
-      if (W >= 48) { dormer(I, W * 0.28, 11); dormer(I, W * 0.72, 11); } else dormer(I, W * 0.5, 11);
+      if (st.wh && st.feat === 'gable') { /* the street gable takes the dormers' place */ } else if (W >= 48) { dormer(I, W * 0.28, 11); dormer(I, W * 0.72, 11); } else dormer(I, W * 0.5, 11);
     }
+    v5House({ look: 'townhouse', S, I, floors, front, u, gable: fr >= 0 ? plasterGable(fr, S.z) : stoneGable('plaster', st.paint, S.z), Y: D - jets });
     chimney(front ? W * 0.7 : W * 0.15, front ? D * 0.2 : D * 0.3, I.zr, S.z - 2, rgb('#a95b3e'), 4, 2.5);
     out.ridge = Q(...I.ridgePt);
     if (!shop && W - u > 14 && vb(25, 2)) pot(u + 9, D + 3, true);
@@ -1378,7 +1579,7 @@ function make(it, T, lit, site, S = 1) {
     frontDoor(B.fl[0].nS, D, u, { dw: 11, dh: 16, dbl: true, lamp: true, lampL: true, sw: 9, sd: 5, step2: true });
     B.fl.slice(1).forEach(F => { const c = finfo[F.nS].cols >> 1; fittings.push({ face: F.nS, kind: 'win', c0: c - 4, c1: c + 4, z0: F.z + 4, z1: F.z + 11, flowers: true, shutters: false, panes: 3 }); });
     B.fl.forEach(F => winRow(F.nE, F.z + 5, { max: 1, wd: 5 }));
-    if (st.sty === 3) { const F = M.fl[1], Y = finfo[F.nS].Y; balcony(0, bx0, Y, F.z + 1, 4); balcony(bx1, W, Y, F.z + 1, 4); }
+    if (FS?.balconies) { const F = M.fl[1], Y = finfo[F.nS].Y; balcony(0, bx0, Y, F.z + 1, 4); balcony(bx1, W, Y, F.z + 1, 4); }
     const I = roof2({ x0: 0, x1: W, y0: 0, y1: by, zb: M.z, R, e: 3, ridge: 'EW', hip, gable: plasterGable(fr, M.z) });
     const gm = st.three ? plasterGable(fr, M.z) : stoneGable('ashlar', SAND, M.z);
     roof2({ x0: bx0, x1: bx1, y0: by - 6, y1: D, zb: M.z, R: 20, e: 2.5, ridge: 'NS', gname: 'BG', gable: gm });
@@ -1402,15 +1603,16 @@ function make(it, T, lit, site, S = 1) {
 
   // A styled cottage (the village house in a family's dress): one storey, a gable or a hip, flower boxes.
   function cottageKit() {
-    const u = dU(), hip = st.sty === 1 || st.sty === 5, front = !hip && (st.sty === 3 || st.sty === 4);
+    const C = FAMS[st.sty].cottage, u = dU(), hip = C.hip, front = !hip && C.front;
     groundShadow();
-    const S = storeys({ x0: 0, x1: W, y0: 0, y1: D, floors: [{ h: H, tex: 'plaster', corner: st.sty === 2 || st.sty === 4 ? 'quoin' : null, quoinC: st.sty === 4 ? rgb('#ece6da') : st.dressC }], eaveS: !front, eaveE: front || hip });
+    const S = storeys({ x0: 0, x1: W, y0: 0, y1: D, floors: [{ h: H, tex: 'plaster', corner: C.quoin ? 'quoin' : null, quoinC: C.quoin && C.quoin !== 'dress' ? rgb(C.quoin) : st.dressC }], eaveS: !front, eaveE: front || hip });
     const f0 = S.fl[0];
     const gap = frontDoor(f0.nS, D, u, { dh: 13, mat: true, lamp: vb(14, 2) === 1 });
     winRow(f0.nS, 6, { gap });
     winRow(f0.nE, 6, { max: 2 });
-    const I = roof2({ x0: 0, x1: W, y0: 0, y1: D, zb: H, R, e, ridge: front ? 'NS' : 'EW', hip, gable: plasterGable(-1, H) });
+    const I = roof2({ x0: 0, x1: W, y0: 0, y1: D, zb: H, R, e, ridge: front ? 'NS' : 'EW', hip, gable: plasterGable(-1, H), jerk: hip ? 0 : st.jerk });
     if (!hip) { const c = finfo.G.cols >> 1; fittings.push({ face: 'G', kind: front ? 'win' : 'round', c0: c - 3, c1: c + 3, z0: H + 3, z1: H + 9, flowers: false, shutters: false }); }
+    v5House({ look: 'cottage', S, I, floors: S.fl.length ? [{ h: H, tex: 'plaster', corner: C.quoin ? 'quoin' : null, quoinC: C.quoin && C.quoin !== 'dress' ? rgb(C.quoin) : st.dressC }] : null, front, u, gable: plasterGable(-1, H), Y: D });
     chimney(W * (vb(15, 2) ? 0.25 : 0.72), D * 0.3, I.zr, H - 2, null, 5);
     out.ridge = Q(...I.ridgePt);
     props(u, 5);
@@ -1421,7 +1623,7 @@ function make(it, T, lit, site, S = 1) {
   // balconied windows, a corner tower in the family's shape, ridge cresting and finials, a formal garden.
   // it.crown adds the flourishes: gilded cresting, finials and pediment, a crest, a flag, lanterns lit.
   function palace() {
-    const crown = st.crown, sty = st.sty, fr = st.frame, hip = sty === 1 || sty === 5;
+    const crown = st.crown, sty = st.sty, FP = FAMS[sty].palace, fr = st.frame, hip = FP.hip;
     const pw = W >= 80 ? 14 : 11, u = dU(pw + 3, W - pw - 3), by = D - (D >= 80 ? 28 : 24), fy = D - 11;
     const tr = W >= 80 ? 9 : 7.5, east = u <= W / 2, tx = east ? W - tr - 1 : tr + 1, ty = by - 2;
     const DR = st.dressC ?? SAND, CR = crown ? GOLD : IRON;
@@ -1434,8 +1636,8 @@ function make(it, T, lit, site, S = 1) {
     M.fl.forEach((F, i) => {
       const cs = winRow(F.nS, F.z + (i ? 4 : 6), { gap: fg, ht: i === 2 ? 7 : 9, shutters: i === 0, flowers: i === 1, pad: 5 });
       winRow(F.nE, F.z + (i ? 4 : 6), { ht: i === 2 ? 7 : 9, max: 3 });
-      if (i === 1 && sty !== 3) for (const c of cs) { const x = c / s, xt = Math.abs(x - tx) < tr + 4; if (!xt) balcony(x - 4.2, x + 4.2, by, F.z + 1, 3, sty === 1 ? 'iron' : 'stone'); }
-      if (i === 1 && sty === 3) { balcony(0, u - pw, by, F.z + 1, 4); balcony(u + pw, W, by, F.z + 1, 4); }
+      if (i === 1 && FP.balcony !== 'run') for (const c of cs) { const x = c / s, xt = Math.abs(x - tx) < tr + 4; if (!xt) balcony(x - 4.2, x + 4.2, by, F.z + 1, 3, FP.balcony); }
+      if (i === 1 && FP.balcony === 'run') { balcony(0, u - pw, by, F.z + 1, 4); balcony(u + pw, W, by, F.z + 1, 4); }
     });
     const fc = colOf('FS0', u);
     fittings.push({ face: 'FS0', kind: 'door', c0: fc - 5, c1: fc + 5, z0: 0, z1: 15, dbl: true, zb: 3 });
@@ -1447,14 +1649,14 @@ function make(it, T, lit, site, S = 1) {
     box(u - pw - 1, u + pw + 1, fy, D - 3, 0, 3, stoneStep(0.05), stoneStep(0.3), flat(FOOT[3]));
     box(u - pw + 2, u + pw - 2, D - 3, D - 1, 0, 2, stoneStep(0.05), stoneStep(0.3), flat(FOOT[3]));
     box(u - pw + 3, u + pw - 3, D - 1, D + 1, 0, 1, stoneStep(0.05), stoneStep(0.3), flat(FOOT[3]));
-    const wood = sty === 3 || sty === 5, PC = wood ? (st.wood ?? WOOD) : lt(DR, 0.12);
+    const wood = FP.wood, PC = wood ? (st.wood ?? WOOD) : lt(DR, 0.12);
     for (const k of [-1, -1 / 3, 1 / 3, 1]) {
       const x = u + k * (pw - 2.5), y = D - 5.5;
       if (wood) box(x - 1.2, x + 1.2, y - 1.2, y + 1.2, 3, 22, q => [q.col === 0 ? lt(PC, 0.2) : PC, 0], flat(dk(PC, 0.3)), flat(PC));
       else { cyl(x, y, 1.7, 3, 21, q => [byLight(ramp(PC), q.N, 0.15), 0]); box(x - 2, x + 2, y - 2, y + 2, 20, 22, flat(lt(PC, 0.1)), flat(dk(PC, 0.25)), flat(lt(PC, 0.2))); }
     }
     box(u - pw, u + pw, fy, D - 3, 22, 25, stoneM(PC, 0), stoneM(PC, 0.3), capM(PC));
-    balcony(u - pw, u + pw, fy, 25, D - 3 - fy, wood ? 'wood' : sty === 1 ? 'iron' : 'stone');
+    balcony(u - pw, u + pw, fy, 25, D - 3 - fy, wood ? 'wood' : FP.balcony === 'iron' ? 'iron' : 'stone');
     // lanterns on posts at the foot of the steps: lit (by day too) for the crown
     for (const x of [u - pw - 0.5, u + pw + 0.5]) {
       box(x - 0.6, x + 0.6, D - 2.6, D - 1.4, 0, 12, flat(IRON), flat(dk(IRON, 0.3)), flat(IRON));
@@ -1479,45 +1681,21 @@ function make(it, T, lit, site, S = 1) {
     chimney(east ? 9 : W - 9, 2 + (by - 2) * 0.32, I.zr, M.z - 2, rgb('#9d9486'), 6);
     chimney(u + (east ? -pw : pw) * 0.6, 2 + (by - 2) * 0.28, I.zr, M.z - 2, rgb('#9d9486'), 6);
     // the tower
-    const tz = M.z + 14, TP = sty === 4 ? st.paint : DR;
-    let apex;
-    const sqTower = (tex, paint) => {
-      wallS('TS', tx - tr, tx + tr, ty + tr, 0, tz, { tex, paint, foot: true, corner: 'quoin', quoinC: sty === 4 ? rgb('#ece6da') : lt(paint, 0.1), belts: [M.fl[1].z + 1, M.fl[2].z + 1] });
-      wallE('TE', tx + tr, ty - tr, ty + tr, 0, tz, { tex, paint, foot: true, corner: 'quoin', quoinC: sty === 4 ? rgb('#ece6da') : lt(paint, 0.1), belts: [M.fl[1].z + 1, M.fl[2].z + 1] });
+    const tz = M.z + 14, TP = FP.towerPaint === 'wall' ? st.paint : DR;
+    const sqTower = (tex, paint, o = {}) => {
+      const qc = o.quoin ? rgb(o.quoin) : lt(paint, 0.1), ctex = o.brick ? 'brickP' : 'ashlar';
+      wallS('TS', tx - tr, tx + tr, ty + tr, 0, tz, { tex, paint, foot: true, corner: 'quoin', quoinC: qc, belts: [M.fl[1].z + 1, M.fl[2].z + 1] });
+      wallE('TE', tx + tr, ty - tr, ty + tr, 0, tz, { tex, paint, foot: true, corner: 'quoin', quoinC: qc, belts: [M.fl[1].z + 1, M.fl[2].z + 1] });
       const c = finfo.TS.cols >> 1;
-      for (const nm of ['TS', 'TE']) fittings.push({ face: nm, kind: 'win', c0: c - 2, c1: c + 2, z0: 26, z1: 33, flowers: false, shutters: false, arch: sty === 1, deep: sty === 2 }, { face: nm, kind: 'belfry', c0: c - 3, c1: c + 3, z0: tz - 13, z1: tz - 3, round: true, bell: sty === 1 });
-      box(tx - tr - 1, tx + tr + 1, ty - tr - 1, ty + tr + 1, tz, tz + 2.5, stoneM(lt(paint, 0.08), 0, sty === 4 ? 'brickP' : 'ashlar'), stoneM(lt(paint, 0.08), 0.3, sty === 4 ? 'brickP' : 'ashlar'), capM(sty === 4 ? rgb('#ece6da') : paint));
+      for (const nm of ['TS', 'TE']) fittings.push({ face: nm, kind: 'win', c0: c - 2, c1: c + 2, z0: 26, z1: 33, flowers: false, shutters: false, arch: !!o.arch, deep: false }, { face: nm, kind: 'belfry', c0: c - 3, c1: c + 3, z0: tz - 13, z1: tz - 3, round: true, bell: !!o.bell });
+      box(tx - tr - 1, tx + tr + 1, ty - tr - 1, ty + tr + 1, tz, tz + 2.5, stoneM(lt(paint, 0.08), 0, ctex), stoneM(lt(paint, 0.08), 0.3, ctex), capM(o.brick ? rgb('#ece6da') : paint));
     };
     const roundTower = (tex, paint) => {
       const ops = [winOp(0.25, 8, 15), winOp(0.25, 28, 35), winOp(0.1, 44, 50), slitOp(0.4, 20, 27)];
       cyl(tx, ty, tr, 0, tz, roundWall(tr, paint, ops, tex));
     };
-    if (sty === 0) { // an eight-sided stone stair tower with a tall slate spire
-      prism('TW', tx, ty, tr, tr, 0, tz, 8, (nm, N, cols) => wm(nm, { tex: 'ashlar', paint: SAND, cols, shade: shOf(N), keep: true }));
-      fittings.push({ face: 'TW2', kind: 'lancet', c0: 2, c1: 5, z0: 28, z1: 38 }, { face: 'TW1', kind: 'lancet', c0: 2, c1: 5, z0: 44, z1: 54 });
-      prism('TK', tx, ty, tr + 1.2, tr + 1.2, tz - 3, tz, 8, (nm, N) => stoneM(lt(SAND, 0.1), shOf(N)));
-      prism('TR', tx, ty, tr + 2.5, 0, tz, tz + 34, 8, coneMat(RB, 'slate', tz)); apex = [tx, ty, tz + 34];
-    } else if (sty === 1) { // a square campanile: open arches, a low tiled pyramid
-      sqTower('plaster', TP);
-      prism('TR', tx, ty, (tr + 2.5) * 1.41, 0, tz + 2.5, tz + 12, 4, coneMat(RB, 'tile', tz + 2.5), Math.PI / 4); apex = [tx, ty, tz + 12];
-    } else if (sty === 2) { // a round keep: a corbelled ring, a conical slate roof
-      roundTower('stone', st.paint);
-      cyl(tx, ty, tr + 1.4, tz - 4, tz, q => { if (q.cap) return [lt(st.paint, 0.1), 0]; const zi = Math.floor(q.z), u2 = q.ang * 2 * Math.PI * (tr + 1.4); return [shade(zi === tz - 4 && Math.floor(u2) % 4 < 2 ? dk(SHADE, 0.1) : zi === tz - 1 ? lt(st.paint, 0.18) : st.paint, Math.round(shOf(q.N) / 0.06) * 0.06), 0]; });
-      prism('TR', tx, ty, tr + 3, 0, tz, tz + 30, 12, coneMat(RB, 'slate', tz)); apex = [tx, ty, tz + 30];
-    } else if (sty === 3) { // a white tower with a copper onion dome
-      sqTower('plaster', TP);
-      const CU = rgb('#5f9c86'), zo = tz + 2.5;
-      prism('TN', tx, ty, tr * 0.55, tr * 0.55, zo, zo + 3, 8, (nm, N) => q => [shade(DARKWOOD, shOf(N)), 0]);
-      ball(tx, ty, zo + 3 + tr * 0.8, tr * 0.9, q => { const c = byLight(ramp(CU), q.N, 0.1); return [Math.floor(q.ang * 16) % 2 ? dk(c, 0.06) : c, 0]; });
-      prism('TO', tx, ty, tr * 0.45, 0, zo + 3 + tr * 1.45, zo + 3 + tr * 1.45 + 9, 8, coneMat(CU, 'lead', zo + 3 + tr * 1.45)); apex = [tx, ty, zo + 12 + tr * 1.45];
-    } else if (sty === 4) { // a brick tower, an open octagonal lantern, a lead spire
-      sqTower('plaster', TP);
-      prism('TL', tx, ty, tr * 0.7, tr * 0.7, tz + 2.5, tz + 11, 8, (nm, N) => { const sh = shOf(N); return q => { const zi = Math.floor(q.z); return [shade(zi > tz + 4 && zi < tz + 10 && q.col % 4 !== 0 ? dk(SHADE, 0.05) : rgb('#ece6da'), sh), 0]; }; });
-      prism('TR', tx, ty, tr * 0.85, 0, tz + 11, tz + 34, 8, coneMat(LEAD, 'lead', tz + 11)); apex = [tx, ty, tz + 34];
-    } else { // a round cob tower under a tall thatched cone
-      roundTower('white', st.paint);
-      prism('TR', tx, ty, tr + 4, 0, tz - 2, tz + 26, 12, coneMat(RB, 'thatch', tz - 2)); apex = [tx, ty, tz + 26];
-    }
+    // the tower: the family's own (iso-fam/*.js palace.tower)
+    const apex = [tx, ty, FP.tower({ st, tx, ty, tr, tz, TP, RB, prism, wm, cyl, ball, fit: (...f) => fittings.push(...f), stoneM, coneMat, roundTower, sqTower, shOf, shade, byLight, ramp, rgb, lt, dk, SAND, SHADE, DARKWOOD, LEAD })];
     if (crown) out.flag = Q(...apex); else out.vane = Q(...apex);
     out.ridge = Q(...I.ridgePt);
     // the formal garden either side of the frontispiece: clipped hedges, topiary cones, urns of flowers
@@ -2001,6 +2179,15 @@ function make(it, T, lit, site, S = 1) {
   for (let j = 0; j < N; j++) if (ink[j]) {
     const here = [col[j * 4], col[j * 4 + 1], col[j * 4 + 2]], c = ink[j] === 2 ? mix(here, OUTLINE, 0.74) : dk(here, 0.5);
     col[j * 4] = c[0]; col[j * 4 + 1] = c[1]; col[j * 4 + 2] = c[2];
+  }
+  const ln = st.wh && st.V.lean ? Math.round(st.V.lean * ((((st.g >>> 11) % 5) - 2) / 2)) : 0;
+  if (ln) { // a per-house lean: rows shift sideways in proportion to their height over the ground line
+    const gy = Q(0, D, 0)[1] - top, src = col.slice();
+    col.fill(0);
+    for (let py = 0; py < h; py++) {
+      const sh = Math.round(ln * Math.max(0, Math.min(1, (gy - py) / Math.max(1, gy))));
+      for (let px = 0; px < w; px++) { const x = px + sh; if (x < 0 || x >= w) continue; const a = (py * w + px) * 4, b = (py * w + x) * 4; col[b] = src[a]; col[b + 1] = src[a + 1]; col[b + 2] = src[a + 2]; col[b + 3] = src[a + 3]; }
+    }
   }
   const c = canvas(w, h), g = c.getContext('2d');
   g.putImageData(new ImageData(col, w, h), 0, 0);
