@@ -21,6 +21,8 @@ export const LOOKS = ['Villager2', 'Woman', 'OldMan', 'Villager4', 'Hunter', 'Pr
 export const NINJAS = ['NinjaBlue', 'NinjaRed', 'NinjaYellow', 'NinjaGreen', 'NinjaMasked', 'NinjaDark', 'NinjaLeaf', 'NinjaGray'];
 export const BOSS = 'Sultan2';
 export const SCALE = 1.25;
+/** Critters are small animals: drawn at this fraction of the person scale, so a cat or chicken stands at about 60% of a person. */
+export const CRITTER_RATIO = 0.6;
 const CRITTERS = { cat: 'Cat', chicken: 'Chicken' };
 const FILES = Object.fromEntries([
   ...[BOSS, ...LOOKS, ...NINJAS].map(k => [k, `actors/${k}.png`]),
@@ -102,11 +104,12 @@ export function createActorArt({ base = defaultBase(), loadImage = defaultLoad, 
     else { g.globalAlpha = 0.55; g.drawImage(sil('#fff4dc', 2), 0, 0); g.globalAlpha = 1; }
     g.drawImage(sil('#140f1c', 1), 1, 1);
     blit(g, 2, 2);
-    const w2 = Math.round(W * SCALE), h2 = Math.round(H * SCALE);
+    const k = critter ? SCALE * CRITTER_RATIO : SCALE;
+    const w2 = Math.round(W * k), h2 = Math.round(H * k);
     const c2 = createCanvas(w2, h2), g2 = c2.getContext('2d');
     g2.imageSmoothingEnabled = false;
     g2.drawImage(c1, 0, 0, W, H, 0, 0, w2, h2);
-    return { img: c2, pivot: { x: Math.round(10 * SCALE), y: Math.round(18 * SCALE) } };   // feet: frame bottom centre
+    return { img: c2, pivot: { x: Math.round(10 * k), y: Math.round(18 * k) } };   // feet: frame bottom centre
   }
 
   function frame(a, { selected = false } = {}) {

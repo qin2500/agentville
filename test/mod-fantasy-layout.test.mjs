@@ -65,9 +65,9 @@ function worldPin(name, m = mod) {
 
 // Generated on the base code with VA_PIN_PRINT=1 (see the header). Do not edit by hand.
 const PINS = {
-  citydemo: { sites: '26d5eee9aebbc525', world: 'ab2f7077a5a1d27a' },
-  busy: { sites: '66f8727b15575e48', world: 'efbb7931a06328b5' },
-  stress: { sites: '7c43cfa035bf7801', world: '60f9c8f26008e918' },
+  citydemo: { sites: '26d5eee9aebbc525', world: '93c0e75c4f676cf6' },
+  busy: { sites: '66f8727b15575e48', world: '2ac44706dcde8501' },
+  stress: { sites: '7c43cfa035bf7801', world: 'f73269e0a369a0b8' },
 };
 
 if (process.env.VA_PIN_PRINT) {

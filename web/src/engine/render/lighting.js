@@ -55,18 +55,19 @@ export function createLighting({ world, createCanvas = defaultCanvas, lightsFor,
   function lightFromSpec(o, spec, x, y, kind) {
     return { id: o.id, kind, x: x + (spec.dx || 0), y: y - (spec.dy || 0), r: spec.r ?? 60, warm: spec.warm ?? 1, flicker: spec.flicker ?? 0 };
   }
-  function objectLights(o, out) {
+  function objectLights(o, out, windowsOf) {
     const cx = o.tx + (o.w || 1) / 2, cy = o.ty + (o.h || 1) / 2;
     const p = toScreen(cx, cy, 0);
     const own = lightsFor?.(o);
     if (own) for (const s of Array.isArray(own) ? own : [own]) out.push(lightFromSpec(o, s, p.sx, p.sy, 'object'));
     else if (lampModels[o.model]) out.push(lightFromSpec(o, lampModels[o.model], p.sx, p.sy, 'lamp'));
     if (o.kind === 'building') {
-      const aid = o.agentId ?? o.data?.agentId;
-      if (aid != null && statusOf?.(aid) === 'resting') {
-        const ws = o.anchors?.windows;
-        const pts = Array.isArray(ws) && ws.length ? ws : [{ x: -8, y: -(o.z || 24) / 2 }, { x: 8, y: -(o.z || 24) / 2 }];
-        pts.forEach((w, i) => out.push({ id: `${o.id}#w${i}`, kind: 'window', x: p.sx + (w.x || 0), y: p.sy + (w.y || 0), r: 26, warm: 1, flicker: 0.05 }));
+      if (statusOf?.(o.id) === 'resting') {
+        // anchors are offsets from the footprint's north corner (the drawn sprite's pivot); else two guesses at the centre
+        const ws = windowsOf?.(o), has = Array.isArray(ws) && ws.length;
+        const pts = has ? ws : [{ x: -8, y: -(o.z || 24) / 2 }, { x: 8, y: -(o.z || 24) / 2 }];
+        const b = has ? toScreen(o.tx, o.ty, 0) : p;
+        pts.forEach((w, i) => out.push({ id: `${o.id}#w${i}`, kind: 'window', x: b.sx + (w.x || 0), y: b.sy + (w.y || 0), r: 26, warm: 1, flicker: 0.05 }));
       }
     }
   }
@@ -78,9 +79,9 @@ export function createLighting({ world, createCanvas = defaultCanvas, lightsFor,
     setNight(n) { night = clamp01(n); },
     night: () => night,
     /** All lights from world objects (+ lanterns carried by actors at night). */
-    lights(objects, actors) {
+    lights(objects, actors, windowsOf) {
       const out = [];
-      for (const o of objects ?? world?.objects?.values?.() ?? []) objectLights(o, out);
+      for (const o of objects ?? world?.objects?.values?.() ?? []) objectLights(o, out, windowsOf);
       if (night > 0.4 && actors) for (const a of actors.values ? actors.values() : actors) {
         if (a.lantern || a.carry === 'lantern') {
           const p = toScreen(a.x, a.y, 0);

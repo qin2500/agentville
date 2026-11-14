@@ -3,8 +3,8 @@
 // `data` = { cx, foot, sea }: cx the main pier's west tile column (under the town square), foot the shore row, sea the
 // first water row. Geometry follows the classic harbour (web/src/dock-art.js harbourGeom) in tiles: piers 7 tiles
 // apart, 2 wide, pointing south; a sloop takes 3 tiles of a pier side.
-// MOD-READY: `plan` returns nodes and berths but no objects; the harbour's art arrives with the dock-art piece (C2),
-// which re-pins the goldens on purpose.
+// `plan` returns the harbour's art too: plank piers (kind 'venue', walkable), mooring bollards and a moored skiff
+// (kind 'prop'), all engine-scale prop models of web/src/engine/art/props (pier, bollard, skiff).
 
 /** Harbour level by PRs loading now (classic dock-art.js tierFor). */
 export const tierFor = n => (n <= 3 ? 1 : n <= 7 ? 2 : n <= 12 ? 3 : 4);
@@ -36,8 +36,23 @@ function plan({ site, level: lv }) {
     const x = side === 'w' ? cx + k * PITCH - 1 : cx + k * PITCH + PIER_W;
     for (let j = 0; j < per; j++) berths.push({ id: `p${k + 2}${side}${j}`, tx: x, ty: y0 + 1 + j * SHIP, face: 2 });
   }
+  const objects = [];
+  const tail = y0 + per * SHIP;          // last berth row of a pier
+  for (const k of PIERS[tier]) {
+    const x = cx + k * PITCH;
+    // the deck: 2 tiles wide, from the first water row to the last berth, in 3-tile planks (a ship's length)
+    for (let ty = sea, n = 0; ty <= tail; ty += SHIP, n++) {
+      objects.push({ id: `pier${k + 2}.${n}`, kind: 'venue', model: 'pier', tx: x, ty, w: PIER_W, h: Math.min(SHIP, tail - ty + 1), z: 0, walk: 'floor', variant: (k + 2 + n) & 3 });
+    }
+    // bollards on the outer edge columns where each berth starts, and one at the pier head
+    for (let j = 0; j < per; j++) for (const bx of [x, x + PIER_W - 1]) {
+      objects.push({ id: `bol${k + 2}.${bx - x}.${j}`, kind: 'prop', model: 'bollard', tx: bx, ty: y0 + 1 + j * SHIP, w: 1, h: 1, z: 6, walk: 'floor', variant: (k + 2) & 3 });
+    }
+  }
+  // a skiff rides at its mooring just west of the main pier's berths
+  objects.push({ id: 'skiff0', kind: 'prop', model: 'skiff', tx: cx - 4, ty: sea + 1, w: 1, h: 3, z: 0, walk: 'floor', variant: 1 });
   return {
-    objects: [],
+    objects,
     nodes: { foot: { tx: cx, ty: foot }, yard: quay ? { tx: cx + 3, ty: foot - 1 } : { tx: cx, ty: foot } },
     berths,
   };

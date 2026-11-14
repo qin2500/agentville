@@ -91,6 +91,8 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
     return e;
   }
   let rasterMs = 0, rasterN = 0, failedN = 0;
+  const failedKeys = [];
+  const EMPTY = { img: null, bounds: { x: 0, y: 0, w: 0, h: 0 }, pivot: { x: 0, y: 0 }, slices: [], anchors: {}, bytes: 0, lastUsed: 0, empty: true, failed: true };
   function makeFor(obj) {
     return () => {
       if (!artReady) return null; // not cached: tried again once the art is in
@@ -103,7 +105,12 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
       } catch { r = null; }
       rasterMs += now() - t0; rasterN++;
       // A model the art cannot draw is cached as its placeholder, so it is not raster-retried every frame.
-      if (!r || !r.img) { failedN++; const p = placeholderOf(obj); return { ...p, failed: true }; }
+      if (!r || !r.img) {
+        failedN++; if (failedKeys.length < 20) failedKeys.push(`${obj.kind}:${obj.model}`);
+        // a decal with no art draws nothing (a placeholder slab would be a grey box on the ground)
+        if (obj.kind === 'decal') return { ...EMPTY };
+        const p = placeholderOf(obj); return { ...p, failed: true };
+      }
       return r.classic === true && !deps?.rasterize ? upscale(r) : r;
     };
   }
@@ -146,6 +153,7 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
   }
   function slicesOf(obj, entry, ready) {
     const at = obj.tx + ',' + obj.ty + ',' + obj.w + ',' + obj.h;
+    if (entry.empty) return [];
     const hit = ready && sliceCache.get(obj.id);
     if (hit && hit.entry === entry && hit.at === at) return hit.items;
     const hk = HIT_KIND[obj.kind];
@@ -153,6 +161,7 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
     if (ready) sliceCache.set(obj.id, { entry, at, items }); // placeholders are per call: never cached
     return items;
   }
+  const agentStatus = new Map();   // home object id -> its agent's status, refilled per lit frame
   function setWorld(w) {
     keys.clear();
     styles = new Map((w?.villages || []).filter(v => v?.style && typeof v.style === 'object').map(v => [v.name, v.style]));
@@ -172,8 +181,7 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
     }
     // chunks are built lazily, on first visibility (draw)
     ground = D.createGround({ world: w, mod }) // ground bakes its own chunk Map (the SpriteCache is not Map-like);
-    // M4: pass statusOf (home agent status -> lit windows) once the renderer receives agent statuses
-    lighting = D.createLighting({ world: w });
+    lighting = D.createLighting({ world: w, statusOf: id => agentStatus.get(String(id)) });
     xray = D.createXray({ world: w });
   }
   // chunkOf's exact return shape is not fixed in COMMON.md; accept {cx,cy}, [cx,cy], or fall back to our own math.
@@ -309,7 +317,19 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
     // light
     if ((frame.night ?? 0) > 0 && lighting) {
       lighting.setTime(frame.phase ?? frame.night);
-      lighting.draw(g, cam, gview, lighting.lights(visObjs, drawn));
+      // one pass over the frame's actors: home object id -> status, so a home's window light is a Map lookup, not a scan
+      agentStatus.clear();
+      for (const a of frame.actors || []) {
+        const st = a.input?.status ?? a.status?.bucket;
+        if (st != null && a.home != null) agentStatus.set(String(a.home), st);
+      }
+      // window anchors of a drawn building sprite, as offsets from the footprint's north corner (sprite px - pivot)
+      const windowsOf = o => {
+        const e = cache.get(keyFor(o), makeFor(o));
+        const ws = e?.anchors?.windows;
+        return Array.isArray(ws) && ws.length && e.pivot ? ws.map(w => ({ x: w.x - e.pivot.x, y: w.y - e.pivot.y })) : null;
+      };
+      lighting.draw(g, cam, gview, lighting.lights(visObjs, drawn, windowsOf));
     }
     // x-ray: occluded passers-by only
     if (xray && !isMap) {
@@ -325,7 +345,7 @@ export function createRenderer({ canvas, gfx, mod, deps } = {}) {
   /** Sprite streaming state (captures wait for pending = 0): chunks' placeholder objects and the cache queue. */
   function stats() {
     return { pending: visPending, artReady, actorArt: actorArt?.ready ?? null, rasterN, failed: failedN,
-      rasterMs: Math.round(rasterMs), keys: keys.size, ...(cache.stats?.() || {}) };
+      rasterMs: Math.round(rasterMs), keys: keys.size, failedKeys: failedKeys.slice(), sprites: { failed: failedN, failedKeys: failedKeys.slice() }, ...(cache.stats?.() || {}) };
   }
   return { setWorld, draw, stats };
 }

@@ -19,7 +19,7 @@ test('night curve', () => {
 });
 test('lamps by model name produce lights; windows only when home agent resting', () => {
   const w = world([mk('l1', 'lamp', 5, 5), mk('r1', 'rock', 6, 6), mk('b1', 'timber', 8, 8, { kind: 'building', agentId: 'a', z: 20 }), mk('b2', 'timber', 9, 9, { kind: 'building', agentId: 'b', z: 20 })]);
-  const L = createLighting({ world: w, createCanvas: factory([]), statusOf: id => id === 'a' ? 'resting' : 'working' });
+  const L = createLighting({ world: w, createCanvas: factory([]), statusOf: id => id === 'b1' ? 'resting' : 'working' });
   const ls = L.lights();
   assert.equal(ls.filter(l => l.kind === 'lamp').length, 1);
   assert.equal(ls.filter(l => l.kind === 'window').length, 2);

@@ -14,4 +14,7 @@ import * as scarecrow from './scarecrow.js';
 import * as lamp from './lamp.js';
 import * as banner from './banner.js';
 import * as railing from './railing.js';
-export const PROPS = Object.freeze({ tree, pine, sapling, bush, rock, hedge, cart, barrel, crate, laundry, scarecrow, lamp, banner, railing });
+import * as pier from './pier.js';
+import * as bollard from './bollard.js';
+import * as skiff from './skiff.js';
+export const PROPS = Object.freeze({ tree, pine, sapling, bush, rock, hedge, cart, barrel, crate, laundry, scarecrow, lamp, banner, railing, pier, bollard, skiff });

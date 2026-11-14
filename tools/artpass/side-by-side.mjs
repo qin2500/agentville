@@ -4,7 +4,7 @@
 //   node_modules/.bin/vite -c tools/artpass/vite.config.mjs        (default http://127.0.0.1:5391)
 //
 //   node tools/artpass/side-by-side.mjs --fixture busy [--zoom 1] [--night] [--size 1280x800] [--t 120]
-//        [--out-dir /tmp] [--village <name>] [--base http://127.0.0.1:5391] [--dry-run]
+//        [--out-dir /tmp] [--village <name>] [--venue <id>] [--base http://127.0.0.1:5391] [--dry-run]
 //
 // Output: <out-dir>/sbs-<fixture>-classic.png, -engine.png, -sbs.png (classic left, engine right).
 //
@@ -107,7 +107,10 @@ const tSprites0 = Date.now();
 await spritesIn('at the first camera', 90000);
 await hide(ep); await settle(ep);
 const ed = await ep.evaluate(() => window.villageDebug());
-const ev = pickVillage(ed.villages), ec = centre(ev);
+const venueId = opt('venue');   // --venue <id>: centre the engine camera on a world venue (e.g. the harbour) instead of a village
+const vn = venueId ? ed.venues?.[venueId] : null;
+if (venueId && !vn) console.error(`engine: no venue ${venueId} (have ${Object.keys(ed.venues || {}).join(', ') || 'none'})`);
+const ev = pickVillage(ed.villages), ec = vn ? { x: vn.tx, y: vn.ty } : centre(ev);
 await ep.evaluate(c => window.villageSetCamera(c), { v: 2, x: ec.x, y: ec.y, z: ez });
 await settle(ep);
 await spritesIn('at the capture camera', 30000);

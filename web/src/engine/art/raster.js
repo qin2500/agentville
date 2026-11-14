@@ -124,7 +124,8 @@ function rasterBuilding(model, style, o) {
 
 // Props drawn by the engine's own art at the 32x16 scale (art/props/*): result.classic = false.
 function rasterEngineProp(m, model, style, o) {
-  const dir = o.dir === 'y' ? 'y' : 'x', len = Math.max(1, o.len | 0 || Math.max(o.w | 0 || 1, o.h | 0 || 1));
+  // no explicit run direction (a venue plan cannot set one): a footprint taller than wide runs along y
+  const dir = o.dir === 'y' || (o.dir == null && (o.h | 0) > (o.w | 0)) ? 'y' : 'x', len = Math.max(1, o.len | 0 || Math.max(o.w | 0 || 1, o.h | 0 || 1));
   const p = { kind: model, v: o.variant | 0, dir, len };
   const st = style && typeof style === 'object' ? style : null;
   const e = m.extent(p, st);

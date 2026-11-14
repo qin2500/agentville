@@ -89,10 +89,10 @@ test('harbour level: the classic tier rule, grows at once, shrinks one step only
 
 const SITE = { kind: 'harbour', rect: { x: 20, y: 40, w: 60, h: 30 }, anchor: { tx: 50, ty: 42 }, data: { cx: 50, foot: 42, sea: 43 } };
 
-test('harbour plan: no objects this milestone; nodes foot and yard; unique berths in the water, main pier first', () => {
+test('harbour plan: planks, bollards and a skiff; nodes foot and yard; unique berths in the water, main pier first', () => {
   for (const lv of [1, 2, 3, 4]) {
     const p = VENUES.harbour.plan({ site: SITE, level: lv });
-    assert.deepEqual(p.objects, [], 'no harbour objects until the dock-art piece (no golden moves)');
+    assert.ok(p.objects.some(o => o.model === 'pier') && p.objects.some(o => o.model === 'bollard'), 'the harbour has its art');
     assert.deepEqual(p.nodes.foot, { tx: 50, ty: 42 });
     assert.deepEqual(p.nodes.yard, lv >= 2 ? { tx: 53, ty: 41 } : { tx: 50, ty: 42 });
     assert.equal(new Set(p.berths.map(b => b.id)).size, p.berths.length);
@@ -107,14 +107,13 @@ function world() {
 }
 const inputOf = prs => ({ prs });
 
-test('buildVenues with the fantasy mod: world.venues.dock, nothing stamped, no lint, level persisted', () => {
+test('buildVenues with the fantasy mod: world.venues.dock, art stamped, no lint, level persisted', () => {
   const mod = fantasy(), w = world(), persisted = {};
   const input = inputOf([pr(1, 'building'), pr(2, 'merged'), pr(3, 'loading')]);
   const { venues, lint } = buildVenues(w, { venues: { dock: SITE } }, input, mod, persisted, {}, { seed: 1 });
   assert.deepEqual(lint, []);
   assert.equal(w.venues, venues);
-  assert.equal(w.objects.size, 0, 'the harbour stamps no objects');
-  assert.equal(w.grid.version, 0, 'the grid is untouched');
+  assert.ok(w.objects.size > 0, 'the harbour stamps its piers, bollards and skiff');
   const v = venues.dock;
   assert.equal(v.kind, 'harbour'); assert.equal(v.level, 1);
   assert.deepEqual([v.tx, v.ty], [50, 42]);

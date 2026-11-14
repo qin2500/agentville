@@ -76,11 +76,14 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
     return out.sort((a, b) => (a.cx + a.cy) - (b.cx + b.cy) || a.cx - b.cx);
   }
 
+  // Pixel-exact diamond: 16 integer spans. Row r is 4r+2 px wide (r<8) then 30-4(r-8) (r>=8), centred on sx, so the two
+  // tile rows meeting on any pixel row have widths summing to 32 and neighbours partition the plane (no seams, no overlap).
   const diamond = (ctx, sx, sy, col) => {
     ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.moveTo(sx, sy); ctx.lineTo(sx + HW, sy + HH); ctx.lineTo(sx, sy + 2 * HH); ctx.lineTo(sx - HW, sy + HH);
-    ctx.closePath(); ctx.fill();
+    for (let r = 0; r < 2 * HH; r++) {
+      const half = (r < HH ? 4 * r + 2 : 4 * (2 * HH - 1 - r) + 2) / 2;
+      ctx.fillRect(sx - half, sy + r, 2 * half, 1);
+    }
   };
 
   function bake(cx, cy, style) {

@@ -6,7 +6,7 @@ import { WorldGrid } from '../web/src/engine/core/grid.js';
 
 const mkCanvas = log => (w, h) => {
   const ops = [];
-  const ctx = new Proxy({}, { get: (t, k) => k === 'drawImage' ? (...a) => ops.push(['drawImage', ...a]) : k === 'fill' ? () => ops.push(['fill', t.fillStyle]) : (k in t ? t[k] : () => {}), set: (t, k, v) => (t[k] = v, true) });
+  const ctx = new Proxy({}, { get: (t, k) => k === 'drawImage' ? (...a) => ops.push(['drawImage', ...a]) : k === 'fillRect' ? (...a) => ops.push(['fillRect', t.fillStyle, ...a]) : (k in t ? t[k] : () => {}), set: (t, k, v) => (t[k] = v, true) });
   const cv = { w, h, ops, getContext: () => ctx }; log?.push(cv); return cv;
 };
 const mkGfx = () => { const calls = []; return { calls, image: (...a) => calls.push(['image', ...a]), poly: (...a) => calls.push(['poly', ...a]), rect: () => {} }; };
@@ -42,7 +42,7 @@ test('fallback art: mod terrain colour for ground codes, fixed colours for engin
   const log = [], world = mkWorld(), grid = world.grid;
   grid.ground[0] = 5; grid.ground[1] = 202;
   createGround({ world, createCanvas: mkCanvas(log) }).drawChunks(mkGfx(), { x: 0, y: 0, z: 1 }, VIEW);
-  const fills = log.flatMap(c => c.ops.filter(o => o[0] === 'fill').map(o => o[1]));
+  const fills = log.flatMap(c => c.ops.filter(o => o[0] === 'fillRect').map(o => o[1]));
   assert.ok(fills.includes('#abcdef') && fills.includes('#e0c060'), fills.slice(0, 5).join());
 });
 
