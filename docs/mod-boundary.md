@@ -28,6 +28,7 @@ with them. No other mod gets an exception.
 | M3 | No import from another mod's folder. |
 | M4 | The folder name equals `mod.id`. The `agentville.` prefix is reserved for first-party mods (`agentville.base`, `agentville.fantasy`). Folders starting with `_` (the template) are exempt. |
 | M5 | No `Math.random`, `Date.now`, `performance.now` or `new Date(`. Worlds must be deterministic: use `hash` and the seeded draws the hooks give you. |
+| M7 | No `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage`, `sessionStorage`, `indexedDB`, `document`, `window` or `navigator` identifiers (comments and strings are ignored). Ownership hygiene, not a sandbox. A mod draws from its input and owns no I/O. |
 | E1 | `web/src/engine/**` never imports `mods/**`, except `mod/registry.js` importing `mods/index.js`. |
 | E2 | The ratchet (below). |
 

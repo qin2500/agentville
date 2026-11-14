@@ -19,6 +19,14 @@ export const MOD_ID_RE = /^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$/;
 export const WORLD_WORDS = /dock|harbou?r|ship|sloop|island|shore|sea_?deep|forest|porter|palace|villager|townsfolk/gi;
 export const NONDETERMINISTIC = /Math\.random|Date\.now|performance\.now|new\s+Date\s*\(/;
 
+/** M7: browser/network/storage globals. Ownership hygiene (a mod owns no I/O), not a sandbox: mods are trusted code. */
+export const HOST_GLOBALS = /(?<![\w$.])(fetch|XMLHttpRequest|WebSocket|localStorage|sessionStorage|indexedDB|document|window|navigator)(?![\w$])/;
+/** Source with comments, string and template literals blanked, so only real identifiers are left. */
+export function stripLiterals(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, '""');
+}
+
 const SPEC_RE = /(?:^|\n)\s*(?:import|export)\b[^;'"]*?from\s*['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
 const DYN_RE = /import\s*\(\s*(?!['"])/;
 
@@ -50,7 +58,7 @@ const rel = (root, f) => path.relative(root, f).split(path.sep).join('/');
 
 /**
  * Lint one mod folder. Rules: M1 only own files, the public barrel, grandfathered files; M2 no bare/node:/URL specifier and
- * no non-literal import(); M3 no other mod; M4 folder name equals mod.id and `agentville.` is reserved; M5 no clock/random; M4 also needs the folder to match MOD_ID_RE; M6 a non-first-party mod must not declare `ambient`
+ * no non-literal import(); M3 no other mod; M4 folder name equals mod.id and `agentville.` is reserved; M5 no clock/random; M4 also needs the folder to match MOD_ID_RE; M7 no fetch/XMLHttpRequest/WebSocket/localStorage/sessionStorage/indexedDB/document/window/navigator identifiers (docs/mod-boundary.md); M6 a non-first-party mod must not declare `ambient`
  * (not part of the v1 public API).
  * @returns {{ errors: { file: string, spec: string, rule: string }[] }}
  */
@@ -81,6 +89,8 @@ export function checkModImports(modDir, { root = ROOT } = {}) {
     if (DYN_RE.test(src)) err(f, 'import(<non-literal>)', 'M2');
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
     if (NONDETERMINISTIC.test(code)) err(f, code.match(NONDETERMINISTIC)[0], 'M5');
+    const hg = stripLiterals(src).match(HOST_GLOBALS);
+    if (hg) err(f, hg[1], 'M7');
     for (const spec of specifiers(src)) {
       if (spec === PUBLIC_SPEC) continue;
       if (!/^\.{1,2}\//.test(spec)) { err(f, spec, 'M2'); continue; }
@@ -141,7 +151,7 @@ export function lintAll(root = ROOT, ids = null) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const ids = process.argv.slice(2);
   const { errors } = lintAll(ROOT, ids.length ? ids : null);
-  for (const e of errors) console.error(`${e.rule}  ${e.file}  ${e.spec}`);
+  for (const e of errors) console.error(`${e.rule}  ${e.file}  ${e.spec}${e.rule === 'M7' ? '  (mods own no I/O or browser globals: see docs/mod-boundary.md)' : ''}`);
   console.log(errors.length ? `mod-lint: ${errors.length} error(s)` : 'mod-lint: ok');
   process.exit(errors.length ? 1 : 0);
 }

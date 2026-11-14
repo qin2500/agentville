@@ -54,10 +54,13 @@ if (flag('dry-run')) {
 const { chromium } = await import('@playwright/test');
 fs.mkdirSync(outDir, { recursive: true });
 const browser = await chromium.launch({ headless: true });
+// Pinned wall clock (override with ARTPASS_NOW=<ms>). Every page gets its own newContext (no userDataDir = empty temporary profile).
+const FIXED_NOW = Number(process.env.ARTPASS_NOW) || Date.UTC(2026, 0, 15, 12, 0, 0);
 const errors = { classic: [], engine: [] };
 const settle = page => page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 120)))));
 const newPage = async which => {
   const ctx = await browser.newContext({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
+  await ctx.clock.setFixedTime(FIXED_NOW);   // Date.now()/new Date() fixed, timers keep running: same object counts every run
   const page = await ctx.newPage();
   page.on('pageerror', e => errors[which].push(`pageerror: ${e.message}`));
   page.on('console', m => { if (m.type() === 'error') errors[which].push(`console: ${m.text()}`.slice(0, 200)); });

@@ -33,8 +33,11 @@ const box = ([x0, y0, x1, y1]) => {
 };
 
 fs.mkdirSync(out, { recursive: true });
+// Pinned wall clock (override with ARTPASS_NOW=<ms>). newContext without a userDataDir is an empty temporary profile per run.
+const FIXED_NOW = Number(process.env.ARTPASS_NOW) || Date.UTC(2026, 0, 15, 12, 0, 0);
 const browser = await chromium.launch({ headless: true });
 const ctx = await browser.newContext({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1, reducedMotion: flag('anim') ? 'no-preference' : 'reduce' });
+await ctx.clock.setFixedTime(FIXED_NOW);   // Date.now()/new Date() fixed, timers keep running: same object counts every run
 const page = await ctx.newPage();
 page.on('pageerror', e => console.error('pageerror:', e.message));
 page.on('console', m => { if (m.type() === 'error') console.error('console:', m.text()); });

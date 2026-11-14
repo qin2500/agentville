@@ -139,6 +139,7 @@ Every hook receives `ctx`:
 - Import engine code only from `#agentville/mod`. Never from `web/src/engine/**` and never from another mod. To build
   on another world, use `extends` and `ctx.parent`.
 - Keep hooks pure and deterministic.
+- Don't touch `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage`, `sessionStorage`, `indexedDB`, `document`, `window` or `navigator`: a mod owns no I/O (lint rule M7, not a sandbox).
 - `mods/<id>/**` belongs to its author. `web/src/engine/**` is shared and reviewed.
 - Nothing personal in a mod: it ships in a public repo. Tests and fixtures use synthetic data only.
 - Mods run in the app's own process and are trusted code; review each other's pull requests accordingly.

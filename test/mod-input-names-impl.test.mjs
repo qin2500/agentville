@@ -7,7 +7,7 @@ const nameOf = extra => toWorldInput(mk(extra), { salt: 's' }).input.agents[0].n
 
 test('short names pass through', () => assert.equal(nameOf({ name: 'Maple' }), 'Maple'));
 test('first line only, whitespace collapsed', () => assert.equal(nameOf({ name: 'Fix   the\tbug\nsecond line secret' }), 'Fix the bug'));
-test('leading blank lines skipped', () => assert.equal(shortLabel('\n\n  hello  world\nx'), 'hello world'));
+test('a leading line break cuts everything (nothing after a break reaches a mod)', () => { assert.equal(shortLabel('\n\n  hello  world\nx'), ''); assert.equal(shortLabel('  hello  world\nx'), 'hello world'); });
 test('long names truncate to 32 chars with ellipsis', () => {
   const n = nameOf({ name: 'a'.repeat(100) });
   assert.equal([...n].length, 32);

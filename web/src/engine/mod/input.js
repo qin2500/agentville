@@ -12,11 +12,13 @@ const HARNESS = { 'claude-code': 'claude', claude: 'claude', codex: 'codex' };
 const num = v => (Number.isFinite(+v) ? +v : 0);
 const str = v => (typeof v === 'string' ? v : '');
 // Mods only ever get a short label: the server's shortName (nickname/override/session name, never prompt-derived),
-// first line, whitespace collapsed, cut to 32 chars with an ellipsis. Without one: a neutral label, never a.name/a.title.
+// cut at the first line break (CR/LF/NEL/LS/PS), whitespace collapsed, cut to 32 chars with an ellipsis. Without one: a neutral label, never a.name/a.title.
 export const NAME_MAX = 32;
+export const LINE_BREAK = /[\r\n\u0085\u2028\u2029]/;
+/** Text up to the first CR, LF, NEL, U+2028 or U+2029, trimmed. Nothing after a line break ever reaches a mod. */
+export const firstLine = raw => str(raw).split(LINE_BREAK)[0].trim();
 export function shortLabel(raw) {
-  const first = str(raw).split(/\r?\n/).find(l => l.trim()) || '';
-  const t = first.replace(/\s+/g, ' ').trim();
+  const t = firstLine(raw).replace(/\s+/g, ' ').trim();
   const cp = [...t];
   return cp.length > NAME_MAX ? `${cp.slice(0, NAME_MAX - 1).join('').trimEnd()}\u2026` : t;
 }
@@ -53,7 +55,7 @@ export function toWorldInput(view, { seed = 0, salt = '', env = {} } = {}) {
     for (const p of list) {
       const id = `${name}#${p.n}`;
       ids.push(id);
-      prs.push({ id, project: name, number: num(p.n), title: cleanPrTitle(p.title),   // titles OK; never URLs or paths (§3.1)
+      prs.push({ id, project: name, number: num(p.n), title: cleanPrTitle(firstLine(p.title)),   // titles OK; never URLs or paths (§3.1)
         state: p.live ? 'building' : 'merged',
         checks: { passed: 0, failed: 0, pending: 0 }, review: null, size: { additions: 0, deletions: 0, files: 0 } });
     }
