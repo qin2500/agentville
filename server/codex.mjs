@@ -98,7 +98,11 @@ async function facts(entry) {
   for (const r of tail) {
     const t = r?.type === 'event_msg' && r.payload?.type
     // `stream_error` is a dropped stream; anything after it (a retry's completion) supersedes it.
-    if (['task_started', 'task_complete', 'turn_aborted', 'error', 'stream_error'].includes(t)) lifecycle = { type: t, error: t === 'error' || t === 'stream_error' || Boolean(r.payload.error) }
+    if (['task_started', 'task_complete', 'turn_aborted', 'error', 'stream_error'].includes(t)) {
+      lifecycle = { type: t, error: t === 'error' || t === 'stream_error' || Boolean(r.payload.error) }
+      // The account's usage limit, by its error code only (the message is never read): when it hit.
+      if (t === 'error' && /usage_limit/i.test(JSON.stringify(r.payload.codex_error_info ?? ''))) lifecycle.limitAt = Date.parse(r.timestamp) || -1
+    }
   }
   let cwd = ''
   let prompt = ''
@@ -148,6 +152,8 @@ export async function scan(now = Date.now()) {
       harness: 'codex',
       kind: parentId ? 'thread' : 'session',
       name: clean(row?.nickname) || clean(row?.title),
+      // The user/harness-set nickname only (never the thread title, which can be the first prompt).
+      nickname: clean(row?.nickname),
       title: prompt,
       project: projectOf(cwd),
       cwd: cwd || null,
@@ -165,6 +171,11 @@ export async function scan(now = Date.now()) {
       // Server-private (not in the API): the rollout, and the thread's model settings.
       transcriptFile: entry?.file || null,
       modelConfig: { model: text(row?.model), effort: text(row?.effort), provider: text(row?.provider) },
+      // A child thread the usage limit stopped (Codex threads can't be messaged from here, so no nudge).
+      ...(parentId && lifecycle === 'failed' && f.lifecycle?.limitAt && {
+        errorReason: 'Stopped by usage limit',
+        limitStop: { at: f.lifecycle.limitAt > 0 ? f.lifecycle.limitAt : lastActivityAt, resetsAt: null, kind: 'limit' },
+      }),
     })
   }
   out.unreadable = unreadable

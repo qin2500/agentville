@@ -18,7 +18,11 @@
  * only when it is really out (OUT_AT % or a limit hit). If the 5-hour window alone is the problem and it
  * resets within WAIT_RESET_MS, it stays (agents can wait). The target needs TARGET_MIN_ROOM % room in both
  * windows; among accounts whose week resets within SOON_WEEK_MS the soonest reset wins, otherwise the one
- * with the most weekly room. If none is available, the pool. It uses the normal switch (backups, canary,
+ * with the most weekly room. When the active account is really out and no account has that much room, the
+ * last resort is the best account that is not out itself (FALLBACK_MIN_ROOM % of the week and
+ * FALLBACK_MIN_FIVE_ROOM % of the 5-hour window left), most weekly room first: a nearly-used account beats
+ * a stalled fleet. A proactive switch (not yet out) never takes one. Then the pool. With nowhere at all to
+ * go, `info().blocked` says so ({ why, until }) and the account log gets one line. It uses the normal switch (backups, canary,
  * rollback, audit log, running jobs only). Guards: a persisted toggle (default on), one automatic
  * switch per COOLDOWN_MS, never during another switch, never from the pool back to an account.
  *
@@ -43,6 +47,9 @@ export const PROJECT_WITHIN_MS = 5 * 60e3 // the 5-hour window is projected to f
 export const STALE_MS = 2 * 60e3 // a reading older than this is extrapolated, not trusted
 export const WAIT_RESET_MS = 15 * 60e3 // only the 5-hour window is the problem and it resets this soon: stay
 export const TARGET_MIN_ROOM = 20 // % room needed in both windows on a target
+// Last resort when the active account is really out and nothing has TARGET_MIN_ROOM: an account that isn't out.
+export const FALLBACK_MIN_ROOM = 3 // weekly % it must have left
+export const FALLBACK_MIN_FIVE_ROOM = 10 // 5-hour % it must have left (less would empty within the cooldown)
 export const SOON_WEEK_MS = 36 * 3600e3 // "soonest weekly reset first" only within this
 export const BACKOFF_MS = [2, 4, 8, 15].map((m) => m * 60e3) // after the 1st, 2nd, 3rd, 4th+ failed attempt
 export const COOLDOWN_MS = 15 * 60e3
@@ -101,7 +108,7 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   if (!banned && lastAutoAt && now - lastAutoAt < COOLDOWN_MS) return { action: 'none', why: 'cooldown' }
   const five = activeUsage?.fiveHour?.used, week = activeUsage?.weekly?.used
   // Really out: the only thing that moves us off an account picked by hand.
-  const hard = five >= OUT_AT ? 'five_hour' : week >= OUT_AT ? 'weekly' : limitHit ? 'limit' : ''
+  const hard = hardOut(activeUsage, limitHit)
   const soft = manual ? '' : five >= SWITCH_AT ? 'five_hour' : week >= SWITCH_AT ? 'weekly' : projectedMs != null && projectedMs <= PROJECT_WITHIN_MS ? 'projected' : ''
   const out = hard || soft
   const why = banned ? 'quarantine' : out || (prefer && !onWork && !quarantine.has(active) ? 'prefer' : '') || (rebalance && !manual ? 'rebalance' : '')
@@ -138,17 +145,60 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
     const any = saved.filter((id) => id !== active && !quarantine.has(id)).sort((a, b) => frees(a) - frees(b))[0]
     if (any) return { action: 'switch', to: any, why }
   }
+  // Really out and nothing with TARGET_MIN_ROOM: the best account that can still run, not a stalled fleet.
+  if (hard && !banned) {
+    const room = (id) => 100 - usage.get(id).weekly.used
+    const last = saved.filter((id) => id !== active && canRun(usage.get(id)) && !(onWork && quarantine.has(id)))
+      .sort((a, b) => rank(a) - rank(b) || room(b) - room(a) || at(a, 'weekly') - at(b, 'weekly'))[0]
+    if (last) return { action: 'switch', to: last, why, fallback: true }
+  }
   if (poolAvailable) return { action: 'switch', to: 'pool', why }
   return { action: 'none', why: 'nowhere to go' }
 }
 
-/** `account`: createAccount(); `agents()`: the current scan's agents; `nudge(ids)`: send "continue" to those jobs (serve.mjs). */
-export function createSampler({ dataDir, account, agents, network, nudge = null, now = Date.now }) {
+/** Really out: either window at OUT_AT, or the harness said "You've hit your … limit". -> the reason, or ''. */
+export function hardOut(activeUsage, limitHit) {
+  const five = activeUsage?.fiveHour?.used, week = activeUsage?.weekly?.used
+  return five >= OUT_AT ? 'five_hour' : week >= OUT_AT ? 'weekly' : limitHit ? 'limit' : ''
+}
+
+/** Not out itself: a known reading with FALLBACK_MIN_ROOM % of the week and FALLBACK_MIN_FIVE_ROOM % of the 5-hour window (or no 5-hour limit). */
+export function canRun(u) {
+  return Boolean(u && !u.error && u.fiveHour && u.weekly && (u.fiveHour.none || 100 - u.fiveHour.used >= FALLBACK_MIN_FIVE_ROOM) && 100 - u.weekly.used >= FALLBACK_MIN_ROOM)
+}
+
+/**
+ * With nowhere to go: the soonest time any account (the active one included) can run again, or null when
+ * unknown. An account is free once each window it lacks room in has reset; one whose usage is unknown is skipped.
+ */
+export function blockedUntil({ active, activeUsage, saved, usage, now, onWork = false, quarantine = new Set() }) {
+  let soonest = Infinity
+  const freeAt = (u) => {
+    if (!u || u.error || !u.fiveHour || !u.weekly) return Infinity
+    let t = now
+    if (100 - u.weekly.used < FALLBACK_MIN_ROOM) t = Math.max(t, u.weekly.resetsAt ?? Infinity)
+    if (!u.fiveHour.none && 100 - u.fiveHour.used < FALLBACK_MIN_FIVE_ROOM) t = Math.max(t, u.fiveHour.resetsAt ?? Infinity)
+    return t
+  }
+  for (const id of saved) {
+    if (onWork && quarantine.has(id)) continue
+    const t = id === active ? freeAt(activeUsage) : freeAt(usage.get(id))
+    if (t > now && t < soonest) soonest = t // `now` itself: it can run (a limit stop with room): no reset to name
+  }
+  return Number.isFinite(soonest) ? soonest : null
+}
+
+/**
+ * `account`: createAccount(); `agents()`: the current scan's agents; `nudge(ids)`: send "continue" to those jobs (serve.mjs);
+ * `holding()`: true while the fleet is paused for usage (usage-pause.mjs): no "continue" nudge and no stale-login respawn then.
+ */
+export function createSampler({ dataDir, account, agents, network, nudge = null, holding = () => false, now = Date.now }) {
   const file = path.join(dataDir, 'autoswitch.json')
   const samples = new Map() // account id ('personal' when unknown) -> [{ at, five, week }]
   let state = null // { enabled, lastAutoAt, last }
   let latest = null // the latest reading { id, saved, at, fiveHour, weekly, error? }
   let running = null
+  const isHolding = () => { try { return Boolean(holding()) } catch { return false } }
 
   async function load() {
     if (state) return state
@@ -195,7 +245,32 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
   }
   const headroomLeft = async () => { await refreshHeadroom(now()); return headroom ? headroom.left : 0 }
 
+  /** One sample and decision, then the "nowhere to go" state (info().blocked) kept in step with it. */
   async function tick() {
+    const d = await decideTick()
+    await noteBlocked(d)
+    return d
+  }
+  // Outcomes that say nothing new about whether there is somewhere to go: keep a recorded block as it is.
+  const UNDECIDED = new Set(['cooldown', 'backoff', 'a switch is running', 'error', 'waiting for the 5-hour reset']) // a wait keeps it: the jobs are still stopped
+  async function noteBlocked(d) {
+    await load()
+    if (d.blocked) {
+      const was = state.stuck
+      if (was && was.until === d.blocked.until) return
+      state.stuck = { why: d.blocked.why, until: d.blocked.until, at: was?.at ?? now() }
+      await save()
+      if (!was) { // one line per episode: no ids beyond the account's, no emails, nothing secret
+        const line = { at: now(), action: 'autoswitch_blocked', why: d.blocked.why, until: d.blocked.until, account: d.blocked.account ?? null, accounts: d.blocked.accounts }
+        await fsp.mkdir(dataDir, { recursive: true })
+        await fsp.appendFile(path.join(dataDir, 'account-log.jsonl'), JSON.stringify(line) + '\n', { mode: 0o600 }).catch(() => {})
+      }
+      return
+    }
+    if (state.stuck && (d.action === 'switch' || !UNDECIDED.has(d.why))) { delete state.stuck; await save() }
+  }
+
+  async function decideTick() {
     await load()
     if ((await account.profile()) === 'pool') { latest = null; return { action: 'none', why: 'on the pool' } }
     const u = await account.accounts.activeUsage()
@@ -223,7 +298,8 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     if (state.waitUntil && at >= state.waitUntil) {
       const older = stops.filter((a) => a.limitStopAt <= state.waitUntil).map((a) => a.id)
       delete state.waitUntil; delete state.waitSetAt
-      if (older.length && nudge) { try { state.waitNudged = (await nudge(older)).length } catch { state.waitNudged = 0 } }
+      // While the fleet is paused for usage, the pause sends the one "continue" itself when it lifts.
+      if (older.length && nudge && !isHolding()) { try { state.waitNudged = (await nudge(older)).length } catch { state.waitNudged = 0 } }
       await save()
     }
     const list = await account.accounts.load(), saved = list.map((a) => a.id)
@@ -233,10 +309,12 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     // A reading older than STALE_MS (a held-over one while rate-limited) is moved on to now at the local pace.
     const ageMs = u.stale && u.asOf ? Math.max(0, at - u.asOf) : 0
     const pace = paceOf(key, u, at)
-    const eff = extrapolate(u, { ageMs, perHour: pace.perHour, ratio: pace.ratio })
+    // A window whose reset has passed counts as unused (a held-over reading can predate it): otherwise a stale 100 %
+    // keeps "waiting for the 5-hour reset" alive past the reset and the stopped jobs get "continue" every tick.
+    const eff = extrapolate(fresh(u, at), { ageMs, perHour: pace.perHour, ratio: pace.ratio })
     const projectedMs = pace.fiveEtaMs
     // A limit stop soon after an account-to-account switch, with room on the active account: the job is still on the old login.
-    if (limitAgents.length && change && !change.viaPool && at - since <= STALE_LOGIN_MS && state.staleFor !== since
+    if (limitAgents.length && change && !change.viaPool && at - since <= STALE_LOGIN_MS && state.staleFor !== since && !isHolding()
       && !(eff.fiveHour?.used >= SWITCH_AT) && !(eff.weekly?.used >= SWITCH_AT) && typeof account.respawnStale === 'function') {
       state.staleFor = since
       const ids = limitAgents.map((a) => a.id)
@@ -266,8 +344,12 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     }
     // Out: check every saved account now (this may refresh inactive ones; never the active one).
     const all = await account.accounts.usage({ fresh: true })
-    const d = decide({ ...base, usage: new Map(all.accounts.map((x) => [x.id, fresh(x, at)])), busy: account.isBusy() })
+    const usage = new Map(all.accounts.map((x) => [x.id, fresh(x, at)]))
+    const d = decide({ ...base, usage, busy: account.isBusy() })
     if (d.waitUntil && state.waitUntil !== d.waitUntil) { state.waitUntil = d.waitUntil; state.waitSetAt = at; await save() }
+    if (d.why === 'nowhere to go' && hardOut(eff, base.limitHit)) { // really out, and every other account is too: say so
+      return { ...d, blocked: { why: 'all accounts low', until: blockedUntil({ ...base, activeUsage: eff, usage }), account: u.id, accounts: saved.length } }
+    }
     return d.action === 'switch' ? autoSwitch(d, u.id, at, info, all) : d
   }
 
@@ -369,9 +451,13 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     await load()
     const tb = state.tooBig
     return { enabled: state.enabled, last: state.last || null, cooldownUntil: state.lastAutoAt ? state.lastAutoAt + COOLDOWN_MS : null,
-      blocked: tb ? { reason: 'too_big', size: tb.size ?? headroom?.size ?? null, max: tb.max ?? headroom?.max ?? null } : null,
+      // too_big (the Keychain item is full) first; otherwise every account is out: { why, until (ms, or null when unknown) }.
+      blocked: tb ? { reason: 'too_big', size: tb.size ?? headroom?.size ?? null, max: tb.max ?? headroom?.max ?? null }
+        : state.stuck ? { why: state.stuck.why, until: state.stuck.until ?? null } : null,
       headroom: headroom ? { size: headroom.size, max: headroom.max, left: headroom.left } : null }
   }
 
-  return { sample, tick, enforce, projection, info, setEnabled, samples }
+  /** The latest reading of the active account `{ id, at, fiveHour, weekly, error?, stale? }`, or null. */
+  const reading = () => latest
+  return { sample, tick, enforce, projection, info, setEnabled, samples, reading }
 }

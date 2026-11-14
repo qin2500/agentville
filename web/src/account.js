@@ -5,6 +5,7 @@
 // Terminal sessions are never touched: they are listed for the user to reopen. No token or env
 // value ever reaches the browser; we only show labels, emails, plans, usage, names and folders.
 import { icon, esc } from './ui.js';
+import { pauseToggleHTML } from './usage-pause.js';
 
 const LOGIN = 'claude auth login';
 const RELOGIN = 'claude auth logout && claude auth login';
@@ -46,11 +47,26 @@ export function createAccount(app, { open: openAgent, termName }) {
   const send = (method, path, body) => json(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
   const why = e => (e instanceof TypeError ? "the Agentville server isn't reachable" : e.code === 'too_big' ? tooBigText(e.size, e.max) : e.message);
   const tooBigText = (size, max) => `Can't switch accounts: your Claude login entry is too big (${size ?? '?'} of ${max ?? 4000}). Sign out of MCP servers you don't use to make room.`;
+  /** Auto-switch has nowhere to go (blocked.why / blocked.until), or the active account is nearly out (>= 95%). No emails or labels. */
+  function trouble() {
+    const b = A.list?.autoSwitch?.blocked;
+    if (b && b.reason !== 'too_big') {
+      const at = Number(b.until);
+      const when = at > 0 ? ` · resumes ~${new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
+      return { text: `Auto-switch can't move: ${String(b.why || 'no account to switch to').replace(/[.\s]+$/, '')}${when}`, blocked: true };
+    }
+    const u = A.usage.get(current());
+    const hi = [['5-hour', u?.fiveHour], ['weekly', u?.weekly]].filter(([, w]) => w && !w.none && Math.round(w.used) >= 95);
+    if (hi.length) return { text: `Active account almost out: ${hi.map(([n, w]) => `${n} ${Math.round(w.used)}%`).join(', ')}`, blocked: false };
+    return { text: '' };
+  }
   /** Keychain room: the too-big warning (auto-switch stopped, or a switch refused), or the remaining room once it is under 300 characters. */
   function headroomHTML() {
     const a = A.list?.autoSwitch;
     if (a?.blocked?.reason === 'too_big') return `<p class="acct-warn" role="alert" data-too-big><b>${esc(tooBigText(a.blocked.size, a.blocked.max))}</b></p>`;
     const h = a?.headroom;
+    const t = trouble();
+    if (t.text) return `<p class="acct-warn compact" role="alert" data-trouble><b>${esc(t.text)}</b></p>`;
     return h && h.left < 300 ? `<p class="acct-note" data-headroom>Login entry room: ${esc(h.left)} characters left (${esc(h.size)} of ${esc(h.max)}).</p>` : '';
   }
 
@@ -60,9 +76,11 @@ export function createAccount(app, { open: openAgent, termName }) {
     btn.hidden = !cur;
     if (!cur) return;
     const name = nameOf(cur);
-    const html = `<span class="acct-k">Account: </span><span class="acct-name">${esc(name)}</span><span class="caret"> ▾</span>`; // the prefix drops on a phone
+    const warn = trouble().text;
+    const html = `${warn ? '<span class="acct-flag" aria-hidden="true">⚠ </span>' : ''}<span class="acct-k">Account: </span><span class="acct-name">${esc(name)}</span><span class="caret"> ▾</span>`; // the prefix drops on a phone
     if (btn.innerHTML !== html) btn.innerHTML = html;
-    btn.setAttribute('aria-label', `Account: ${name}. Switch account`);
+    btn.setAttribute('aria-label', `Account: ${name}. Switch account${warn ? `. Warning: ${warn}` : ''}`);
+    if (warn) btn.title = warn; else btn.removeAttribute('title');
   }
   async function loadList() {
     try { A.list = await json('/api/accounts'); A.listErr = ''; } catch (e) { A.listErr = `Couldn't load accounts: ${why(e)}`; }
@@ -70,7 +88,9 @@ export function createAccount(app, { open: openAgent, termName }) {
     if (!A.list) A.status = await json('/api/account').catch(() => A.status);
     label();
   }
-  loadList();
+  loadList().then(() => loadUsage(false, true));
+  // Without the menu open, check every 2 minutes so trouble shows in the top bar before agents stop.
+  setInterval(() => { if (!document.hidden && pop.hidden) loadList().then(() => loadUsage(false, true)); }, 120000);
 
   // ---------- menu (in #pop-account, opened and closed by main.js) ----------
   function bar(name, w) {
@@ -153,6 +173,7 @@ export function createAccount(app, { open: openAgent, termName }) {
       ${headroomHTML()}
       ${L ? `<ul class="acct-rows" aria-labelledby="acct-menu-h">${rows}</ul>` : `<p class="helper">${esc(A.listErr || 'Loading…')}</p>`}
       ${A.view === 'busy' ? `<button class="ghost" type="button" ${k('show')}>Switching… show progress</button>` : ''}
+      ${pauseToggleHTML()}
       <hr>${add}
       <p class="err" role="alert" ${A.menuErr ? '' : 'hidden'}>${esc(A.menuErr)}</p></div>`;
   }
@@ -181,6 +202,7 @@ export function createAccount(app, { open: openAgent, termName }) {
       A.usage = new Map(r.accounts.map(u => [u.id, u]));
     } catch (e) { if (!quiet) A.menuErr = `Couldn't check usage: ${why(e)}`; }
     if (!quiet) A.usageBusy = false;
+    label();
     renderMenu();
     if (!quiet) say(fresh ? 'Usage updated' : '');
   }

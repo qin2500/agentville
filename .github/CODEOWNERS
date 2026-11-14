@@ -1,0 +1,15 @@
+# The last matching pattern wins.
+# Turn on "Require review from Code Owners" in branch protection for main.
+
+# Maintainers own everything by default, including this file and CI (.github/).
+*                   @qin2500
+/.github/           @qin2500
+
+# Maintainers own the engine, tooling and the first-party worlds.
+/web/src/engine/    @qin2500
+/tools/             @qin2500
+/mods/agentville.*/ @qin2500
+
+# World authors: add your own line at the END of this file in your first PR, so later changes to your folder are routed
+# to you for review. A maintainer reviews and merges that first PR.
+# /mods/<your-mod-id>/ @your-handle
