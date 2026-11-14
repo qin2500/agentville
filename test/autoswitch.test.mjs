@@ -37,7 +37,9 @@ test('decide: the available account whose 5-hour window resets soonest (weeks re
   assert.deepEqual(decide({ ...base, activeUsage: { fiveHour: w(20), weekly: w(20) }, limitHit: true }), { action: 'switch', to: 'C', why: 'limit' })
   const errored = new Map([...base.usage, ['C', { error: 'Login expired — sign in again', fiveHour: null, weekly: null }]])
   assert.equal(decide({ ...base, usage: errored }).to, 'B', 'an account whose usage is unknown is not a target')
-  assert.equal(decide({ ...base, usage: new Map([...errored].filter(([k]) => k !== 'B')) }).to, 'pool')
+  const left = new Map([...errored].filter(([k]) => k !== 'B'))
+  assert.equal(decide({ ...base, usage: left }).to, 'D', 'last resort before the pool: D is not out (5% of its week left)')
+  assert.equal(decide({ ...base, usage: new Map([...left].filter(([k]) => k !== 'D')) }).to, 'pool')
 })
 
 test('decide: all exhausted goes to the pool, or nowhere without one', () => {
@@ -167,7 +169,7 @@ test('sampler: everything exhausted goes to the pool, and never back; the toggle
     await t.req('POST', '/api/autoswitch', { enabled: true })
 
     // Every account is out: the pool, and never back.
-    t.people.A.five = 100; t.people.B.five = 99.5; t.people.C.week = 97
+    t.people.A.five = 100; t.people.B.five = 99.5; t.people.C.week = 98 // 2% of C's week: not even a last resort
     const d = await t.server.sampler.sample()
     assert.deepEqual([d.action, d.to], ['switch', 'pool'])
     assert.equal((await t.req('GET', '/api/accounts')).json.active, 'pool')

@@ -50,9 +50,9 @@ for (const stream of [process.stdout, process.stderr]) stream.on('error', () => 
 const report = (what) => (e) => { try { console.error(`Agentville kept running after ${what}:`, e) } catch { /* disk full */ } }
 process.on('uncaughtException', report('an uncaught error'))
 process.on('unhandledRejection', report('an unhandled rejection'))
-const server = createServer({ dataDir: resolveDataDir() })
+const server = createServer({ dataDir: resolveDataDir(), staleOk: true })
 // Hang up the built-in terminals on the way out (for `claude attach`, that only detaches).
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(sig, async () => { await server.terms.closeAll(); process.exit(0) })
 server
   .on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `Port ${port} is in use. Set AGENTVILLE_PORT to use another.` : e.message); process.exit(1) })
-  .listen(port, '127.0.0.1', () => console.log(`Agentville running at http://127.0.0.1:${port}/  (Ctrl-C to stop)`))
+  .listen(port, '127.0.0.1', () => { console.log(`Agentville running at http://127.0.0.1:${port}/  (Ctrl-C to stop)`); server.prewarm() })

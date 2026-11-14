@@ -33,7 +33,9 @@ import { createRestore, restoreBlocked, MESSAGE as RESTORE_MESSAGE } from './res
 import { accountsBlocked } from './accounts.mjs'
 import { createSpend } from './spend.mjs'
 import { buildModels, readDefaults } from './models.mjs'
-import { createSampler } from './autoswitch.mjs'
+import { createSampler, OUT_AT } from './autoswitch.mjs'
+import { createSubLimitNudger } from './sub-limit.mjs'
+import { createUsagePause } from './usage-pause.mjs'
 import { createResearch } from './research.mjs'
 import { createNetwork } from './network.mjs'
 import { detectTerminal, findExecutable, openInTerminal, runAppleScript } from './terminal.mjs'
@@ -46,6 +48,7 @@ import * as codex from './codex.mjs'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.join(ROOT, 'web', 'dist')
 const SCAN_TTL_MS = 2000
+const STALE_MS = 60_000 // how old a scan may be and still be served while the next one runs
 const HOME = os.homedir()
 // Never inside an app bundle; a shell function or alias is invisible here by construction.
 const CLAUDE_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.claude', 'local'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
@@ -78,7 +81,7 @@ export async function openCommand(a) {
 
 export { defaultDataDir }
 
-export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {} } = {}) {
+export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {}, staleOk = false } = {}) {
   const store = createStore(dataDir)
   const loops = createLoops(dataDir)
   const tasks = createTasks(dataDir)
@@ -138,10 +141,44 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const sampler = createSampler({ dataDir, account, network,
     // The scan's agents plus, privately, when each job's scheduler record last said the harness limit (claude-code.mjs).
     agents: async () => (await snapshot()).agents.map((a) => ({ ...a, limitStopAt: limitStops.get(a.id)?.at || 0, limitText: limitStops.get(a.id)?.text || '' })),
-    nudge: (ids) => nudgeAgents(ids) })
+    nudge: (ids) => nudgeAgents(ids), holding: () => usagePause.holding() })
   let limitStops = new Map() // agent id -> { at: limitStopAt, text: the harness limit string }
   // Update check against GitHub's main (update.mjs); restarting needs `server`, so it's looked up late.
   const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, ...update })
+  // Sub-agents the API terminated: once requests work again, tell each parent (once) to resume them (sub-limit.mjs).
+  const subLimit = createSubLimitNudger({ dataDir, selfId: selfId(),
+    agents: async ({ fresh } = {}) => { if (fresh) cached = null; return (await snapshot()).agents },
+    changedAt: () => account.lastChangeAt(),
+    canRequest: subLimitRoom,
+    deliverTo: async (id, text) => {
+      if (usagePause.holding() || sendingBlocked() || dryRun()) return false
+      const inbox = inboxes.get(id)
+      if (!inbox || inboxProblem(inbox)) return false
+      const ok = (await deliver(inbox, text)).ok
+      if (ok) await logFleet({ at: Date.now(), action: 'resume-subagents', source: 'sub-limit', results: [{ id, status: 'sent' }] })
+      return ok
+    } })
+  // Every account out (auto-switch blocked): tell the top-level agents once to checkpoint and wait, hold every
+  // automated nudger, and tell them once to continue when an account has room again (usage-pause.mjs).
+  const usagePause = createUsagePause({ dataDir, selfId: selfId(),
+    agents: async () => (await snapshot()).agents,
+    blocked: async () => (await sampler.info()).blocked,
+    canRequest: subLimitRoom,
+    deliverTo: async (id, text) => {
+      if (sendingBlocked() || dryRun()) return false
+      const inbox = inboxes.get(id)
+      if (!inbox || inboxProblem(inbox)) return false
+      return (await deliver(inbox, text)).ok
+    },
+    log: (entry) => logFleet(entry) })
+  /** Requests on Claude's active login can work: the latest reading is of it (after the last change) and neither window is out. */
+  async function subLimitRoom() {
+    if ((await account.profile()) === 'pool') return true
+    const r = sampler.reading()
+    if (!r || r.error || r.stale || !r.at || r.at < (await account.lastChangeAt())) return false
+    return !(r.fiveHour?.used >= OUT_AT) && !(r.weekly?.used >= OUT_AT)
+  }
+  claude.configureCache(dataDir)
   const startedAt = Date.now()
   const opens = []
   const since = new Map() // id -> { bucket, since }: when it entered its current bucket
@@ -216,7 +253,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
     const taskStore = await tasks.sync(agents, now)
-    try { Promise.resolve(namer.kick()).catch(() => {}) } catch {}
+    // The task-name helper calls Claude: nothing to call while every account is out.
+    if (!usagePause.holding()) try { Promise.resolve(namer.kick()).catch(() => {}) } catch {}
     const taskList = Object.entries(taskStore.items).map(([id, e]) => ({ id, ...e }))
     return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList, helper: { enabled: (await helper.status()).enabled } }
   }
@@ -233,7 +271,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
    * session isn't reachable yet (respawning) gets one retry after a few seconds. Returns the delivered ids.
    */
   async function nudgeAgents(ids) {
-    if (sendingBlocked() || dryRun()) return []
+    if (usagePause.holding() || sendingBlocked() || dryRun()) return []
     const sent = new Set()
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, 5000))
@@ -279,9 +317,12 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   }
 
   // Polls every few seconds must be cheap: share one scan per SCAN_TTL_MS, never run two at once.
+  // A scan that has just been asked for again returns the last one at once (up to STALE_MS old) and
+  // refreshes behind it; actions that must see their own change clear `cached` first, so they wait.
   async function snapshot() {
     if (cached && Date.now() - cached.serverTime < SCAN_TTL_MS) return cached
     inflight ??= scanAll().then((s) => (cached = s)).finally(() => { inflight = null })
+    if (cached && staleOk && Date.now() - cached.serverTime < STALE_MS) { inflight.catch(() => {}); return cached }
     return inflight
   }
 
@@ -579,6 +620,16 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
           defaults: await readDefaults(claude.home()), catchingUp: spend.catchingUp(),
         }))
       }
+      if (url.pathname === '/api/usage-pause' && req.method === 'GET') return send(res, 200, usagePause.info())
+      if (url.pathname === '/api/usage-pause' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        return send(res, 200, await usagePause.setEnabled((await readBody(req))?.enabled))
+      }
+      if (url.pathname === '/api/sub-limit' && req.method === 'GET') return send(res, 200, await subLimit.info())
+      if (url.pathname === '/api/sub-limit' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        return send(res, 200, await subLimit.setEnabled((await readBody(req))?.enabled))
+      }
       if (url.pathname === '/api/autoswitch' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         return send(res, 200, await sampler.setEnabled((await readBody(req))?.enabled))
@@ -858,7 +909,12 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const testing = process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
   const sampleMs = Number(process.env.AGENTVILLE_SAMPLE_MS) || (testing ? 0 : 60_000)
   if (sampleMs && !accountsBlocked()) {
-    const tick = () => { sampler.sample(); spend.update().catch(() => {}) } // tokens keep pace with readings, page open or not
+    // tokens keep pace with readings, page open or not; stopped sub-agents are checked on the fresh reading
+    // then the usage pause (enter, hold, or resume), then sub-limit (held while paused; after a resume it picks up the killed sub-agents)
+    const tick = () => {
+      Promise.resolve(sampler.sample()).finally(() => Promise.resolve(usagePause.tick()).catch(() => {}).finally(() => { if (!usagePause.holding()) subLimit.tick() }))
+      spend.update().catch(() => {})
+    }
     const first = setTimeout(tick, Math.min(3000, sampleMs))
     const every = setInterval(tick, sampleMs)
     // The network rule (quarantine accounts and the work Wi-Fi) is checked every 10 s.
@@ -874,7 +930,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // Before close, not on 'close': open WebSockets would otherwise keep the server from closing.
   const close = server.close.bind(server)
   server.close = (cb) => { terms.closeAll(); return close(cb) }
-  Object.assign(server, { sampler, spend, terms, updater })
+  Object.assign(server, { sampler, spend, terms, updater, subLimit, usagePause, prewarm: () => snapshot().catch(() => {}) })
   return server
 }
 

@@ -485,7 +485,9 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
   .top { gap: 4px; padding: 0 6px; } .top .caret { display: none; }
   /* room for the spend number: slimmer counter pills, a shorter account name, and the paused
      state shown by the Fleet icon (the strip below the bar says it in words) */
-  .fl-p { display: none; } .top .acct-name { max-width: 7ch; }
+  .fl-p { display: none; } .top .acct-warn.compact { padding: 4px 8px; font-size: 11px; line-height: 1.3; }
+.acct-flag { color: var(--error, #e5383b); }
+.acct-name { max-width: 7ch; }
   .counter { padding: 4px 3px; }
   .counter.stalled, .counter.errors, .pillgroup.split .counter.stalled, .pillgroup.split .counter.errors { padding: 4px 5px; }
 }

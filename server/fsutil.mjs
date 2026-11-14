@@ -58,6 +58,44 @@ export async function readLinesFrom(file, offset, onLine) {
   } finally { await fh.close() }
 }
 
+/**
+ * Like readLinesFrom, but only decodes the lines `onLine` could use: those starting with one of
+ * `prefixes` (ASCII, all starting with `{"type":"`) or containing one of `needles`. Everything
+ * else is skipped on the raw bytes, which is most of a transcript (no UTF-8 decode, no split).
+ */
+export async function readLinesMatching(file, offset, { prefixes, needles }, onLine) {
+  const HEAD = Buffer.from('{"type":"')
+  const pre = prefixes.map((p) => Buffer.from(p))
+  const fh = await fsp.open(file, 'r')
+  try {
+    const chunk = Buffer.allocUnsafe(8 * 1024 * 1024)
+    let carry = Buffer.alloc(0)
+    for (;;) {
+      const { bytesRead } = await fh.read(chunk, 0, chunk.length, offset)
+      if (!bytesRead) break
+      const buf = carry.length ? Buffer.concat([carry, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead)
+      offset += bytesRead
+      const cut = buf.lastIndexOf(10)
+      if (cut < 0) { carry = Buffer.from(buf); continue }
+      const hits = new Set()
+      for (const n of needles) {
+        for (let at = buf.indexOf(n); at >= 0 && at < cut; at = buf.indexOf(n, at + n.length)) hits.add(buf.lastIndexOf(10, at) + 1)
+      }
+      let s = 0
+      while (s <= cut) {
+        const e = buf.indexOf(10, s)
+        if (e < 0 || e > cut) break
+        let want = hits.has(s)
+        if (!want && e - s > 12 && buf.compare(HEAD, 0, 9, s, s + 9) === 0) want = pre.some((p) => e - s >= p.length && buf.compare(p, 0, p.length, s, s + p.length) === 0)
+        if (want) onLine(buf.toString('utf8', s, e))
+        s = e + 1
+      }
+      carry = Buffer.from(buf.subarray(cut + 1))
+    }
+    return offset - carry.length
+  } finally { await fh.close() }
+}
+
 export async function listDirs(dir) {
   try {
     return (await fsp.readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => path.join(dir, e.name))
