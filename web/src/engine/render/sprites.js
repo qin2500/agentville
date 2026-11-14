@@ -46,6 +46,8 @@ function toEntry(r, t) {
     bytes: r.bytes ?? w * h * 4,
     lastUsed: t,
     ...(r.classic !== undefined ? { classic: r.classic } : {}),
+    ...(r.empty ? { empty: true } : {}),     // draws nothing (a decal with no art)
+    ...(r.failed ? { failed: true } : {}),   // a placeholder for art that failed to raster
   };
 }
 

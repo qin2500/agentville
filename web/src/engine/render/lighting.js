@@ -45,7 +45,7 @@ function defaultCanvas(w, h) {
 /**
  * @param {{ world: object, createCanvas?: (w:number,h:number)=>any,
  *   lightsFor?: (obj:object)=>object|object[]|null,       // extra light data per object (mod field `light`)
- *   statusOf?: (agentId:string)=>string|undefined,        // home agent status; 'resting' lights the windows
+ *   statusOf?: (homeId:string)=>string|undefined,         // status of the agent living in this home object; 'resting' lights the windows
  *   lampModels?: Record<string, {r,warm,flicker,dy}>, maxPools?: number }} opts
  */
 export function createLighting({ world, createCanvas = defaultCanvas, lightsFor, statusOf, lampModels = DEFAULT_LAMPS, maxPools = MAX_POOLS } = {}) {
