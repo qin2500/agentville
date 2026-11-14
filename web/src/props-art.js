@@ -460,6 +460,7 @@ B.lamppost = (S, p, f, lit) => {
   const kind = sty(p) && sty(p).lamp;
   if (kind === 'lantern') return lampLantern(S, lit);
   if (kind === 'post') return lampPost(S, lit);
+  if (kind === 'iron') return lampIron(S, lit);
   S.box(-2.4, -2.4, 2.4, 2.4, 0, 2.5, IRON);
   S.box(-1.7, -1.7, 1.7, 1.7, 2.5, 4, IRON);
   S.cyl(0, 0, 0.9, 4, 18, IRON, { top: IRON[3] });
@@ -485,7 +486,9 @@ function lampLantern(S, lit) {
   S.line(0, -23, 5, -23, WOOD_D[2]); S.line(0, -22, 4, -23, WOOD_D[1]);
   const g = lit ? LIT : GLASS;
   S.rect(4, -22, 1, 1, IRON[2]);
+  S.rect(3, -22, 3, 1, WOOD_D[2]); S.rect(4, -23, 1, 1, WOOD_D[3]); // little roof on the hanging lantern
   S.rect(3, -21, 3, 1, IRON[2]); S.rect(3, -20, 3, 4, g[2]); S.set(3, -20, g[4]); S.set(5, -17, g[1]); S.rect(3, -16, 3, 1, IRON[2]);
+  S.line(0, -21, 2, -24, WOOD_D[1]); // curved brace
   if (lit) S.rect(4, -19, 1, 2, LIT[4]);
 }
 // simple wooden post lamp: a short post topped with a boxed flame under a little cap
@@ -497,6 +500,29 @@ function lampPost(S, lit) {
   S.box(-2, -2, 2, 2, 19, 22.5, gg, { top: gg[4] });
   S.wpoly([[-3, 3, 22.5], [3, 3, 22.5], [0, 0, 25.5], [0, 0, 25.5]], WOOD_D[2]);
   S.wpoly([[3, 3, 22.5], [3, -3, 22.5], [0, 0, 25.5]], WOOD_D[1]);
+  S.rect(0, -28, 1, 2, WOOD_D[3]); S.set(0, -29, lit ? LIT[4] : WOOD_L[3]); // finial
+  S.box(-1.6, -1.6, 1.6, 1.6, 11, 12, WOOD_L); // carved band on the post
+}
+
+// ornate wrought-iron post: fluted base, scrolled bracket arm and a lantern hanging on a chain
+function lampIron(S, lit) {
+  S.box(-2.6, -2.6, 2.6, 2.6, 0, 2, STONE);
+  S.box(-1.6, -1.6, 1.6, 1.6, 2, 4, IRON);
+  S.cyl(0, 0, 0.8, 4, 22, IRON, { top: IRON[3] });
+  S.cyl(0, 0, 1.5, 9, 10, IRON, { top: IRON[3] });
+  S.box(-1.7, -1.7, 1.7, 1.7, 21, 22.4, IRON);
+  // scrolled bracket: arm out to the right, curl underneath, curl on top
+  S.line(0, -22, 6, -24, IRON[2]); S.line(0, -22, 6, -23, IRON[1]);
+  S.line(1, -17, 5, -22, IRON[2]); S.set(2, -16, IRON[3]); S.set(1, -15, IRON[3]);
+  S.set(6, -25, IRON[3]); S.set(7, -24, IRON[3]); S.set(7, -23, IRON[2]); S.set(-1, -25, IRON[3]); S.set(-2, -24, IRON[2]);
+  S.line(0, -22, -3, -24, IRON[2]);
+  // chain and lantern
+  const g = lit ? LIT : GLASS;
+  S.rect(6, -23, 1, 2, IRON[3]);
+  S.rect(5, -21, 3, 1, IRON[1]); S.set(6, -22, IRON[4]);
+  S.rect(5, -20, 3, 4, g[2]); S.set(5, -20, g[4]); S.set(7, -17, g[1]);
+  S.rect(4, -16, 5, 1, IRON[2]); S.set(6, -15, IRON[3]);
+  if (lit) S.rect(6, -19, 1, 2, LIT[4]);
 }
 
 B.bridge = (S, p) => {

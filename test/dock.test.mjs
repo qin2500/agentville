@@ -87,3 +87,22 @@ test('loading entries carry size when known and omit it otherwise', async () => 
   assert.deepEqual(r.loading.find((l) => l.id === '#1').size, { additions: 10, deletions: 2, files: 3 })
   assert.equal('size' in r.loading.find((l) => l.id === '#2'), false)
 })
+
+test('harbour size follows lifetime total and never shrinks; load only grows it', async () => {
+  globalThis.matchMedia ??= () => ({ matches: false, addEventListener() {}, addListener() {} })
+  const { harbourTier, tierForTotal, resetHarbourTier, LIFETIME_TIER2, LIFETIME_TIER3, LIFETIME_TIER4 } = await import('../web/src/dock-art.js')
+  assert.deepEqual([0, LIFETIME_TIER2 - 1, LIFETIME_TIER2, LIFETIME_TIER3 - 1, LIFETIME_TIER3, LIFETIME_TIER4 - 1, LIFETIME_TIER4, 762].map(tierForTotal), [1, 1, 2, 2, 3, 3, 4, 4])
+  const load = (n) => Array.from({ length: n }, (_, i) => ({ id: `#${i}` }))
+  resetHarbourTier()
+  // a long-running fleet: 11 PRs loading, then 3 for an hour: still the big harbour
+  assert.equal(harbourTier({ total: 762, loading: load(11) }, 0), 4)
+  assert.equal(harbourTier({ total: 762, loading: load(3) }, 1), 4)
+  assert.equal(harbourTier({ total: 762, loading: load(3) }, 3600e3), 4)
+  // a new install grows with the load, then with its history
+  resetHarbourTier()
+  assert.equal(harbourTier({ total: 0, loading: load(3) }, 0), 1)
+  assert.equal(harbourTier({ total: 0, loading: load(16) }, 1), 4)
+  assert.equal(harbourTier({ total: 0, loading: load(0) }, 2), 4)
+  assert.equal(harbourTier({ total: 0, loading: load(0) }, 2 + 11 * 60e3), 1)
+  assert.equal(harbourTier({ total: 45, loading: load(0) }, 2 + 11 * 60e3), 3)
+})

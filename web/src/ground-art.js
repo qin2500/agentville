@@ -69,6 +69,22 @@ function paintPaving(R, code, tx, ty, near, pv) {
         R(x0, py, x1 - x0, h, c); R(x0, py, x1 - x0, 1, lit);
       }
     }
+    // weathered mix: patches of rounded cobble set among the brick, plus chipped, worn bricks
+    for (let i = 0; i < 3; i++) {
+      const h = H(tx, ty, 120 + i);
+      if (h % 3 === 0) continue;
+      const cx = (h >> 3) % 12, cy = (h >> 8) % 12, cc = tone(jit(h >> 5)), cd = mixC(hx(joint), hx(pv.base), 0.35);
+      R(cx, cy, 4, 4, cd); R(cx + 1, cy, 2, 4, cc); R(cx, cy + 1, 4, 2, cc); R(cx + 1, cy + 1, 2, 2, lit);
+    }
+    for (let i = 0; i < 5; i++) {
+      const h = H(tx, ty, 130 + i), wx = h & 15, wy = (h >> 4) & 15;
+      R(wx, wy, 1 + (h >> 9) % 2, 1, (h >> 11) & 1 ? shade : joint);
+    }
+    // worn edge: grit and moss creeping in where the paving is not bounded by more paving
+    const moss = mixC(rb, [90, 130, 70], 0.55);
+    const worn = (a, b, f) => { if (!PAVED.has(near(a, b))) for (let i = 0; i < 16; i++) { const h = H(tx, ty, i + a * 7 + b * 11 + 150); if ((h & 7) < 3) f(i, (h >> 4) & 1 ? moss : shade); } };
+    worn(0, -1, (i, c) => R(i, 0, 1, 1 + (i & 1), c)); worn(0, 1, (i, c) => R(i, 15 - (i & 1), 1, 1 + (i & 1), c));
+    worn(-1, 0, (i, c) => R(0, i, 1 + (i & 1), 1, c)); worn(1, 0, (i, c) => R(15 - (i & 1), i, 1 + (i & 1), 1, c));
   } else { // earth: packed dirt with pebbles and a pair of faint ruts along the road
     R(0, 0, 16, 16, role);
     for (let i = 0; i < 14; i++) { const h = H(tx, ty, i + 40); R(h & 15, (h >> 4) & 15, 1 + (h >> 9) % 2, 1, (h >> 11) & 1 ? lit : shade); }

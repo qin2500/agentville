@@ -32,6 +32,7 @@ const Q = typeof location !== 'undefined' ? new URLSearchParams(location.search)
 const DEMO = Q.get('dockdemo') === '1';
 const DEMO_N = (n => (Number.isFinite(n) ? Math.max(0, Math.min(40, n)) : 3))(Number.parseInt(Q.get('prs') ?? '3', 10));
 const DEMO_LV = clampLevel(Q.get('level') ?? 4);
+const DEMO_TOTAL = (n => (Number.isFinite(n) ? Math.max(0, n) : 0))(Number.parseInt(Q.get('total') ?? '0', 10));
 
 const DECK = 4, QZ = 6, BWZ = 8;   // heights: pier deck, quay, breakwater
 const U = 26;                       // a berth unit along a pier (a dinghy takes 1, a sloop 2, a brig 3)
@@ -54,15 +55,20 @@ export function shipClass(size) {
 
 // ---------- tiers ----------
 export const tierFor = n => (n <= 3 ? 1 : n <= 7 ? 2 : n <= 12 ? 3 : 4);
+// The harbour's size follows the project's lifetime: PRs ever sailed (`data.total`) reach these tiers and it
+// never shrinks. The PRs loading now can still grow it past that, and only decide how many berths are manned.
+export const LIFETIME_TIER2 = 10, LIFETIME_TIER3 = 40, LIFETIME_TIER4 = 120;
+export const tierForTotal = t => (t >= LIFETIME_TIER4 ? 4 : t >= LIFETIME_TIER3 ? 3 : t >= LIFETIME_TIER2 ? 2 : 1);
 let held = { tier: 1, low: 0 };
-/** The harbour's tier for the PRs loading now: grows at once, shrinks after SHRINK_MS of needing less. */
+/** The harbour's tier: the lifetime tier at least; the load's tier grows it at once and shrinks after SHRINK_MS. */
 export function harbourTier(data, now = Date.now()) {
   const need = tierFor((data?.loading || []).length);
   if (need >= held.tier) held = { tier: need, low: 0 };
   else if (!held.low) held.low = now;
   else if (now - held.low > SHRINK_MS) held = { tier: need, low: 0 };
-  return held.tier;
+  return Math.max(held.tier, tierForTotal(+data?.total || 0));
 }
+export const resetHarbourTier = () => { held = { tier: 1, low: 0 }; };
 
 // ---------- geometry ----------
 const LAYOUT = [null, { piers: [0], units: 4 }, { piers: [-1, 0, 1], units: 4 }, { piers: [-2, -1, 0, 1], units: 5 }, { piers: [-2, -1, 0, 1, 2], units: 6 }];
@@ -192,7 +198,7 @@ export function demoDock(now = Date.now(), resting = []) {
   });
   // Sails since the page opened are fresh (animated); older history is an hour old (shown in the panel only).
   const sailed = [0, 1, 2, 3, 4].map(i => { const n = e - i, at = n * E >= BORN ? n * E : BORN - 36e5 - i * 6e4; return { ...pr(n), at }; });
-  return { loading, sailed, total: 120 + (e % 1000), level: DEMO_LV };
+  return { loading, sailed, total: DEMO_TOTAL, level: DEMO_LV };
 }
 /** What the dock shows: the demo, or the server's `S.dock` (undefined while loading: an empty dock). */
 export const dockData = S => (DEMO ? demoDock() : S.dock) || { loading: [], sailed: [], total: 0, level: 1 };

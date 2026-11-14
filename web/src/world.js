@@ -17,6 +17,7 @@ import { pinned, folds, stoppedNote } from './important.js';
 import { createDockArt } from './dock-art.js';
 import { tierFor, capacityFor, planSettlement, GROUND, WALKABLE } from './city-plan.js';
 import { paintGround } from './ground-art.js';
+import { pickVariants } from './variety.js';
 import { createPropArt } from './props-art.js';
 import { createAmbient } from './ambient.js';
 import { styleFor as poolStyle } from './styles-pool.js';
@@ -395,11 +396,12 @@ function placeVillage(W, v, S, now) {
     if (it.doorX != null) it.doorTile = [it.x + Math.floor(it.doorX / T), it.y + it.h]; // the walkable tile in front of the door
     W.items.push(it);
   };
+  const variants = pickVariants(p.lots, name); // no two neighbouring houses share a massing
   for (const lot of p.lots) {
     const id = byLot.get(lot.id), iid = id || `house:${name}:${lot.id}`;
     const crown = lot.rank === 'L' && !!id && extra.get(id).kind === 'home' && v.bossIds.has(extra.get(id).agentId); // a crown estate shows its crown only while a boss lives there
     add({ id: iid, ...(id ? extra.get(id) : { kind: 'house' }), look: crown ? 'palace' : lot.look, x: X + lot.x, y: Y + lot.y, w: lot.w, h: lot.h, doorX: lot.doorX,
-      variant: hash(id || `${lot.id}${name}`) % 16, lot: lot.id, rank: lot.rank, tier: v.tier, style: v.style, crown, village: v });
+      variant: variants.get(lot.id) ?? (hash(id || `${lot.id}${name}`) % 16), lot: lot.id, rank: lot.rank, tier: v.tier, style: v.style, crown, village: v });
   }
   for (const c of p.civic || []) {
     const id = `civic:${name}:${c.id}`;
