@@ -7,7 +7,7 @@ import { modeOf } from './permmode.mjs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { jsonLines, listDirs, listFiles, projectOf, readHead, readJson, readLinesFrom, readTail } from './fsutil.mjs'
+import { jsonLines, listDirs, listFiles, projectOf, readHead, readJson, readLinesMatching, readTail } from './fsutil.mjs'
 import { readWaitEvidence, currentWait, jobWaitEvidence } from './waiting.mjs'
 import { REST_MS, REASONS } from './classify.mjs'
 import { PREP_MARKER } from './fleet.mjs'
@@ -86,12 +86,29 @@ export const apiErrorReason = (text) => {
   return code ? `API error (${code})` : 'API error'
 }
 
+/**
+ * A synthetic API-error record that is the account's usage limit, from its fields only:
+ * `error: 'rate_limit'` / `apiErrorStatus: 429` with `quotaLimits.status: 'rejected'`, or the
+ * harness's own "You've hit your … limit" text. `{ resetsAt (ms) | null, reason }`, or null for
+ * any other API error. Only the reset time is ever taken from the text.
+ */
+export function apiLimitOf(r) {
+  const text = firstText(r?.message?.content)
+  const q = r?.quotaLimits && typeof r.quotaLimits === 'object' ? r.quotaLimits : null
+  const harness = isHarnessLimit(text)
+  if (!harness && !(q?.status === 'rejected' && (r.error === 'rate_limit' || r.apiErrorStatus === 429))) return null
+  const t = Number(q?.resetsAt)
+  const resetsAt = Number.isFinite(t) && t > 0 ? (t < 1e12 ? t * 1000 : t) : null
+  const shown = harness ? usageLimitReason(text).replace(/^Usage limit · /, '') : ''
+  return { resetsAt, reason: shown && shown !== 'Usage limit reached' ? `Stopped by usage limit · ${shown}` : 'Stopped by usage limit' }
+}
+
 /** Whose turn it is, plus explicit wait evidence. Never returns transcript text. */
 async function tailFacts(file, stamp, main = true) {
   const hit = tailCache.get(file)
   if (hit?.stamp === stamp) return hit.facts
   const records = jsonLines(await readTail(file, TAIL_BYTES).catch(() => ''))
-  const facts = { evidence: readWaitEvidence(records, 'claude-code'), turnEnded: false, interrupted: false, apiError: false, apiErrorReason: '', cutOff: '', transcriptAt: 0, pendingAt: 0, promptAt: 0, promptIsPrep: false, cwd: '' }
+  const facts = { evidence: readWaitEvidence(records, 'claude-code'), turnEnded: false, interrupted: false, apiError: false, apiErrorReason: '', cutOff: '', transcriptAt: 0, pendingAt: 0, promptAt: 0, promptIsPrep: false, cwd: '', terminated: false, apiErrorAt: 0, limit: null }
   for (const r of records) {
     if (typeof r.cwd === 'string' && r.cwd) facts.cwd = r.cwd // the latest folder (a head of big records may name none)
     // A compacted copy (the recompact tool) names its source in its closing records.
@@ -119,6 +136,10 @@ async function tailFacts(file, stamp, main = true) {
       if (facts.cutOff) break
       facts.apiError = true
       facts.apiErrorReason = apiErrorReason(firstText(r.message?.content))
+      // The request gave up (a retry in progress is a `system` api_error record instead).
+      facts.terminated = true
+      facts.apiErrorAt = Date.parse(r.timestamp) || 0
+      facts.limit = apiLimitOf(r)
       break
     }
     if (r.type === 'user') {
@@ -158,11 +179,12 @@ const titleText = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().
  * Only records that start with those types are parsed, so a tool output quoting one never counts.
  * ponytail: the first scan reads every transcript once (~1 GB on a heavy machine, ~2 s).
  */
-async function spawnEdges(file, size) {
+async function readEdges(file, size) {
   let c = edgeCache.get(file)
   if (!c || size < c.offset) c = { offset: 0, pending: new Map(), jobs: [], prs: [], names: {} }
   if (size > c.offset) {
-    c.offset = await readLinesFrom(file, c.offset, (line) => {
+    edgeDirty = true
+    c.offset = await readLinesMatching(file, c.offset, EDGE_LINES, (line) => {
       if (line.startsWith('{"type":"pr-link"') || line.startsWith('{"type":"custom-title"') || line.startsWith('{"type":"ai-title"') || line.startsWith('{"type":"agent-name"') || line.startsWith('{"type":"agent-color"')) {
         let r
         try { r = JSON.parse(line) } catch { return }
@@ -194,6 +216,75 @@ async function spawnEdges(file, size) {
   }
   edgeCache.set(file, c)
   return c
+}
+
+const EDGE_LINES = {
+  prefixes: ['{"type":"pr-link"', '{"type":"custom-title"', '{"type":"ai-title"', '{"type":"agent-name"', '{"type":"agent-color"'],
+  needles: ['--bg', 'claude attach ', 'claude logs ', 'claude stop ', 'backgrounded \u00b7'],
+}
+
+// The first pass over a big history (many GB) must not hold up a scan, nor starve its other file
+// reads. A scan reads small stretches itself (new records of a live transcript) and hands big ones
+// (a first read) to one background worker that starts after the scan; until it has caught up the
+// cache is partial, and it is saved next to the other data so a restart does not repeat the pass.
+const EDGE_INLINE_BYTES = 8 * 1024 * 1024
+const edgeRuns = new Map() // file -> promise of its pass in flight
+const edgeQueue = []
+let edgeActive = false
+let edgeSaveTo = ''
+let edgeLoaded = Promise.resolve()
+let edgeSaving = false
+let edgeDirty = false
+
+function edgePass(file, size) {
+  let p = edgeRuns.get(file)
+  if (!p) { p = readEdges(file, size).catch(() => {}).finally(() => edgeRuns.delete(file)); edgeRuns.set(file, p) }
+  return p
+}
+function queueEdges(list, onDone) {
+  for (const t of list) if (!edgeRuns.has(t.file) && !edgeQueue.some((q) => q.file === t.file)) edgeQueue.push({ file: t.file, size: t.size })
+  edgeDone = onDone
+  pumpEdges()
+}
+let edgeDone = null
+async function pumpEdges() {
+  if (edgeActive) return
+  edgeActive = true
+  try {
+    while (edgeQueue.length) { const q = edgeQueue.shift(); await edgePass(q.file, q.size) }
+  } finally { edgeActive = false }
+  edgeDone?.()
+}
+
+/** Keep (and reload) the per-transcript edge cache in `dir`, so a restart does not re-read every transcript. */
+export function configureCache(dir) {
+  edgeSaveTo = dir ? path.join(dir, 'transcript-edges.json') : ''
+  if (!edgeSaveTo) return
+  const file = edgeSaveTo
+  edgeLoaded = fsp.readFile(file, 'utf8').then((text) => {
+    const d = JSON.parse(text)
+    if (d?.v !== 1) return
+    for (const [f, e] of Object.entries(d.files || {})) {
+      if (edgeCache.has(f) || !Number.isFinite(e?.offset)) continue
+      edgeCache.set(f, { offset: e.offset, pending: new Map(e.pending || []), jobs: e.jobs || [], prs: e.prs || [], names: e.names || {}, ...(e.color && { color: e.color }) })
+    }
+  }).catch(() => {})
+}
+async function saveEdges(keep) {
+  if (!edgeSaveTo || edgeSaving || !edgeDirty) return
+  edgeSaving = true
+  edgeDirty = false
+  try {
+    const files = {}
+    for (const f of keep) {
+      const c = edgeCache.get(f)
+      if (c) files[f] = { offset: c.offset, pending: [...c.pending], jobs: c.jobs, prs: c.prs, names: c.names, color: c.color || null }
+    }
+    await fsp.mkdir(path.dirname(edgeSaveTo), { recursive: true })
+    const tmp = `${edgeSaveTo}.${process.pid}.tmp`
+    await fsp.writeFile(tmp, JSON.stringify({ v: 1, files }), { mode: 0o600 })
+    await fsp.rename(tmp, edgeSaveTo)
+  } catch { /* a cache: losing it only costs a re-read */ } finally { edgeSaving = false }
 }
 
 /**
@@ -343,19 +434,34 @@ async function readJobs() {
   return jobs
 }
 
+/** `fn` over `items`, at most `limit` at a time, results in order (file reads in parallel, not one by one). */
+async function pmap(items, fn, limit = 16) {
+  const out = new Array(items.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]) }
+  }))
+  return out
+}
+
 async function listTranscripts() {
   const out = new Map()
-  for (const dir of await listDirs(path.join(home(), 'projects'))) {
-    for (const file of await listFiles(dir, (n) => n.endsWith('.jsonl'))) {
+  const dirs = await listDirs(path.join(home(), 'projects'))
+  const lists = await pmap(dirs, async (dir) => {
+    const files = await listFiles(dir, (n) => n.endsWith('.jsonl'))
+    return Promise.all(files.map(async (file) => {
       const sid = path.basename(file, '.jsonl')
+      if (!UUID.test(sid)) return null
       const st = await fsp.stat(file).catch(() => null)
-      if (st && UUID.test(sid)) out.set(sid, { sid, file, dir, size: st.size, mtime: st.mtimeMs, stamp: `${st.mtimeMs}:${st.size}` })
-    }
-  }
+      return st && { sid, file, dir, size: st.size, mtime: st.mtimeMs, stamp: `${st.mtimeMs}:${st.size}` }
+    }))
+  })
+  for (const t of lists.flat()) if (t) out.set(t.sid, t)
   return out
 }
 
 /** Subagents and in-process teammates: `<project>/<sessionId>/subagents/agent-<id>.jsonl` (+ .meta.json). */
+const SUBS = Symbol('subagents')
 async function subagentsOf(t, parent, parentLive, now) {
   const parentId = parent.id
   const out = []
@@ -369,6 +475,10 @@ async function subagentsOf(t, parent, parentLive, now) {
     const f = await tailFacts(file, `${st.mtimeMs}:${st.size}`, false)
     const teammate = Boolean(meta.teamName)
     const fresh = now - st.mtimeMs < ACTIVE_MS
+    // Terminated by the API (the usage limit, a 429, any other API error): its transcript ends on the
+    // synthetic error record. The CLI still marks it `finished`, but it died mid-task: not "Done".
+    // Only the parent can resume it (SendMessage); a later record (resumed) clears this.
+    const killed = f.terminated && !meta.stoppedByUser
     out.push({
       // Server-private (not in the API): its own transcript, and the model it asked for ("sonnet").
       transcriptFile: file,
@@ -383,7 +493,7 @@ async function subagentsOf(t, parent, parentLive, now) {
       cwd: meta.worktreePath || parent.cwd,
       parentId,
       // In-process: a teammate lives as long as its lead's process; a subagent while it is writing.
-      live: parentLive && (teammate || fresh),
+      live: !killed && parentLive && (teammate || fresh),
       lastActivityAt: st.mtimeMs,
       sizeBytes: st.size,
       promptAt: f.promptAt,
@@ -393,7 +503,11 @@ async function subagentsOf(t, parent, parentLive, now) {
       needsUserSource: 'tool',
       prompt: f.evidence?.prompt || null,
       waitingOn: parentLive ? f.evidence : null,
-      lifecycle: meta.finished || meta.stoppedByUser ? 'done'
+      ...(killed && {
+        errorReason: f.limit ? f.limit.reason : f.apiErrorReason.replace(/^API error/, 'Stopped by an API error'),
+        limitStop: { at: f.apiErrorAt || st.mtimeMs, resetsAt: f.limit?.resetsAt ?? null, kind: f.limit ? 'limit' : 'api' },
+      }),
+      lifecycle: killed ? 'failed' : meta.finished || meta.stoppedByUser ? 'done'
         // An idle teammate lives in its lead's process; without it, it is closed, not waiting.
         : f.turnEnded ? (teammate ? (parentLive ? 'idle' : 'closed') : 'done')
         : parentLive && fresh ? 'running' : 'closed',
@@ -412,8 +526,10 @@ export async function scan(now = Date.now()) {
   // Continuations of one job share their first record; trust that only when exactly one job does.
   const metas = new Map()
   const firstUuidJobs = new Map()
+  const heads = await pmap([...transcripts.values()], (t) => headMeta(t.file, t.sid, t.stamp))
+  let hi = 0
   for (const t of transcripts.values()) {
-    const m = await headMeta(t.file, t.sid, t.stamp)
+    const m = heads[hi++]
     metas.set(t.sid, m)
     const j = jobBySession.get(t.sid)
     if (j && m.firstUuid) firstUuidJobs.set(m.firstUuid, (firstUuidJobs.get(m.firstUuid) || new Set()).add(j))
@@ -445,8 +561,14 @@ export async function scan(now = Date.now()) {
 
   // Spawn edges -> parent per launched job. A job created before the call was relaunched, not spawned.
   const parentOfJob = new Map()
+  await edgeLoaded
+  const keep = [...transcripts.values()].map((t) => t.file)
+  const behind = (t) => t.size - (edgeCache.get(t.file)?.offset ?? 0)
+  const small = [...transcripts.values()].filter((t) => !edgeRuns.has(t.file) && behind(t) <= EDGE_INLINE_BYTES)
+  await pmap(small, (t) => edgePass(t.file, t.size))
+  const big = [...transcripts.values()].filter((t) => behind(t) > EDGE_INLINE_BYTES).sort((a, b) => b.mtime - a.mtime)
   for (const t of transcripts.values()) {
-    for (const [short, at] of (await spawnEdges(t.file, t.size)).jobs) {
+    for (const [short, at] of edgeCache.get(t.file)?.jobs || []) {
       const child = jobShort.get(short)
       const parent = agentIdOf(t.sid)
       const created = Date.parse(child?.createdAt) || 0
@@ -454,6 +576,7 @@ export async function scan(now = Date.now()) {
     }
   }
 
+  await pmap([...transcripts.values()], (t) => tailFacts(t.file, t.stamp))
   const facts = []
   const fromTranscript = async (t) => ({ meta: metas.get(t.sid) || {}, f: await tailFacts(t.file, t.stamp) })
 
@@ -576,7 +699,7 @@ export async function scan(now = Date.now()) {
       fanAgents: (Array.isArray(j.fan) ? j.fan : []).filter((x) => x?.kind === 'agent').length,
     }
     facts.push(agent)
-    if (current) facts.push(...(await subagentsOf(current, agent, isLive, now)))
+    if (current) facts.push({ [SUBS]: subagentsOf(current, agent, isLive, now) })
   }
 
   for (const t of transcripts.values()) {
@@ -621,8 +744,15 @@ export async function scan(now = Date.now()) {
       promptIsPrep: f.promptIsPrep,
     }
     facts.push(agent)
-    if (now - t.mtime < REST_MS) facts.push(...(await subagentsOf(t, agent, isLive, now)))
+    if (now - t.mtime < REST_MS) facts.push({ [SUBS]: subagentsOf(t, agent, isLive, now) })
   }
+  // Subagent lists were started as each agent was found and ran side by side; put them back in place.
+  const flat = []
+  for (const f of facts) { if (f[SUBS]) flat.push(...(await f[SUBS])); else flat.push(f) }
+  facts.length = 0
+  facts.push(...flat)
+  if (big.length) queueEdges(big, () => saveEdges(keep))
+  else saveEdges(keep)
   // Counted, not listed: which files is nobody's business but the user's terminal.
   facts.unreadable = [...transcripts.values()].filter((t) => metas.get(t.sid)?.unreadable).length
   // Conversation search (names and titles only, never prompt text): every transcript, resting or

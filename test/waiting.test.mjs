@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readWaitEvidence, currentWait, jobWaitEvidence, WAIT_TTL_MS } from '../server/waiting.mjs'
 
-const now = Date.now()
+const now = Date.parse('2026-01-01T00:00:00.000Z') // fixed: a real clock's epoch-ms can contain "123"
 const stamp = new Date(now).toISOString()
 const claudeCall = (name, input = {}) => ({ type: 'assistant', timestamp: stamp, message: { content: [{ type: 'tool_use', id: 'call', name, input }] } })
 const codexCall = (name, args = {}) => ({ type: 'response_item', timestamp: stamp, payload: { type: 'function_call', call_id: 'call', name, arguments: JSON.stringify(args) } })

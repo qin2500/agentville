@@ -31,6 +31,13 @@ function statusFor(agent, kids) {
   const all = [agent, ...kids];
   const helpers = kids.filter(k => k.bucket === 'building').length;
   if (all.some(needsInput)) return { status: 'Waiting on you', tone: 'needs', helpers };
+  // Helpers the API terminated (usage limit, API error): they look finished but died mid-task.
+  const stopped = kids.filter(k => k.bucket === 'stalled' && k.limitStop);
+  if (stopped.length) {
+    const n = stopped.length, limits = stopped.filter(k => k.limitStop.kind !== 'api').length;
+    const by = limits === n ? 'the usage limit' : limits ? 'the usage limit or API errors' : n === 1 ? 'an API error' : 'API errors';
+    return { status: `${n} sub-agent${n === 1 ? '' : 's'} stopped by ${by}`, tone: 'error', helpers };
+  }
   if (agent.severity === 'error') return { status: 'Error', tone: 'error', helpers };
   if (all.some(a => a.bucket === 'building')) return { status: 'Working' + (helpers > 0 ? ` (${helpers} helper${helpers === 1 ? '' : 's'})` : ''), tone: 'working', helpers };
   const prs = agent.prs || [];

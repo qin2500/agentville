@@ -76,6 +76,22 @@ export const NAME_MAX = 80
 export const TITLE_MAX = 160
 
 const SUB_KINDS = new Set(['subagent', 'teammate', 'thread'])
+
+/** A fact's `limitStop` ({ at, resetsAt|null, kind: 'limit'|'api' }), sanitized, or null. */
+export function limitStopOf(a) {
+  const s = a?.limitStop
+  if (!s || typeof s !== 'object' || !SUB_KINDS.has(a.kind)) return null
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : null)
+  return { at: n(s.at) || 0, resetsAt: n(s.resetsAt), kind: s.kind === 'api' ? 'api' : 'limit' }
+}
+/** "3 sub-agents stopped by the usage limit" (or by an API error). */
+export function subsStopped(list) {
+  const n = list.length
+  const limits = list.filter((s) => s.kind === 'limit').length
+  const by = limits === n ? 'the usage limit' : limits ? 'the usage limit or API errors' : n === 1 ? 'an API error' : 'API errors'
+  return `${n} sub-agent${n === 1 ? '' : 's'} stopped by ${by}`
+}
+const SUBS_STOPPED = /^\d+ sub-agents? stopped by /
 const ROLES = new Set(['boss', 'lead', 'sub', 'solo'])
 
 /** Rules 1-4, 6, 7 for one agent, ignoring children. Rule 5 is applied in `build`. */
@@ -151,6 +167,20 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
   }
   facts.forEach((a) => resolve(a.id))
 
+  // Children the API terminated (usage limit, API error): the parent is not waiting on them any more,
+  // it has to resume them. Shown on the parent unless it is working or already stalled on its own.
+  const stoppedKids = new Map()
+  for (const [id, p] of parentOf) {
+    const s = p && limitStopOf(byId.get(id))
+    if (s && final.get(id).bucket === 'stalled') stoppedKids.set(p, [...(stoppedKids.get(p) || []), s])
+  }
+  for (const [p, list] of stoppedKids) {
+    const b = final.get(p)
+    const own = b.bucket === 'stalled' && ![REASONS.turn, REASONS.dead, REASONS.stuck].includes(b.reason)
+    if (b.bucket === 'building' || b.bucket === 'resting' || own) continue
+    final.set(p, { bucket: 'stalled', reason: subsStopped(list), reasonSource: 'children', since: Math.max(...list.map((s) => s.at)) || b.since })
+  }
+
   const hasKids = (id) => children.get(id).length > 0 || (byId.get(id).fanAgents || 0) > 0
   const detected = new Map()
   const roleOf = (id, depth = 0) => {
@@ -194,9 +224,14 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       reason: c.reason,
       reasonSource: c.reasonSource,
       // Within stalled: a failure or crash is an error; anything else wants the user's attention.
-      severity: c.bucket !== 'stalled' ? null : [REASONS.failed, REASONS.dead].includes(c.reason) || /^(Retrying — )?API error\b|^Usage limit\b|^Couldn't start\b/.test(c.reason) ? 'error' : 'attention',
+      severity: c.bucket !== 'stalled' ? null : [REASONS.failed, REASONS.dead].includes(c.reason) || /^(Retrying — )?API error\b|^Usage limit\b|^Couldn't start\b|^Stopped by (?:usage limit|an API error)\b/.test(c.reason) || SUBS_STOPPED.test(c.reason) ? 'error' : 'attention',
       // Stalled on a dialog it can't get past without a click: 'permission' | 'question' | 'plan'.
       prompt: c.bucket === 'stalled' && c.prompt ? c.prompt : null,
+      // A sub-agent the API terminated: when, and when the limit resets (ms, or null).
+      limitStop: c.bucket === 'stalled' ? limitStopOf(a) : null,
+      // On a parent: its children the API terminated, { count, limit (how many by the usage limit), resetsAt }.
+      subsStopped: stoppedKids.has(a.id) ? { count: stoppedKids.get(a.id).length, limit: stoppedKids.get(a.id).filter((s) => s.kind === 'limit').length,
+        resetsAt: Math.max(0, ...stoppedKids.get(a.id).map((s) => s.resetsAt || 0)) || null } : null,
       since: Math.round(c.since || 0),
       lastActivityAt: Math.round(a.lastActivityAt || 0),
       sizeBytes: a.sizeBytes || 0,
