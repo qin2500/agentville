@@ -1,6 +1,6 @@
 # Village mods: the world game as a swappable pack
 
-Status: design document. This extends `docs/village-engine-v2.md`. Decisions D1–D5 there were accepted as
+Status: design background only. The shipped system differs: worlds are trusted in-process JS with no sandbox, pack file or postMessage relay. For the real rules read `docs/mod-boundary.md`; for a step-by-step guide read `docs/agents/mod-playbook.md`. This extends `docs/village-engine-v2.md`. Decisions D1–D5 there were accepted as
 recommended.
 
 Goal: the game is easily moddable, so someone can run Agentville with a village that is completely different: different ways

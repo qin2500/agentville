@@ -63,7 +63,7 @@ case-insensitive, in each file under `web/src/engine/**`:
 
 - Files inside `mods/<id>/`.
 - Its own line in `.github/CODEOWNERS` (`/mods/<id>/ @handle`).
-- Tests for the mod, in `test/` with the name `mod-<id>-*.test.mjs`, if maintainers allow it.
+- Nothing outside `mods/<id>/` and its one CODEOWNERS line. Tests for a world live inside `mods/<id>/` if needed; `test/` stays maintainer-owned.
 
 It may not touch `web/src/engine/**`, another mod, `tools/`, `package.json` or the ratchet json. If a world needs something
 the engine does not offer, open an issue or a separate engine PR: the engine change is reviewed on its own.
