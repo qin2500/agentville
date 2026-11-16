@@ -30,7 +30,7 @@ const OPTS = { now: NOW, seed: 7, forcedTier: null, forcedStyle: null };
 const PROJECTS = ['alpha', 'beta', 'gamma'];
 const PER_PROJECT = ['growth', 'lots', 'crowns', 'style'];
 
-const WORLD_SHAPE_HOOKS = new Set(['layout', 'scatter']);
+const WORLD_SHAPE_HOOKS = new Set(['layout', 'scatter', 'styleNeighbours']);   // styleNeighbours runs after the layout (M6), not in the rules phase
 function spyMod(id = 'agentville.fantasy') {
   const mod = resolveMod(id), calls = {}, planArgs = [];
   const hooks = {};

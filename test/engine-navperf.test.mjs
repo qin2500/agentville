@@ -6,6 +6,9 @@ import './support/ensure-mods-index.mjs';
 //      equal the digests the pre-NAVPERF implementation produced (base 25749ba) for the same inputs. The two nav.path
 //      digests were re-pinned once, for the nav owner's capped-end-leg rule (see the last test): pairs whose end leg
 //      runs out of nodes now get null instead of the 20000-node grid fallback; every other path is unchanged;
+//      The harbour and stress digests were re-pinned again for M5 P1 (the harbour plan): pier and quay decks now stamp
+//      walkable ground + path road over the water (VenueDef deck: true), and the bigger harbour adds cranes, warehouses
+//      and a lighthouse; M5 integration re-pinned both once more (the harbour follows the fixtures' dock total and level); the town's tiles are unchanged (test/mod-fantasy-layout sites pins) and the synthetic digests too; re-pinned after merging M4 (central square: tree + lanterns block tiles);
 //   2. budgets on the stress fixture (100 projects): road graph build <= 15 ms warm median, nav.path <= 0.3 ms average
 //      and <= 2 ms p99, asserted only with VA_PERF=1; without it only 10x sanity bounds run. Numbers go to diagnostics.
 // Synthetic data only. Run: node --test test/engine-navperf.test.mjs
@@ -24,10 +27,15 @@ const { viewFromFixture, loadFixture } = await import('./engine-support/world-vi
 const SEED = 7;
 const GRAPH_BUDGET_MS = 15, PATH_BUDGET_MS = 0.3, PATH_P99_MS = 2;
 
+// The two nav.path digests were re-pinned once more for the fantasy countryside (315f485, b866786), which are cosmetic and
+// recomputed every build: the road graph digests are unchanged, and so are road, lot, edges, ground, cover and slots. Only
+// the wild scatter moved (new trees/rocks/bushes change which off-road tiles are occupied) and forest-floor tiles became
+// walkable meadow (class 5-11, wild cost like grass), so off-road legs of some paths differ. Checked tile by tile against
+// c1b443a: every cost difference is an occupancy change or a forest-floor tile (255) that became meadow (cost 3).
 // Digests produced by the implementation at 25749ba (before NAVPERF) with exactly the procedures below.
 const GOLDEN = {
-  harbour: { graph: '049d66927bc75ff727b8e444a61012d3a959a376', paths: '7db5ffe100746e8aae5b6930571cb2c143cf3b42' },
-  stress: { graph: 'ff23b7bb87b2ff40d41f2f703ad3138dc64e549e', paths: '777b3ae2cdee18df3fc3b81e53196fee9ebca143' },
+  harbour: { graph: 'b7d133e3432a2e6debb0a126b638987f957a2607', paths: '0c6cc08949970dce685473ec5cd5c5ef64c01434' },
+  stress: { graph: '31ee65469fb924971d471448a1b24844f93d864f', paths: '3d56f3b6e4f56fbb18c66dda61503e6d26b632c9' },
   synthetic: { graphs: '2158d3ed1ca6ea93804dffa5b67c081dd042861c', astar: 'e20f5782ca8d7fceda8f3b163ea40581d8c5b790' },
 };
 
@@ -166,7 +174,7 @@ test('[stress] VA_PERF: nav.path within 0.3 ms average and 2 ms p99', { skip: no
   assert.ok(r.p99 <= PATH_P99_MS, `p99 ${r.p99} ms`);
 });
 
-// Capped end legs (nav owner's rule, 2026-11-13): when every bounded leg on one side runs out of nodes, path() returns
+// Capped end legs (nav rule): when every bounded leg on one side runs out of nodes, path() returns
 // null without the 20000-node grid fallback, remembers the failure per end tile and grid stamp, and forgets it on
 // invalidate(). Fake N1/N2 (the shape test/engine-navindex-impl.test.mjs uses), so this is about index.js alone.
 test('capped end leg: null without the grid fallback, cached, cleared by invalidate()', () => {

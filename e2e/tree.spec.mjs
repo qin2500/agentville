@@ -51,7 +51,7 @@ const focusedId = (page) => page.evaluate(() => document.activeElement?.dataset?
 
 async function open(page, { panel = 'full', view = 'tree' } = {}) {
   await page.goto('/')
-  await page.evaluate(([p, v]) => { localStorage.clear(); localStorage.setItem('va.panel', JSON.stringify(p)); localStorage.setItem('va.view', JSON.stringify({ docked: v, full: v })) }, [panel, view])
+  await page.evaluate(([p, v]) => { localStorage.clear(); localStorage.setItem('va.engine', '1'); localStorage.setItem('va.panel', JSON.stringify(p)); localStorage.setItem('va.view', JSON.stringify({ docked: v, full: v })) }, [panel, view])
   await page.goto('/')
   await expect(page.locator('#conn')).toHaveText(/Live/)
   if (view === 'tree') await expect(page.locator('.tv [role="treeitem"]').first()).toBeVisible()

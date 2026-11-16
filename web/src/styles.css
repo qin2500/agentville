@@ -227,6 +227,9 @@ a.chip:hover { color: var(--text); text-decoration: underline; }
 .pop label { display: flex; gap: var(--space-2); align-items: center; padding: 2px 0; cursor: pointer; }
 .pop label .n { margin-left: auto; color: var(--text-muted); }
 .pop input[type="checkbox"] { accent-color: var(--focus); margin: 0; }
+.pop .settings-advanced summary { cursor: pointer; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+.pop .settings-advanced[open] summary { margin-bottom: 4px; }
+.pop .settings-advanced .helper { margin: 2px 0 0; }
 .pop ul { display: grid; gap: var(--space-2); }
 .toast { position: fixed; z-index: 30; left: 50%; bottom: var(--space-6); transform: translateX(-50%); background: var(--surface-3); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--space-2) var(--space-3); display: flex; gap: var(--space-3); align-items: center; box-shadow: 0 8px 24px rgb(0 0 0 / .45); }
 

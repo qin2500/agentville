@@ -1,24 +1,30 @@
 // Venues: where a world's PRs go (MOD-READY P6; api.js VenueSite, VenueDef). Pure, no DOM.
 // The layout names venue SITES (LayoutResult.venues: id -> { kind, rect, anchor, data? }); the mod defines venue KINDS
 // (mod.venues: kind -> VenueDef). For every site whose kind has a def, buildVenues:
-//   1. computes the level: def.level({ prs, states }, prev, ctx), prev = persisted.venues[id].level (same kind);
+//   1. computes the level: def.level({ prs, states, merged, rank }, prev, ctx), prev = persisted.venues[id].level (same
+//      kind); with def.shrinkAfterMs a lower level waits that long (ctx.time.now) before it is taken (the low-since time is
+//      persisted.venues[id].low);
 //   2. plans: def.plan({ site, level }, ctx), memoised on kind + level + site rect/anchor/data + seed;
 //   3. validates: objects stay inside site.rect, nodes and berths inside the grid; the rest is dropped with lint;
-//   4. stamps the objects (kind 'venue' unless the plan says 'prop'/'decal'/'tree');
+//   4. stamps the objects (kind 'venue' unless the plan says 'prop'/'decal'/'tree'); a walk 'floor' object with deck: true
+//      also makes its footprint walkable ground: LAYOUT_GROUND.VENUE (over-water) where the ground is empty and ROAD.PATH
+//      where there is no road, so actors and the road graph reach it;
 //   5. sets world.venues[id] = { id, kind, tx, ty, rect, level, nodes, berths } (frozen; tx/ty = the site anchor, which
 //      is where resolvePlace('venue:<id>') goes).
 // Berths are assigned per poll with no rebuild (assignBerths / venueAssignments); def.assign may replace the default,
-// which is stable first-free with open PRs first. Mod output is untrusted: read through own data properties only,
+// which is stable first-free with open PRs first (def.assign gets a 5th argument: prId -> { model?, state? }). Mod output is untrusted: read through own data properties only,
 // copied into engine-built objects; lints never echo a mod-supplied value.
 import { validateObject, WALK } from '../core/objects.js';
-import { representPr } from '../sim/represent-world.js';
+import { LAYOUT_GROUND, ROAD } from '../core/grid.js';
+import { representPr, representPrKept as specKept } from '../sim/represent-world.js';
 
 export const VENUE_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;          // site ids double as resolvePlace 'venue:<id>' places
 const NODE_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const BERTH_RE = /^[a-z0-9][a-z0-9_.-]{0,31}$/i;
 const LOCAL_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,47}$/i;
 const MODEL_RE = /^[a-z][a-z0-9._-]{0,31}$/;
-export const LEVEL_MAX = 16;
+/** Widened from 16 (additive): a level may pack more than one dimension (the fantasy mod packs size and rank). */
+export const LEVEL_MAX = 63;
 export const MAX_OBJECTS = 256, MAX_NODES = 64, MAX_BERTHS = 256;
 /** Object kinds a venue plan may stamp. */
 export const VENUE_OBJECT_KINDS = Object.freeze(['venue', 'prop', 'decal', 'tree']);
@@ -39,6 +45,7 @@ const defOf = (mod, kind) => {
 const cleanRect = r => (r && isInt(r.x) && isInt(r.y) && isInt(r.w) && isInt(r.h) && r.w > 0 && r.h > 0 ? { x: r.x, y: r.y, w: r.w, h: r.h } : null);
 const inRect = (r, x, y) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 const inGrid = (grid, x, y) => (grid ? grid.inBounds(x, y) : true);
+const finite = v => typeof v === 'number' && Number.isFinite(v);
 
 // ---------------------------------------------------------------- load and level
 
@@ -46,18 +53,44 @@ const inGrid = (grid, x, y) => (grid ? grid.inBounds(x, y) : true);
  * @returns {Array<{ id: string, state: string, spec: object }>} */
 export function prSpecsOf(input, mod, ctx = {}) {
   const prs = Array.isArray(input?.prs) ? input.prs : [];
+  // PERF M7 (poll path): the same frozen records as the last call (mod/input.js reuse) give the same list. Kept only when
+  // every spec came from representPr's per-record memo, which is what makes the answer a function of the records alone.
+  const last = mod && typeof mod === 'object' ? LAST_SPECS.get(mod) : null;
+  if (last && last.prs.length === prs.length && last.prs.every((p, i) => p === prs[i])) {
+    if (Array.isArray(ctx?.lint)) for (const e of last.lint) ctx.lint.push(e);
+    return last.out;
+  }
+  const lint = [], keepIt = prs.every(p => p && typeof p === 'object' && Object.isFrozen(p));
+  const out = buildSpecs(prs, mod, keepIt ? { ...ctx, lint } : ctx);
+  if (keepIt) {
+    if (Array.isArray(ctx?.lint)) for (const e of lint) ctx.lint.push(e);
+    if (mod && typeof mod === 'object' && prs.every(p => specKept(p, mod))) LAST_SPECS.set(mod, { prs: [...prs], out, lint });
+  }
+  return out;
+}
+const LAST_SPECS = new WeakMap();
+function buildSpecs(prs, mod, ctx) {
   const out = prs.map((pr, i) => ({ id: typeof pr?.id === 'string' ? pr.id : '', state: pr?.state, spec: representPr(pr, mod, ctx), i }))
     .filter(p => p.id);
   out.sort((a, b) => (PRIORITY[a.state] ?? 4) - (PRIORITY[b.state] ?? 4) || a.i - b.i);
-  return out.map(({ id, state, spec }) => ({ id, state, spec }));
+  return Object.freeze(out.map(({ id, state, spec }) => Object.freeze({ id, state, spec })));
 }
 
-/** The load a venue kind carries: prs = every PR represented at a venue of this kind; states: the same, by state. */
-export function loadOf(specs, kind) {
+/** Lifetime PR totals from WorldInput.history (api.js): merged = PRs ever merged, rank = the host's lifetime level.
+ *  0 for anything missing or not a non-negative integer. */
+export function historyOf(input) {
+  const h = own(input, 'history'), m = own(h, 'merged'), r = own(h, 'rank');
+  return { merged: isInt(m) && m >= 0 ? m : 0, rank: isInt(r) && r >= 0 ? Math.min(r, LEVEL_MAX) : 0 };
+}
+
+/** The load a venue kind carries: prs = every PR represented at a venue of this kind; states: the same, by state;
+ *  merged, rank: the world's lifetime totals (historyOf; 0 when the host gives none), the same for every kind. */
+export function loadOf(specs, kind, history = null) {
   const states = { building: 0, loading: 0, merged: 0, closed: 0 };
   let prs = 0;
   for (const p of specs) if (p.spec.as === 'venue' && p.spec.venue === kind) { prs++; if (p.state in states) states[p.state]++; }
-  return Object.freeze({ prs, states: Object.freeze(states) });
+  const h = history || { merged: 0, rank: 0 };
+  return Object.freeze({ prs, states: Object.freeze(states), merged: h.merged, rank: h.rank });
 }
 
 function runLevel(def, load, prev, ctx, lint, id) {
@@ -75,15 +108,39 @@ const prevLevel = (persisted, id, kind) => {
   return p && (p.kind === undefined || p.kind === kind) && isInt(p.level) ? p.level : null;
 };
 
+/** def.shrinkAfterMs: a positive finite number of ms, else 0 (no hold: the level is taken at once, as before). */
+export const shrinkAfterOf = def => { const v = own(def, 'shrinkAfterMs'); return finite(v) && v > 0 ? v : 0; };
+
+/**
+ * The venue's level this poll, with the shrink hold. A level at or above prev is taken at once. With def.shrinkAfterMs a
+ * lower one is taken only once it has been lower for more than that long (ctx.time.now; no clock: at once); until then
+ * prev is kept. `low` is the low-since time to persist (persisted.venues[id].low), null when the venue is not low.
+ * @returns {{ level: number, low: number|null }}
+ */
+export function heldLevel(def, kind, load, persisted, id, ctx, lint) {
+  const prev = prevLevel(persisted, id, kind), want = runLevel(def, load, prev, ctx, lint, id);
+  const ms = shrinkAfterOf(def), now = ctx?.time?.now;
+  if (!ms || prev == null || want >= prev || !finite(now)) return { level: want, low: null };
+  const was = persisted?.venues?.[id]?.low, low = finite(was) && was <= now ? was : now;
+  return now - low > ms ? { level: want, low: null } : { level: prev, low };
+}
+
 /** A short string of every persisted venue's level for this input (the rebuild sig: a level change rebuilds).
- *  Runs only def.level, never plan. '' when there are no venues. */
+ *  Runs only def.level, never plan. '' when there are no venues. It also keeps each venue's shrink clock: it writes
+ *  persisted.venues[id].low (set when the level first wants to drop, removed when it no longer does), so the hold runs
+ *  across polls that do not rebuild. */
 export function venueSig(input, mod, persisted, ctx = {}) {
   const pv = persisted?.venues;
   if (!pv || typeof pv !== 'object') return '';
   const ids = Object.keys(pv).filter(id => VENUE_ID_RE.test(id) && defOf(mod, pv[id]?.kind)).sort();
   if (!ids.length) return '';
-  const specs = prSpecsOf(input, mod, {}), lint = [];
-  return ids.map(id => { const k = pv[id].kind; return `${id}:${runLevel(defOf(mod, k), loadOf(specs, k), prevLevel(persisted, id, k), ctx, lint, id)}`; }).join(',');
+  const specs = prSpecsOf(input, mod, {}), lint = [], hist = historyOf(input);
+  return ids.map(id => {
+    const k = pv[id].kind, h = heldLevel(defOf(mod, k), k, loadOf(specs, k, hist), persisted, id, ctx, lint);
+    // the clock is written only while the level stays; a changed level rebuilds and buildVenues writes the whole entry
+    if (h.level === prevLevel(persisted, id, k) && plainObj(pv[id]) && !Object.isFrozen(pv[id])) { if (h.low == null) delete pv[id].low; else pv[id].low = h.low; }
+    return `${id}:${h.level}`;
+  }).join(',');
 }
 
 // ---------------------------------------------------------------- plan (memoised) and its validation
@@ -117,6 +174,11 @@ function cleanPlan(raw, id, lint) {
       if (seen.has(local)) { bad('venue-object', `objects[${i}] repeats an id; dropped`); continue; }
       const walk = own(o, 'walk') ?? WALK.BLOCK, run = own(o, 'run');
       const spec = { local, kind, model, tx: own(o, 'tx'), ty: own(o, 'ty'), w: own(o, 'w') ?? 1, h: own(o, 'h') ?? 1, z: own(o, 'z') ?? 0, walk, variant: own(o, 'variant') ?? 0 };
+      const deck = own(o, 'deck');
+      if (deck !== undefined && deck !== false) {
+        if (deck !== true || walk !== WALK.FLOOR) { bad('venue-object', `objects[${i}].deck must be true on a walk 'floor' object; dropped`); continue; }
+        spec.deck = true;
+      }
       if (walk === WALK.EDGE && plainObj(run)) {
         spec.run = { dir: own(run, 'dir'), len: own(run, 'len'), side: own(run, 'side') };
         if (isInt(spec.run.len)) { spec.w = spec.run.dir === 'x' ? spec.run.len : 1; spec.h = spec.run.dir === 'y' ? spec.run.len : 1; }
@@ -191,7 +253,7 @@ export function buildVenues(world, sites, input, mod, persisted, ctx = {}, { see
   if (!plainObj(siteMap)) return { venues, lint };
   const ids = Object.keys(siteMap).filter(id => defOf(mod, siteMap[id]?.kind));
   if (!ids.length) return { venues, lint };
-  const specs = prSpecsOf(input, mod, { ...ctx, lint });
+  const specs = prSpecsOf(input, mod, { ...ctx, lint }), hist = historyOf(input);
   const { grid, objects } = world;
   persisted.venues ||= {};
   for (const id of ids) {
@@ -202,8 +264,7 @@ export function buildVenues(world, sites, input, mod, persisted, ctx = {}, { see
     const a = site.anchor, anchor = a && isInt(a.tx) && isInt(a.ty) && inGrid(grid, a.tx, a.ty) ? { tx: a.tx, ty: a.ty }
       : { tx: rect.x + (rect.w >> 1), ty: rect.y + (rect.h >> 1) };
     const clean = { kind, rect, anchor, ...(site.data !== undefined ? { data: site.data } : {}) };
-    const prev = prevLevel(persisted, id, kind);
-    const level = runLevel(def, loadOf(specs, kind), prev, ctx, lint, id);
+    const { level, low } = heldLevel(def, kind, loadOf(specs, kind, hist), persisted, id, ctx, lint);
     const plan = planOf(def, kind, level, clean, id, ctx, seed, lint);
 
     for (const s of plan.objects) {
@@ -213,7 +274,8 @@ export function buildVenues(world, sites, input, mod, persisted, ctx = {}, { see
       if (!grid || !objects) continue;
       if (objects.has(o.id)) { lint.push({ kind: 'venue-object', venue: id, reason: 'an object id is already taken; dropped' }); continue; }
       const num = objects.add(o), r = grid.stamp(o, num);
-      if (r && r.ok === false) { objects.delete(o.id); lint.push({ kind: 'venue-object', venue: id, reason: 'an object overlaps something already built; dropped' }); }
+      if (r && r.ok === false) { objects.delete(o.id); lint.push({ kind: 'venue-object', venue: id, reason: 'an object overlaps something already built; dropped' }); continue; }
+      if (s.deck) stampDeck(grid, o);
     }
     const nodes = {};
     for (const [k, n] of Object.entries(plan.nodes)) {
@@ -227,9 +289,20 @@ export function buildVenues(world, sites, input, mod, persisted, ctx = {}, { see
     }
     venues[id] = deepFreeze({ id, kind, tx: anchor.tx, ty: anchor.ty, rect, level, nodes, berths });
     const p = persisted.venues[id];
-    persisted.venues[id] = { kind, level, ...(p && p.kind === kind && plainObj(p.assign) ? { assign: p.assign } : {}) };
+    persisted.venues[id] = { kind, level, ...(p && p.kind === kind && plainObj(p.assign) ? { assign: p.assign } : {}), ...(low != null ? { low } : {}) };
   }
   return { venues, lint };
+}
+
+/** deck: true (a walk 'floor' venue object): its footprint becomes walkable ground. Empty ground becomes LAYOUT_GROUND.VENUE
+ *  (walkable over water), a tile with no road gets ROAD.PATH (the road graph reaches it). What the layout set stays. The
+ *  world's cost is baked after the venues (build.js), so nothing else is needed here. */
+function stampDeck(grid, o) {
+  for (let y = o.ty; y < o.ty + o.h; y++) for (let x = o.tx; x < o.tx + o.w; x++) {
+    if (!grid.inBounds(x, y)) continue;
+    if (grid.get('ground', x, y) === 0) grid.set('ground', x, y, LAYOUT_GROUND.VENUE);
+    if (grid.get('road', x, y) === 0) grid.set('road', x, y, ROAD.PATH);
+  }
 }
 
 // ---------------------------------------------------------------- berths (per poll, no rebuild)
@@ -252,7 +325,7 @@ export function defaultAssign(prIds, berths, prev = {}) {
 /**
  * Which berth each PR at this venue takes.
  * @param {{ id?: string, kind: string, berths: Array<{ id: string }> }} venue a world.venues entry
- * @param {Array<{ id: string, spec: object }>|Record<string, object>} prSpecs PR specs in priority order (prSpecsOf), or
+ * @param {Array<{ id: string, spec: object, state?: string }>|Record<string, object>} prSpecs PR specs in priority order (prSpecsOf), or
  *   a prId -> PrSpec record; only `as: 'venue'` specs naming this venue's kind count
  * @param {Record<string, string>} [prev] last assignment (prId -> berth id)
  * @param {{ mod?: object, ctx?: object, lint?: object[] }} [opts] mod: for def.assign; ctx: the ModCtx it gets
@@ -260,14 +333,18 @@ export function defaultAssign(prIds, berths, prev = {}) {
  */
 export function assignBerths(venue, prSpecs, prev = {}, { mod = null, ctx = {}, lint = null } = {}) {
   const list = Array.isArray(prSpecs) ? prSpecs : Object.entries(prSpecs || {}).map(([id, spec]) => ({ id, spec }));
-  const prIds = list.filter(p => p?.spec?.as === 'venue' && p.spec.venue === venue?.kind && typeof p.id === 'string').map(p => p.id);
+  const here = list.filter(p => p?.spec?.as === 'venue' && p.spec.venue === venue?.kind && typeof p.id === 'string');
+  const prIds = here.map(p => p.id);
   const berths = Array.isArray(venue?.berths) ? venue.berths : [];
   const prevClean = plainObj(prev) ? prev : {};
   const def = mod ? defOf(mod, venue.kind) : null;
   if (!def || typeof def.assign !== 'function') return defaultAssign(prIds, berths, prevClean);
   const bad = reason => { if (Array.isArray(lint)) lint.push({ kind: 'venue-assign', venue: venue.id ?? null, reason }); };
   let r;
-  try { r = def.assign(Object.freeze([...prIds]), deepFreeze(berths.map(b => ({ ...b }))), Object.freeze({ ...prevClean }), ctx); }
+  // 5th argument (additive): what each PR is, so a mod can berth by size or state. Only the PrSpec model and the state.
+  const info = Object.create(null);
+  for (const p of here) info[p.id] = Object.freeze({ ...(typeof p.spec.model === 'string' ? { model: p.spec.model } : {}), ...(typeof p.state === 'string' ? { state: p.state } : {}) });
+  try { r = def.assign(Object.freeze([...prIds]), deepFreeze(berths.map(b => ({ ...b }))), Object.freeze({ ...prevClean }), ctx, Object.freeze(info)); }
   catch { bad('assign threw; default assignment used'); return defaultAssign(prIds, berths, prevClean); }
   if (!plainObj(r)) { bad('assign must return a prId -> berth id record; default assignment used'); return defaultAssign(prIds, berths, prevClean); }
   const ids = new Set(prIds), valid = new Set(berths.map(b => b.id)), used = new Set(), out = {};
@@ -292,12 +369,15 @@ export function venueAssignments(world, input, mod, persisted, ctx = {}) {
   const lint = Array.isArray(ctx.lint) ? ctx.lint : null;
   const specs = prSpecsOf(input, mod, lint ? { ...ctx, lint } : ctx);
   const taken = new Set();
+  let specOf = null;   // PR id -> spec (the last spec for an id, as before), built once and only when a venue assigned any
   for (const id of Object.keys(vs).sort()) {
     const v = vs[id], pv = persisted?.venues?.[id];
-    const a = assignBerths(v, specs.filter(p => !taken.has(p.id)), pv?.assign, { mod, ctx, lint });
+    const a = assignBerths(v, taken.size ? specs.filter(p => !taken.has(p.id)) : specs, pv?.assign, { mod, ctx, lint });
     out.venues[id] = a;
     if (pv) pv.assign = { ...a };
-    const byId = new Map(v.berths.map(b => [b.id, b])), specOf = new Map(specs.map(p => [p.id, p.spec]));
+    if (!Object.keys(a).length) continue;
+    specOf ||= new Map(specs.map(p => [p.id, p.spec]));
+    const byId = new Map(v.berths.map(b => [b.id, b]));
     for (const [pr, berth] of Object.entries(a)) {
       taken.add(pr);
       const b = byId.get(berth), s = specOf.get(pr);

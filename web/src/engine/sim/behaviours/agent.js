@@ -4,11 +4,13 @@
 // WHERE an agent should be comes from ctx.place(spec.place, a) (sim/represent.js resolvePlace, which also reserves the
 // slot). This module decides the target point, asks the sim to move there (a.path + a.move, see sim/actor.js), and
 // picks the pose, idle cues and effects. It never changes x/y itself: the world-sim movement system does, applying D4
-// (walk only <= 40 tiles, on screen, motion allowed; walks > 6 s cut by a fade; stalled/error never walk).
+// (world-sim shouldWalk: walk only if the trip takes <= 6 s, on screen, motion allowed; else fade; stalled/error never
+// walk). A world rebuild re-plans every agent, but one whose slot / home / target is still there and legal keeps it.
 // Stalled and error agents always fade (spec.walk is false for them), and once settled they never move or re-plan.
 // Deterministic: all timers advance by dt; randomness only via ctx.rand.
 import { ENGINE_BEHAVIOUR, animOf } from '../represent.js';
 import { FLAGS } from '../actor.js';
+import { isLegalTile, nearestLegal } from '../legal.js';
 
 export const FADE_S = 0.3;            // = world-sim FADE_S
 export const WALK_MAX_S = 6;          // = world-sim WALK_MAX_S
@@ -48,6 +50,10 @@ export function specFor(a) {
 const ghostOf = (key, spec) => spec.ghost ?? key === 'resting:doorstep';
 const indoorsOf = (key, spec) => !ghostOf(key, spec) && (spec.indoors ?? (key === 'resting' || spec.pose === 'indoors'));
 
+// Every agent is drawn: there is no yard cap. When a home's yard has no free stand slot nearby, the agent spills onto a
+// free walkable tile beside the yard (nav/slots.js claimSpill), never a door tile, and never on another actor's slot.
+const SPILL_NEAR = 5;      // a free slot farther than this from the wanted spot counts as "no room": spill instead
+
 // Sub-slot offsets inside a tile (feet position), sub 0..3.
 const SUB = [[0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7]];
 const feetOf = (tx, ty, sub = -1) => (sub >= 0 && sub < 4
@@ -61,6 +67,8 @@ const between = (ctx, [lo, hi], ...keys) => lo + (hi - lo) * rnd(ctx, ...keys);
 
 /** Resolve the target: { x, y, tx, ty, slotId, indoors, face } or null (stay where you are). Holds at most one slot. */
 function resolveTarget(a, key, spec, ctx) {
+  const prevSpill = ctx.slots?.heldBy?.(a.id);
+  const keepSpill = prevSpill && String(prevSpill.id).startsWith('spill:') ? prevSpill.id : null;   // stable across polls
   ctx.slots?.release?.(a.id);
   a.slot = undefined;
   let p = ctx.place ? ctx.place(spec.place, a) : null;
@@ -71,8 +79,17 @@ function resolveTarget(a, key, spec, ctx) {
     if (d) p = { tx: d.tx, ty: d.ty, slotKind: 'stand' };
     else if (home) p = { tx: home.tx, ty: home.ty, slotKind: 'stand' };
   }
-  const indoors = indoorsOf(key, spec);
-  if (!p) return null;
+  let indoors = indoorsOf(key, spec);
+  if (!p) {
+    // no place and no home (e.g. a resting agent the layout gave no house): a legal stand spot near its village
+    // centre, outdoors (agents stay visible), never the raw centre tile, which may be built over
+    const v = (ctx.world?.villages || []).find(w => w.name === a.project);
+    const c = v && Number.isFinite(v.cx) ? { x: v.cx, y: v.cy } : v?.origin ? { x: v.origin.x, y: v.origin.y } : { x: a.x, y: a.y };
+    const q = nearestLegal(ctx.world?.grid, c.x, c.y);
+    if (!q) return null;
+    p = { tx: Math.floor(q.x), ty: Math.floor(q.y), slotKind: 'stand' };
+    indoors = false;
+  }
   let slot = null;
   if (indoors) ctx.slots?.release?.(a.id);
   else if (p.slotId != null) slot = { id: p.slotId, tx: p.tx, ty: p.ty, sub: p.sub ?? -1 };
@@ -82,17 +99,40 @@ function resolveTarget(a, key, spec, ctx) {
     for (const kind of kinds) {
       for (let tries = 0; tries < 4 && !slot; tries++) {
         const s = ctx.slots.nearestFree(p.tx, p.ty, kind);
-        if (!s) break;
+        if (!s || Math.hypot(s.tx - p.tx, s.ty - p.ty) > SPILL_NEAR) break;
         slot = ctx.slots.claim(s.id ?? s, a.id);
       }
       if (slot) break;
+    }
+    if (!slot && typeof ctx.slots.claimSpill === 'function') {
+      if (keepSpill) slot = ctx.slots.claim(keepSpill, a.id);
+      if (!slot) slot = ctx.slots.claimSpill(p.tx, p.ty, a.id);
     }
   }
   const tx = slot ? slot.tx : p.tx, ty = slot ? slot.ty : p.ty;
   const f = slot ? feetOf(tx, ty, slot.sub) : (Number.isFinite(p.x) ? { x: p.x, y: p.y } : feetOf(tx, ty));
   if (slot) a.slot = { tx: slot.tx, ty: slot.ty, sub: slot.sub };
   const face = isPinned(key) ? 0 : (slot?.face ?? p.face ?? 0);
-  return { x: f.x, y: f.y, tx, ty, slotId: slot?.id ?? null, indoors, face };
+  // the house it goes into: the place's object (a homeless sub uses its parent's house), else its own home
+  const homeId = indoors ? (p.objId ?? ctx.homeOf?.(a.agentId ?? a.id)?.id ?? null) : null;
+  return { x: f.x, y: f.y, tx, ty, slotId: slot?.id ?? null, indoors, face, homeId };
+}
+
+const tileLegal = (grid, x, y) => isLegalTile(grid, Math.floor(x), Math.floor(y));
+/** Is the agent's current target still there and legal (after a rebuild)? Slot still held, home still standing,
+ *  target tile walkable. A target-less agent is fine where it stands if its tile is legal. */
+export function targetOk(a, ctx) {
+  const t = a._target;
+  if (!t) return a.state === 'indoors' || tileLegal(ctx.world?.grid, a.x, a.y);
+  if (t.indoors) {
+    if (t.homeId != null && typeof ctx.world?.objects?.get === 'function') return !!ctx.world.objects.get(t.homeId);
+    return !!ctx.homeOf?.(a.agentId ?? a.id);
+  }
+  if (t.slotId != null && typeof ctx.slots?.heldBy === 'function') {
+    const s = ctx.slots.heldBy(a.id);
+    if (!s || s.id !== t.slotId) return false;
+  }
+  return tileLegal(ctx.world?.grid, t.x, t.y);
 }
 
 function settle(a) {
@@ -145,24 +185,51 @@ function beginEnter(a) {
 
 // ---------------------------------------------------------------- pose, idle cues, effects
 
-function applyPose(a, dt, ctx) {
-  const spec = a._spec;
-  const key = a._bkey;
+// What a (spec, behaviour key) shows while holding, worked out once per (spec, key, mod, idle list) instead of on every
+// step for every agent (PERF M7 psim): ghost flag, base anim, continuous effects (a frozen list shared by every agent with
+// that spec and key), timed cues and their interval. Specs are plain data and are not changed after represent().
+const POSES = new WeakMap();
+function poseOf(spec, key, ctx) {
+  let m = POSES.get(spec);
+  if (!m) { m = new Map(); POSES.set(spec, m); }
+  let e = m.get(key);
+  if (e && e.mod === ctx.mod && e.idle === spec.idle && e.pose === spec.pose && e.idleEvery === spec.idleEvery) return e;
   const idle = Array.isArray(spec.idle) ? spec.idle : [];
   const ghost = ghostOf(key, spec);
-  a.flags = ghost ? a.flags | GHOST : a.flags & ~GHOST;
-  if (a.state === 'go') { a.cue = null; a.fx = null; return; }   // the sim shows walk (or a fade)
-  if (a.state !== 'hold') { a.cue = null; return; }
-  const base = ghost ? 'idle' : animOf(spec.pose, ctx.mod);
-  a.pose = ghost ? 'doorstep' : spec.pose;
   const fx = idle.filter(t => isContinuous(ctx, t));
   if (key === 'stalled:error' && !fx.includes('smoke')) fx.push('smoke');
   if (key === 'working' && !fx.includes('sparks')) fx.push('sparks');
-  a.fx = fx.length ? fx : null;
-  if (isPinned(key) && a.face !== 0) a.face = 0;     // stalled faces the viewer
   const cues = idle.filter(t => !isContinuous(ctx, t));
+  e = { mod: ctx.mod, idle: spec.idle, pose: spec.pose, idleEvery: spec.idleEvery, ghost, base: ghost ? 'idle' : animOf(spec.pose, ctx.mod),
+    fx: fx.length ? Object.freeze(fx) : null, cues, every: cues.length ? spec.idleEvery || cueOf(ctx, cues[0])?.every || DEFAULT_EVERY : null };
+  m.set(key, e);
+  return e;
+}
+
+/** poseOf through a per-actor cache (PERF M7 asim): the same entry while the actor's spec, key and mod are the same. */
+function poseFor(a, ctx) {
+  const spec = a._spec, key = a._bkey, P = a._P;
+  if (P !== undefined && a._Pspec === spec && a._Pkey === key && P.mod === ctx.mod && P.idle === spec.idle && P.pose === spec.pose
+    && P.idleEvery === spec.idleEvery) return P;
+  a._Pspec = spec; a._Pkey = key;
+  return (a._P = poseOf(spec, key, ctx));
+}
+
+function applyPose(a, dt, ctx) {
+  const spec = a._spec;
+  const key = a._bkey;
+  const P = poseFor(a, ctx);
+  const ghost = P.ghost;
+  a.flags = ghost ? a.flags | GHOST : a.flags & ~GHOST;
+  if (a.state === 'go') { a.cue = null; a.fx = null; return; }   // the sim shows walk (or a fade)
+  if (a.state !== 'hold') { a.cue = null; return; }
+  const base = P.base;
+  a.pose = ghost ? 'doorstep' : spec.pose;
+  a.fx = P.fx;
+  if (isPinned(key) && a.face !== 0) a.face = 0;     // stalled faces the viewer
+  const cues = P.cues;
   if (ctx.reduceMotion || !cues.length) { a.cue = null; a.anim = base; if (ctx.reduceMotion) a.frame = 0; return; }
-  const every = spec.idleEvery || cueOf(ctx, cues[0])?.every || DEFAULT_EVERY;
+  const every = P.every;
   if (a._cueT > 0) {
     a._cueT -= dt;
     if (a._cueT <= 0) {                          // cue ends: back to the base pose
@@ -197,19 +264,25 @@ function resetCues(a, ctx) {
 
 function placeSig(a, key, spec, ctx) {
   const pr = a.pr ?? a.prs?.[0] ?? a.status?.pr ?? '';
-  return `${key}|${spec.place}|${ghostOf(key, spec) ? 'out' : ''}|${pr}|${ctx.world?.version ?? ''}`;
+  // no world.version here: it is a stamping-op counter (core/grid.js), not content; rebuilds go through targetOk
+  return `${key}|${spec.place}|${ghostOf(key, spec) ? 'out' : ''}|${pr}`;
 }
 
-/** Re-target if the place signature changed (or `force`). */
-function retarget(a, ctx, force) {
+/** Re-target if the place signature changed (or `force`). `lost`: the old target is gone, so even a settled
+ *  stalled agent must move (by a fade). */
+function retarget(a, ctx, force, lost = false) {
+  // the place signature reads only a.spec, a.status and a.pr / a.prs (behaviourKey, specFor, placeSig): while those are
+  // the same objects as at the last check, the signature is too (PERF M7 psim: no per-step string for every agent)
+  if (!force && a._sigOf && a._sigOf[0] === a.spec && a._sigOf[1] === a.status && a._sigOf[2] === a.pr && a._sigOf[3] === a.prs
+    && a._sigOf[4] === a._sig && a._sigOf[5] === a._spec) return;
   const { key, spec } = specFor(a);
   const sig = placeSig(a, key, spec, ctx);
-  if (!force && sig === a._sig) { a._spec = spec; return; }
+  if (!force && sig === a._sig) { a._spec = spec; a._sigOf = [a.spec, a.status, a.pr, a.prs, a._sig, a._spec]; return; }
   const prevKey = a._bkey;
   a._bkey = key; a._spec = spec; a._sig = sig;
   // A settled stalled/error agent stays put when only its stalled flavour changes (attention <-> prompt <-> error):
   // same place, new pose. Anything else re-targets.
-  const samePinnedPlace = isPinned(prevKey) && isPinned(key) && a.state === 'hold' && a._target;
+  const samePinnedPlace = !lost && isPinned(prevKey) && isPinned(key) && a.state === 'hold' && a._target;
   if (!samePinnedPlace) {
     a._target = resolveTarget(a, key, spec, ctx);
     transition(a, ctx, false);
@@ -229,9 +302,11 @@ export function init(a, ctx) {
   applyPose(a, 0, ctx);
 }
 
-/** Status/place changed (world-sim intent system): re-target without teleporting. */
+/** Status/place/world changed (world-sim intent system): re-target without teleporting. A still-valid target with an
+ *  unchanged place signature is kept (no slot churn, no movement). */
 export function replan(a, ctx) {
   if (a._spec == null) return init(a, ctx);
+  if (!targetOk(a, ctx)) return retarget(a, ctx, true, true);
   retarget(a, ctx, false);
 }
 
@@ -254,4 +329,39 @@ export function update(a, dt, ctx) {
   if (a.state === 'indoors') { a.anim = 'idle'; a.pose = 'indoors'; a.cue = null; a.fx = null; }
 }
 
-export default { init, replan, update };
+/**
+ * Exact stand-in for update(a, dt, ctx) on an agent at rest (PERF M7 asim). The world-sim calls it, instead of update and
+ * the movement / slots / animation systems, for an agent whose last step left it still (no path, fade, warp or move
+ * request, not leaving) and that nothing has touched since (a snapshot or a re-plan wakes it). Returns true when it
+ * advanced the agent exactly as update() would have: holding or indoors with the same place signature, the pose already
+ * applied, and only an idle-cue timer counting down without reaching zero. Returns false, having changed nothing, for
+ * anything else (a cue starting or ending, a changed status or spec, a face to reset), and the sim runs update().
+ * @returns {boolean}
+ */
+export function idle(a, dt, ctx) {
+  const s = a._sigOf;     // retarget's fast check: the place signature inputs are the same objects
+  if (s === undefined || s[0] !== a.spec || s[1] !== a.status || s[2] !== a.pr || s[3] !== a.prs || s[4] !== a._sig
+    || s[5] !== a._spec) return false;
+  const st = a.state;
+  if (st !== 'hold' && st !== 'indoors') return false;
+  const P = a._P, spec = a._spec;
+  if (P === undefined || a._Pspec !== spec || a._Pkey !== a._bkey || P.mod !== ctx.mod || P.idle !== spec.idle
+    || P.pose !== spec.pose || P.idleEvery !== spec.idleEvery) return false;
+  if (((a.flags & GHOST) !== 0) !== P.ghost) return false;
+  if (st === 'indoors') return a.cue === null && a.fx === null && a.pose === 'indoors' && a.anim === 'idle';
+  // holding: applyPose would write these same values again
+  if (a.fx !== P.fx || a.pose !== (P.ghost ? 'doorstep' : spec.pose) || (isPinned(a._bkey) && a.face !== 0)) return false;
+  if (ctx.reduceMotion || !P.cues.length) return a.cue === null;
+  if (a._cueT > 0) {
+    const t = a._cueT - dt;
+    if (t <= 0) return false;                  // the cue ends this step
+    a._cueT = t;
+    return true;
+  }
+  const t = a._nextCue - dt;
+  if (t <= 0) return false;                    // a cue starts this step
+  a._nextCue = t;
+  return true;
+}
+
+export default { init, replan, update, idle };

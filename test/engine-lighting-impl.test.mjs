@@ -33,20 +33,28 @@ test('lightsFor option overrides; lanterns only at night', () => {
   L.setTime(0.5); assert.equal(L.lights(null, actors).length, 1);
   L.setTime(0); assert.equal(L.lights(null, actors).length, 2);
 });
-test('day draws nothing; night draws multiply then lighter at quarter resolution', () => {
+test('day draws nothing; night draws the veil (source-over) then lighter at quarter resolution', () => {
   const log = [], f = factory(log), g = fakeGfx();
   const L = createLighting({ world: world([mk('l1', 'lamp', 10, 10)]), createCanvas: f });
   L.setTime(0.5); assert.equal(L.draw(g, cam, view), 0); assert.equal(g.calls.length, 0);
   L.setTime(0); assert.equal(L.draw(g, cam, view), 1);
   assert.equal(f.made[0].width, 100); assert.equal(f.made[0].height, 75);
   const ops = g.calls.filter(c => c[0] === 'op').map(c => c[1]);
-  assert.deepEqual(ops, ['multiply', 'lighter', 'source-over']);
+  assert.deepEqual(ops, ['source-over', 'lighter', 'source-over']);
   assert.ok(log.some(e => e[1] === 'destination-out'));
 });
-test('pool budget caps at 160, nearest first; rebuild only on change or 4th frame', () => {
-  const objs = []; for (let i = 0; i < 300; i++) objs.push(mk('l' + i, 'lamp', 10 + (i % 20) * 0.2, 10 + Math.floor(i / 20) * 0.2));
+test('pool budget caps at MAX_POOLS, nearest first; rebuild only on change or 4th frame', () => {
+  const objs = []; for (let i = 0; i < 700; i++) objs.push(mk('l' + i, 'lamp', 10 + (i % 20) * 0.2, 10 + Math.floor(i / 20) * 0.2));
   const log = [], L = createLighting({ world: world(objs), createCanvas: factory(log) }), g = fakeGfx();
   L.setTime(0); assert.equal(L.draw(g, cam, view), MAX_POOLS);
   const n1 = log.length; L.draw(g, cam, view); assert.equal(log.length, n1); // frame 2 cached
   L.draw(g, cam, view); L.draw(g, cam, view); assert.ok(log.length > n1); // frame 4 rebuilds
+});
+test('classic night parity: veil rgba(14,18,50,0.6*night), pool lift 0.88, lamp pool 48, resting window pool 34', async () => {
+  const { veilColor, POOL_LIFT, WINDOW_R, RESTING_R } = await import('../web/src/engine/render/lighting.js');
+  assert.equal(veilColor(1), 'rgba(14,18,50,0.600)');
+  assert.equal(veilColor(0.5), 'rgba(14,18,50,0.300)');
+  assert.equal(POOL_LIFT, 0.88); assert.equal(WINDOW_R, 22); assert.equal(RESTING_R, 34);
+  const L = createLighting({ world: world([mk('l1', 'lamp', 5, 5)]), createCanvas: factory([]) });
+  L.setNight(1); assert.equal(L.lights()[0].r, 48);
 });

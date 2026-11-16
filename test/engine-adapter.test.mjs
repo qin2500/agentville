@@ -48,9 +48,24 @@ const REAL = (() => { try { new G.WorldGrid({ ox: 0, oy: 0, w: 2, h: 2 }); new O
 
 const isWalk = c => !!TERRAIN_TABLE.types.find(t => t.code === c)?.tags.includes('walk');
 const TIERS = [0, 1, 2, 3], SEEDS = [...Array(20).keys()];
+// Default run samples a small fixed seed set per tier (tiers 0-3 are hamlet, village, town, city, so every style is
+// covered); ENGINE_SLOW=1 sweeps all 20 seeds. The fast seeds are a subset of the slow ones, and stamped worlds are
+// memoised so every assertion shares one build per (tier, seed).
+const SLOW = process.env.ENGINE_SLOW === '1';
+const FAST_SEEDS = [2, 3];
+const SLOW_ONLY = SEEDS.filter(s => !FAST_SEEDS.includes(s));
+const SLOW_SKIP = SLOW ? false : 'exhaustive seed sweep: set ENGINE_SLOW=1 to run';
 const plans = new Map();
 const planOf = (t, s) => { const k = `${t}:${s}`; if (!plans.has(k)) plans.set(k, planSettlement({ tier: t, seed: s, lots: 999 })); return plans.get(k); };
-const stampOne = (t, s) => {
+const stamped = new Map();
+const stampOne = (t, s, fresh = false) => {
+  const k = `${t}:${s}`;
+  if (!fresh && stamped.has(k)) return stamped.get(k);
+  const r = stampFresh(t, s);
+  if (!fresh) stamped.set(k, r);
+  return r;
+};
+const stampFresh = (t, s) => {
   const plan = planOf(t, s), org = { x: 5, y: 7 };
   const grid = new FakeGrid({ ox: 0, oy: 0, w: plan.w + 12, h: plan.h + 14 }), objects = new FakeStore();
   const r = stampPlan(grid, objects, plan, org, { mod: MOD, name: `p${s}`, index: 0, tier: t });
@@ -91,10 +106,10 @@ test('footprint table: the design §1.2 shapes', () => {
 
 // ---- stampPlan ---------------------------------------------------------------------------------------------------
 const lintTotals = {};
-test('stampPlan: no overlapping footprints, door and forecourt clear, routes stay connected (tiers 0-3, seeds 0-19)', () => {
+const checkLayout = seeds => {
   for (const t of TIERS) {
-    const tot = lintTotals[t] = { drop: 0, nudge: 0, overlap: 0, other: 0, props: 0 };
-    for (const s of SEEDS) {
+    const tot = lintTotals[t] ??= { drop: 0, nudge: 0, overlap: 0, other: 0, props: 0 };
+    for (const s of seeds) {
       const { plan, grid, objects, org, lint, placed } = stampOne(t, s);
       const seen = new Map();
       for (const o of objects.values()) {
@@ -121,10 +136,12 @@ test('stampPlan: no overlapping footprints, door and forecourt clear, routes sta
       assert.ok(placed.length > 0);
     }
   }
-});
-test('stampPlan: lamps, lampposts and banners on streets stand on the street edge', () => {
+};
+test('stampPlan: no overlapping footprints, door and forecourt clear, routes stay connected (tiers 0-3, fast seeds)', () => checkLayout(FAST_SEEDS));
+test('stampPlan: no overlapping footprints, door and forecourt clear, routes stay connected (tiers 0-3, remaining seeds 0-19)', { skip: SLOW_SKIP }, () => checkLayout(SLOW_ONLY));
+const checkLamps = seeds => {
   let seen = 0;
-  for (const t of [1, 2, 3]) for (const s of SEEDS.slice(0, 8)) {
+  for (const t of [1, 2, 3]) for (const s of seeds) {
     const { grid, objects, org, plan } = stampOne(t, s);
     for (const o of objects.values()) {
       if (!['lamp', 'lamppost', 'banner'].includes(o.model)) continue;
@@ -136,9 +153,11 @@ test('stampPlan: lamps, lampposts and banners on streets stand on the street edg
     }
   }
   assert.ok(seen > 0);
-});
+};
+test('stampPlan: lamps, lampposts and banners on streets stand on the street edge', () => checkLamps(FAST_SEEDS));
+test('stampPlan: lamps, lampposts and banners on streets stand on the street edge (seeds 0-7)', { skip: SLOW_SKIP }, () => checkLamps(SEEDS.slice(0, 8).filter(s => !FAST_SEEDS.includes(s))));
 test('stampPlan: ids are stable and independent of ownership; buildings carry doors and heights', () => {
-  const a = stampOne(2, 3), b = stampOne(2, 3);
+  const a = stampOne(2, 3), b = stampOne(2, 3, true);   // b is a fresh build: proves determinism
   assert.deepEqual([...a.objects.keys()], [...b.objects.keys()]);
   const bld = [...a.objects.values()].filter(o => o.kind === 'building');
   assert.ok(bld.length > 5);
@@ -151,14 +170,16 @@ test('stampPlan: ids are stable and independent of ownership; buildings carry do
   assert.equal(lo.rank, l.rank);
   assert.ok([...a.objects.keys()].some(k => /^prop:p3:\w+:\d+$/.test(k)));
 });
-test('stampPlan: fence runs never cross a building footprint', () => {
-  for (const t of [0, 1]) for (const s of SEEDS) {
+const checkFences = seeds => {
+  for (const t of [0, 1]) for (const s of seeds) {
     const { grid, objects } = stampOne(t, s);
     const bld = new Set();
     for (const o of objects.values()) if (o.kind === 'building') for (const [x, y] of grid.tiles(o)) bld.add(`${x},${y}`);
     for (const o of objects.values()) if (o.walk === 'edge') for (const [x, y] of grid.tiles(o)) assert.ok(!bld.has(`${x},${y}`), `${o.id} runs into a building`);
   }
-});
+};
+test('stampPlan: fence runs never cross a building footprint', () => checkFences(FAST_SEEDS));
+test('stampPlan: fence runs never cross a building footprint (remaining seeds)', { skip: SLOW_SKIP }, () => checkFences(SLOW_ONLY));
 
 // ---- assignLots --------------------------------------------------------------------------------------------------
 const mkAgents = (n, role = 'worker') => Array.from({ length: n }, (_, i) => ({ id: `${role}${i}`, role }));
@@ -260,8 +281,8 @@ test('buildWorld is deterministic on a small view (needs A2 + A3 merged)', { ski
 });
 
 test('lint totals (report)', () => {
-  const line = t => { const x = lintTotals[t]; return `tier ${t}: props ${x.props}, drops ${x.drop}, nudges ${x.nudge}, overlaps ${x.overlap}, other ${x.other}`; };
-  console.log('LINT over seeds 0-19\n' + TIERS.map(line).join('\n'));
+  const line = t => { const x = lintTotals[t]; if (!x) return `tier ${t}: not run`; return `tier ${t}: props ${x.props}, drops ${x.drop}, nudges ${x.nudge}, overlaps ${x.overlap}, other ${x.other}`; };
+  console.log('LINT over ' + (SLOW ? 'seeds 0-19' : 'fast seeds ' + FAST_SEEDS.join(','))+ '\n' + TIERS.map(line).join('\n'));
 });
 
 // review M1 B4: a plan cannot write engine-reserved ground codes (> MOD_CODE_MAX), e.g. forge SQUARE or DOCK tiles

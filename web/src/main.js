@@ -1,4 +1,4 @@
-import { BUCKETS, icon, esc, clock, h, reducedMotionQuery, isPrompt, PROMPT_NAME } from './ui.js';
+import { BUCKETS, icon, esc, clock, h, reducedMotionQuery, isPrompt, PROMPT_NAME, onStoreSet } from './ui.js';
 import { createPanel } from './panel.js';
 import { taskRows } from './tasks-model.js';
 import { createVillage } from './village.js';
@@ -18,12 +18,18 @@ import { createZen } from './zen.js';
 import { createBubbles } from './bubbles.js';
 import { transitions } from './notify.js';
 import { viewsFrom, nextView } from './views.js';
-import { worldSlotHtml, applyWorld } from './worlds.js';
+import { worldSlotHtml, applyWorld, engineActive, classicToggleHtml, applyEngine } from './worlds.js';
+import { dockDemo, demoDock } from './dock-art.js';
+import { hydratePlan, installPlanMirror, planConflicts, useOtherPlan, keepThisPlan, planSyncEnabled, planSyncToggleHtml, PLAN_SYNC_KEY } from './plan-sync.js';
 
 // Dev-only fake API (`npm run dev:web` then ?mock); the branch is dropped from production builds.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) await import('./dev/mock.js');
 // Dev-only sprite sheet of every building look and prop (`?mock&artsheet`; tools/artpass/capture.mjs --sheet).
-if (import.meta.env.DEV && new URLSearchParams(location.search).has('artsheet')) import('./dev/art-sheet.js');
+if (import.meta.env.DEV && new URLSearchParams(location.search).has('artsheet')) {
+  // ?engine=2&artsheet=1: the engine v2 sheet (building families, folk, events); otherwise the classic sheet.
+  if (new URLSearchParams(location.search).get('engine') === '2') import('./dev/engine-sheet.js').then(m => m.start());
+  else import('./dev/art-sheet.js');
+}
 
 const $ = id => document.getElementById(id);
 const narrowQuery = matchMedia('(max-width: 900px)');
@@ -134,8 +140,29 @@ const app = {
 };
 
 const panel = createPanel(app);
-// Village engine v2 (docs/village-engine-v2.md §6.1): ?engine=2 | ?engine=1 override; else Settings (va.engine, default classic).
-const village = ((e => (e ? e === '2' : store.get('va.engine', 1) === 2))(new URLSearchParams(location.search).get('engine')) ? (await import('./engine/index.js')).createEngine : createVillage)(app);
+// Town plan sync (plan-sync.js): the server's saved layout is pulled in before the village is created (at most ~800 ms;
+// offline or a static build just uses what is local), then later layout saves are mirrored to it. A different town
+// saved by another window is never switched to here: Settings offers the choice.
+// Opt-in (Settings → Sync town layout across windows, off by default): off means no pull, no pushes, no flush, no notes.
+const PLAN_SYNC = planSyncEnabled(store);
+let planLs = null;
+try { planLs = localStorage; } catch { /* storage blocked: no sync */ }
+const planFetch = (...a) => fetch(...a);
+const planSync = PLAN_SYNC ? await hydratePlan({ fetch: planFetch, ls: planLs, timeoutMs: 800 })
+  .catch(() => ({ source: 'offline', migrated: [], adopted: [], conflicts: [] })) : { source: 'off', migrated: [], adopted: [], conflicts: [] };
+// planSync.tab: the rev this tab itself synced (tabs share localStorage, so never the shared revs): a tab still showing an
+// older town gets a 409 and the Settings choice instead of pushing over another window's town.
+// onChoice: this tab's own push was refused for a different town -> the choice is this tab's (only this tab shows it).
+const planMirror = PLAN_SYNC ? installPlanMirror({ onStoreSet, fetch: planFetch, ls: planLs, tab: planSync.tab,
+  onChoice: () => { try { toast('Another window saved a different town.', { label: 'Settings', run: () => togglePop('settings') }, 10000); if (openPop === 'settings') fillPop('settings'); } catch { /* before the UI is up: the Settings note still shows */ } } }) : null;
+// keepalive lets a small last push outlive the page; a bigger one stays dirty and goes up on the next start.
+if (planMirror) addEventListener('pagehide', () => { planMirror.flush({ keepalive: true }); });
+// Village engine v2 (docs/village-engine-v2.md §6.1): ?engine=2 | ?engine=1 override; else Settings (va.engine; unset is the new engine since M7).
+const ENGINE2 = engineActive(location.search, store);
+// ?dockdemo=1 on the new engine: the demo PRs replace S.dock for the whole page (classic village.js does this itself).
+// parity: debug.dockdemo
+if (ENGINE2 && dockDemo()) Object.defineProperty(S, 'dock', { configurable: true, enumerable: true, get: () => demoDock(Date.now(), (S.agents || []).filter(a => a.bucket === 'resting' && !a.hidden)), set() {} });
+const village = (ENGINE2 ? (await import('./engine/index.js')).createEngine : createVillage)(app);
 const fleet = createFleet(app);
 const account = createAccount(app, panel);
 createUsagePause();
@@ -686,10 +713,13 @@ function fillPop(name) {
       <p class="helper" id="notify-note" ${typeof Notification !== 'undefined' && Notification.permission === 'denied' && (S.notify || Object.values(S.notifyOn).some(Boolean)) ? '' : 'hidden'}>Notifications are blocked. Allow Agentville under System Settings › Notifications.</p>
       <label><input type="checkbox" data-set="motion" ${S.reduceSetting ? 'checked' : ''}>Reduce motion${reducedMotionQuery.matches ? ' (system setting is on)' : ''}</label>
       <label><input type="checkbox" data-set="quiet" ${S.hideQuiet ? 'checked' : ''}>Hide quiet projects</label>
+      ${planSyncToggleHtml(store)}
+      ${planConflictHtml()}
       ${worldSlotHtml(store, esc)}
       <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
       <p class="helper">Uses a small Haiku model, through your Claude login, for background jobs such as naming your tasks. Off by default.</p>
-      <p class="helper" id="helper-status" role="status"></p></div>${update.menuHTML()}`;
+      <p class="helper" id="helper-status" role="status"></p>
+      ${classicToggleHtml(store)}</div>${update.menuHTML()}`;
     loadHelper();
     return;
   }
@@ -706,6 +736,31 @@ function fillPop(name) {
     <div><h4>Display</h4>
       <label><input type="checkbox" data-set="hidden" ${f.showHidden ? 'checked' : ''}>Show hidden agents</label>
       <label><input type="checkbox" data-set="compact" ${S.compact ? 'checked' : ''}>Compact rows</label></div>`;
+}
+// Another window saved a different town (plan-sync.js conflict): exactly two choices, never switched automatically.
+function planConflictHtml() {
+  if (!PLAN_SYNC || !planMirror || !planLs || !planConflicts(planLs, planMirror.tab).length) return ''; // this tab's own conflicts only
+  return `<div class="plan-conflict" role="group" aria-label="Saved town">
+      <p class="helper">Another window saved a different town. This window is still showing its own.</p>
+      <button type="button" class="textbtn" data-plan="other">Use the town saved by your other window</button>
+      <button type="button" class="textbtn" data-plan="keep">Keep this one</button>
+      <p class="helper" id="plan-status" role="status"></p></div>`;
+}
+async function resolvePlan(choice, btn) {
+  const keys = planConflicts(planLs, planMirror.tab);
+  if (choice === 'other') { useOtherPlan({ ls: planLs, keys, tab: planMirror.tab }); location.reload(); return; }
+  btn.disabled = true;
+  village.saveLayout?.(); // this tab's in-memory town, not what another tab last wrote to localStorage
+  const { kept, failed, moved } = await keepThisPlan({ fetch: planFetch, ls: planLs, keys, tab: planMirror.tab });
+  planMirror.resume(kept);
+  // Re-render the note: it stays up while a key failed; after a 409 it now offers the newer server copy.
+  if (openPop === 'settings') fillPop('settings');
+  if (failed.length) {
+    btn.disabled = false;
+    const st = $('plan-status');
+    if (st) st.textContent = moved?.length ? 'Your other window saved a newer town since. Nothing was changed; choose again.'
+      : "Couldn't save this town to the server. Try again in a moment.";
+  }
 }
 function showHelper(h, err) {
   const el = $('helper-status'), box = pops.settings?.querySelector('[data-set="helper"]');
@@ -735,7 +790,11 @@ async function setHelper(enabled, box) {
 }
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.set === 'world') {
+  if (t.dataset.set === 'engine') {
+    applyEngine(t.checked ? 1 : 2, store);
+  } else if (t.dataset.set === 'plansync') {
+    store.set(PLAN_SYNC_KEY, t.checked);
+  } else if (t.dataset.set === 'world') {
     applyWorld(t.value, store);
   } else if (t.dataset.set === 'helper') {
     setHelper(t.checked, t);
@@ -802,6 +861,8 @@ async function unhide(ids, btn) {
 
 // ---------- toast ----------
 let toastTimer = 0;
+// Point at the Settings choice once per load when another window saved a different town.
+if (planSync.conflicts.length) setTimeout(() => toast('Another window saved a different town.', { label: 'Settings', run: () => togglePop('settings') }, 10000), 1500);
 function toast(text, action, ms = 6000) {
   const el = $('toast');
   el.replaceChildren(h('span', {}, text));
@@ -833,6 +894,8 @@ document.addEventListener('click', e => {
   if (t.closest('#btn-retry')) return poll();
   if (t.closest('#btn-filters')) return togglePop('filters');
   if (t.closest('#btn-settings')) return togglePop('settings');
+  const planBtn = t.closest('[data-plan]');
+  if (planBtn) return resolvePlan(planBtn.dataset.plan, planBtn);
   if (t.closest('#btn-warnings')) return togglePop('warnings');
   if (t.closest('#btn-fleet')) return togglePop('fleet');
   if (t.closest('#btn-account')) return togglePop('account');

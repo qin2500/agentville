@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
 import AxeBuilder from '@axe-core/playwright'
-import { SHOTS, SECRET, IDS, claudeId, prepareHome, startServer, tmpDir, nextPort } from './helpers.mjs'
+import { clearStorage, SHOTS, SECRET, IDS, claudeId, prepareHome, startServer, tmpDir, nextPort } from './helpers.mjs'
 import { ENV_SECRET } from '../test/fixtures/make-home.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
@@ -27,7 +27,7 @@ test.afterAll(async () => { await s?.stop() })
 
 async function openModels(page) {
   await page.goto(s.url)
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto(s.url)
   await expect(page.locator('#conn')).toHaveText(/Live/)
   await page.locator('#btn-full').click()

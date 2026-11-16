@@ -1,14 +1,14 @@
 // Resizable panel, the Expand/Dock button, the full-screen Table view and the full-screen Team and
 // Status layouts. Shared fixture server, plus one big home for the 2560px screenshots.
 import { test, expect, startDocked } from './fixtures.mjs'
-import { SHOTS, claudeId, row, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, openMenu } from './helpers.mjs'
+import { clearStorage, SHOTS, claudeId, row, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, openMenu } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto('/')
   await expect(page.locator('#conn')).toHaveText(/Live/)
 })

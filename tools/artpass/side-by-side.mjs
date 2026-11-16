@@ -4,9 +4,11 @@
 //   node_modules/.bin/vite -c tools/artpass/vite.config.mjs        (default http://127.0.0.1:5391)
 //
 //   node tools/artpass/side-by-side.mjs --fixture busy [--zoom 1] [--night] [--size 1280x800] [--t 120]
-//        [--out-dir /tmp] [--village <name>] [--venue <id>] [--base http://127.0.0.1:5391] [--dry-run]
+//        [--out-dir /tmp] [--village <name>] [--venue <id>] [--q <query>] [--base http://127.0.0.1:5391] [--dry-run]
 //
-// Output: <out-dir>/sbs-<fixture>-classic.png, -engine.png, -sbs.png (classic left, engine right).
+// Output: <out-dir>/sbs-<fixture>[-<venue>][-night]-classic.png, -engine.png, -sbs.png (classic left, engine right).
+// --venue <id> centres the engine on that world venue and the classic side on its dock (villageDebug().dock cx/foot).
+// --q <query> (no leading ?) is appended to both URLs, e.g. --q "dockdemo=1&prs=3&total=0&level=4".
 //
 // Camera: --zoom is the ENGINE zoom (one of 0.25 0.5 1 2 3 4, the engine's own steps). The classic
 // projection is 0.8 of the engine's 32x16 tile, so classic zoom = engine zoom / 0.8 (same on-screen
@@ -37,14 +39,19 @@ const night = flag('night') ? 1 : 0, village = opt('village');
 const fixFile = path.resolve(new URL('../../e2e/fixtures/engine/', import.meta.url).pathname, `${fixture}.json`);
 if (!fs.existsSync(fixFile)) throw new Error(`no fixture ${fixture} at ${fixFile}`);
 
-const classicQ = `debug&night=${night}`;
-const engineQ = ['mock', 'engine=2', 'debug', `night=${night}`, `fixture=${fixture}`, ...(t !== undefined ? [`t=${encodeURIComponent(t)}`] : [])].join('&');
+const extraQ = (opt('q') || '').replace(/^[?&]+/, '');
+if (!/^[A-Za-z0-9_=&.%,:|+-]*$/.test(extraQ)) throw new Error(`bad --q ${extraQ}`);
+const venueId = opt('venue');   // --venue <id>: centre both sides on a world venue (e.g. the harbour) instead of a village
+if (venueId !== undefined && !/^[a-z][a-z0-9_-]{0,31}$/.test(venueId)) throw new Error(`bad --venue ${venueId}`);
+const classicQ = ['debug', `night=${night}`, ...(extraQ ? [extraQ] : [])].join('&');
+const engineQ = ['mock', 'engine=2', 'debug', `night=${night}`, `fixture=${fixture}`, ...(t !== undefined ? [`t=${encodeURIComponent(t)}`] : []), ...(extraQ ? [extraQ] : [])].join('&');
 const classicUrl = `${BASE}?${classicQ}`, engineUrl = `${BASE}?${engineQ}`;
-const files = ['classic', 'engine', 'sbs'].map(k => path.join(outDir, `sbs-${fixture}-${k}.png`));
+const tag = `${fixture}${venueId ? `-${venueId}` : ''}${night ? '-night' : ''}`;
+const files = ['classic', 'engine', 'sbs'].map(k => path.join(outDir, `sbs-${tag}-${k}.png`));
 
 if (flag('dry-run')) {
   console.log(JSON.stringify({ classicUrl, engineUrl, viewport: [VW, VH], engineZoom: ez, classicZoom: cz,
-    centre: village ? `block centre of village "${village}" on each side` : 'block centre of the first village on each side',
+    centre: venueId ? `venue "${venueId}": engine world.venues[id] anchor, classic villageDebug().dock cx/foot` : village ? `block centre of village "${village}" on each side` : 'block centre of the first village on each side',
     classicCamera: '{ x: (bx-by+... iso px of block centre), y, z: ' + cz + ' }  via window.villageSetCamera',
     engineCamera: `{ v: 2, x: block centre tile x, y: block centre tile y, z: ${ez} }  via window.villageSetCamera`,
     classicData: `page.route('**/api/**') serving ${path.relative(process.cwd(), fixFile)} (agents/projects/dock)`, files }, null, 1));
@@ -86,8 +93,17 @@ await cp.route('**/api/**', route => route.request().url().includes('/api/agents
 await cp.goto(classicUrl);
 await cp.waitForFunction(() => document.getElementById('cv')?.dataset.art === 'ready' && window.villageDebug?.().villages?.length > 0, null, { timeout: 60000 });
 await hide(cp); await settle(cp);
-const cd = await cp.evaluate(() => { const d = window.villageDebug(); return { villages: d.villages.map(v => ({ name: v.name, block: v.block })) }; });
-const cv = pickVillage(cd.villages), cc = centre(cv), ISO = 0.8;
+// classic debug().dock is the art's own dock.debug() once the art is ready (tier, berths, sails: no site), so the site
+// (world.js dockSite: cx = square.x + (square.w >> 1), foot = town[3] + 5) is rebuilt from debug().square / .town.
+const cd = await cp.evaluate(() => {
+  const d = window.villageDebug(), sq = d.square, tw = d.town;
+  const site = d.dock && Number.isFinite(d.dock.cx) ? { cx: d.dock.cx, foot: d.dock.foot }
+    : d.dock && sq && tw ? { cx: sq.x + (sq.w >> 1), foot: tw[3] + 5 } : null;
+  return { villages: d.villages.map(v => ({ name: v.name, block: v.block })), dock: site, tier: d.dock?.tier ?? null };
+});
+const cdock = venueId && cd.dock && Number.isFinite(cd.dock.cx) && Number.isFinite(cd.dock.foot) ? cd.dock : null;
+if (venueId && !cdock) console.error(`classic: no dock in villageDebug() (centring on the first village)`);
+const cv = pickVillage(cd.villages), cc = cdock ? { x: cdock.cx, y: cdock.foot } : centre(cv), ISO = 0.8;
 const ccam = { x: (cc.x - cc.y) * 16 * ISO, y: (cc.x + cc.y) * 8 * ISO, z: cz };
 await cp.evaluate(c => window.villageSetCamera(c), ccam);
 await settle(cp);
@@ -107,7 +123,6 @@ const tSprites0 = Date.now();
 await spritesIn('at the first camera', 90000);
 await hide(ep); await settle(ep);
 const ed = await ep.evaluate(() => window.villageDebug());
-const venueId = opt('venue');   // --venue <id>: centre the engine camera on a world venue (e.g. the harbour) instead of a village
 const vn = venueId ? ed.venues?.[venueId] : null;
 if (venueId && !vn) console.error(`engine: no venue ${venueId} (have ${Object.keys(ed.venues || {}).join(', ') || 'none'})`);
 const ev = pickVillage(ed.villages), ec = vn ? { x: vn.tx, y: vn.ty } : centre(ev);
@@ -124,13 +139,13 @@ const b64 = f => fs.readFileSync(f).toString('base64');
 const comp = await browser.newPage({ viewport: { width: VW * 2 + 12, height: VH + 28 } });
 await comp.setContent(`<body style="margin:0;background:#111;color:#ddd;font:14px monospace">
 <div style="display:flex;gap:12px"><div><div style="height:28px;line-height:28px;padding-left:6px">classic z${cz.toFixed(3)}</div><img src="data:image/png;base64,${b64(files[0])}"></div>
-<div><div style="height:28px;line-height:28px;padding-left:6px">engine 2 z${ez} · ${fixture}</div><img src="data:image/png;base64,${b64(files[1])}"></div></div></body>`);
+<div><div style="height:28px;line-height:28px;padding-left:6px">engine 2 z${ez} · ${tag}</div><img src="data:image/png;base64,${b64(files[1])}"></div></div></body>`);
 await comp.waitForFunction(() => [...document.images].every(i => i.complete && i.naturalWidth > 0));
 await comp.screenshot({ path: files[2] });
 await browser.close();
 
-console.log(JSON.stringify({ files, classic: { village: cv.name, camera: ccam, ...cdbg, errors: errors.classic.length },
-  engine: { village: ev.name, camera: { x: ec.x, y: ec.y, z: ez }, actors: after.actors, hits: after.hits, objects: after.objects, lint: (after.lint || []).length, error: after.error, errors: errors.engine.length,
+console.log(JSON.stringify({ files, classic: { village: cv.name, dockTier: cd.tier, camera: ccam, ...cdbg, errors: errors.classic.length },
+  engine: { village: ev.name, dockTier: after.dock?.tier ?? null, camera: { x: ec.x, y: ec.y, z: ez }, actors: after.actors, hits: after.hits, objects: after.objects, lint: (after.lint || []).length, error: after.error, errors: errors.engine.length,
     timing: after.timing ?? null, spritesWaitMs, sprites: after.sprites ? { entries: after.sprites.entries, keys: after.sprites.keys, rasterN: after.sprites.rasterN,
       rasterMs: after.sprites.rasterMs, failed: after.sprites.failed, bytes: after.sprites.bytes, evictions: after.sprites.evictions, pending: after.sprites.pending, queued: after.sprites.queued } : null } }, null, 1));
 for (const w of ['classic', 'engine']) for (const e of errors[w].slice(0, 10)) console.error(`${w} ${e}`);

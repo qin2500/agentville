@@ -3,11 +3,16 @@
 // scene, then warm `lighter` pools on top. Positions are 1x world pixels (the renderer's gfx applies the camera).
 import { toScreen } from '../core/coords.js';
 
-export const MAX_POOLS = 160;
+export const MAX_POOLS = 480;   // classic lights every pool in view (a busy town has several hundred); 160 left the outskirts dark
 export const LIGHTMAP_SCALE = 4;
 export const GLOW_FROM = 0.35;
-export const POOL_LIFT = 0.62;   // how much of the night veil a light pool removes at its centre
-const DEFAULT_LAMPS = { lamp: { r: 70, warm: 1, flicker: 0.15, dy: 30 }, lamppost: { r: 80, warm: 1, flicker: 0.15, dy: 36 },
+export const WINDOWS_FROM = 0.5;   // classic: past this night amount every building's windows are drawn lit (the lit sprite variant; the dim pools show at any night > 0)
+export const POOL_LIFT = 0.88;   // classic: how much of the night veil a light pool removes at its centre
+export const VEIL_RGB = [14, 18, 50], VEIL_ALPHA = 0.6;   // classic: rgba(14,18,50, 0.6 * night), source-over (not multiplied: a multiply veil came out much darker)
+export const POOL_SCALE = 1.25;   // classic draws at 0.8 of the engine's 32x16 tile, so a classic pool radius is 1.25x larger in engine px at the same on-screen size
+export const WINDOW_R = 22, RESTING_R = 34;   // classic: dim window pool / resting agent's window pool
+// parity: night.lamppost-glow (lamp and lamppost objects each become a warm light pool at night)
+const DEFAULT_LAMPS = { lamp: { r: 48, warm: 1, flicker: 0.15, dy: 30 }, lamppost: { r: 48, warm: 1, flicker: 0.15, dy: 36 },
   forge: { r: 90, warm: 1, flicker: 0.5, dy: 10 }, lighthouse: { r: 160, warm: 0.6, flicker: 0, dy: 60 } };
 
 const clamp01 = v => Math.max(0, Math.min(1, v));
@@ -29,12 +34,11 @@ export function duskOf(t) {
   if (h >= 5 && h < 7) return Math.sin(((h - 5) / 2) * Math.PI) * 0.6;
   return 0;
 }
-/** Veil colour (multiply): white by day, orange-ish at dusk, deep blue at night. */
+/** Veil colour (drawn source-over at VEIL_ALPHA * night, as classic): deep blue; a touch of warmth while dusk is under way. */
 export function veilColor(night, dusk = 0) {
-  const base = [255, 255, 255], deep = [52, 62, 112], warm = [255, 170, 110];
-  const c = base.map((v, i) => lerp(v, deep[i], night));
-  const w = clamp01(dusk) * (1 - Math.abs(night - 0.5) * 0.6);
-  return `rgb(${c.map((v, i) => Math.round(lerp(v, warm[i] * (v / 255 * 0.6 + 0.4), w))).join(',')})`;
+  const warm = [60, 34, 40], w = clamp01(dusk) * 0.5 * (1 - Math.abs(night - 0.5));
+  const c = VEIL_RGB.map((v, i) => Math.round(lerp(v, warm[i], w)));
+  return `rgba(${c.join(',')},${(VEIL_ALPHA * clamp01(night)).toFixed(3)})`;
 }
 
 function defaultCanvas(w, h) {
@@ -62,12 +66,19 @@ export function createLighting({ world, createCanvas = defaultCanvas, lightsFor,
     if (own) for (const s of Array.isArray(own) ? own : [own]) out.push(lightFromSpec(o, s, p.sx, p.sy, 'object'));
     else if (lampModels[o.model]) out.push(lightFromSpec(o, lampModels[o.model], p.sx, p.sy, 'lamp'));
     if (o.kind === 'building') {
-      if (statusOf?.(o.id) === 'resting') {
+      const resting = statusOf?.(o.id) === 'resting';
+      // parity: bld.lit-windows-night
+      // After dark every building but a PR site shows two window pools (a home all of its windows), dimmer than a
+      // resting agent's and without the warm additive glow (classic drawNight: r 22, warm 0).
+      const dark = night > 0 && o.data?.owner !== 'pr';
+      if (resting || dark) {
         // anchors are offsets from the footprint's north corner (the drawn sprite's pivot); else two guesses at the centre
         const ws = windowsOf?.(o), has = Array.isArray(ws) && ws.length;
         const pts = has ? ws : [{ x: -8, y: -(o.z || 24) / 2 }, { x: 8, y: -(o.z || 24) / 2 }];
         const b = has ? toScreen(o.tx, o.ty, 0) : p;
-        pts.forEach((w, i) => out.push({ id: `${o.id}#w${i}`, kind: 'window', x: b.sx + (w.x || 0), y: b.sy + (w.y || 0), r: 26, warm: 1, flicker: 0.05 }));
+        const shown = resting || o.data?.owner === 'home' ? pts : pts.slice(0, 2);
+        shown.forEach((w, i) => out.push({ id: `${o.id}#w${i}`, kind: 'window', x: b.sx + (w.x || 0), y: b.sy + (w.y || 0),
+          r: resting ? RESTING_R : WINDOW_R, warm: resting ? 1 : 0, flicker: resting ? 0.05 : 0 }));
       }
     }
   }
@@ -82,7 +93,13 @@ export function createLighting({ world, createCanvas = defaultCanvas, lightsFor,
     lights(objects, actors, windowsOf) {
       const out = [];
       for (const o of objects ?? world?.objects?.values?.() ?? []) objectLights(o, out, windowsOf);
-      if (night > 0.4 && actors) for (const a of actors.values ? actors.values() : actors) {
+      if (actors) for (const a of actors.values ? actors.values() : actors) {
+        if (a.fx && a.fx.includes?.('lantern')) {   // carried lantern: a small warm pool, any time of day (draw() skips it by day)
+          const p = toScreen(a.x, a.y, 0);
+          out.push({ id: a.id, kind: 'lantern', x: p.sx, y: p.sy - 10, r: 26, warm: 1, flicker: 0.25 });
+          continue;
+        }
+        if (night <= 0.4) continue;
         if (a.lantern || a.carry === 'lantern') {
           const p = toScreen(a.x, a.y, 0);
           out.push({ id: a.id, kind: 'lantern', x: p.sx, y: p.sy - 10, r: 34, warm: 1, flicker: 0.3 });
@@ -105,16 +122,17 @@ export function createLighting({ world, createCanvas = defaultCanvas, lightsFor,
       const vcx = wx0 + ww / 2, vcy = wy0 + wh / 2;
       const vis = [];
       for (const l of all) {
-        if (l.x + l.r < wx0 || l.x - l.r > wx0 + ww || l.y + l.r < wy0 || l.y - l.r > wy0 + wh) continue;
+        const lr = l.r * POOL_SCALE;
+        if (l.x + lr < wx0 || l.x - lr > wx0 + ww || l.y + lr < wy0 || l.y - lr > wy0 + wh) continue;
         vis.push({ l, d: (l.x - vcx) ** 2 + (l.y - vcy) ** 2 });
       }
       vis.sort((a, b) => a.d - b.d || (a.l.id < b.l.id ? -1 : 1));
       const pools = vis.slice(0, maxPools).map(v => v.l);
       const sig = `${pools.map(l => `${l.id}@${l.x | 0},${l.y | 0}`).join('|')}#${cam.x},${cam.y},${z}#${view.cssW}x${view.cssH}#${night.toFixed(2)}`;
       if (sig !== lastSig || frame % 4 === 0) { rebuild(pools, wx0, wy0, z, lw, lh, view); lastSig = sig; }
-      gfx.setComposite('multiply');
+      gfx.setComposite('source-over');
       gfx.image(map, 0, 0, lw, lh, wx0, wy0, ww, wh);
-      if (night > GLOW_FROM) { gfx.setComposite('lighter'); gfx.image(glow, 0, 0, lw, lh, wx0, wy0, ww, wh, clamp01((night - GLOW_FROM) / (1 - GLOW_FROM))); }
+      if (night > GLOW_FROM) { gfx.setComposite('lighter'); gfx.image(glow, 0, 0, lw, lh, wx0, wy0, ww, wh, clamp01((night - GLOW_FROM) / 0.4)); }
       gfx.setComposite('source-over');
       return pools.length;
     },
@@ -130,17 +148,18 @@ export function createLighting({ world, createCanvas = defaultCanvas, lightsFor,
     gctx.clearRect?.(0, 0, lw, lh);
     for (const l of pools) {
       const f = l.flicker ? 1 - l.flicker * (0.5 + 0.5 * Math.sin(flick * 1.7 + (hashId(l.id) % 97))) : 1;
-      const x = (l.x - wx0) * k, y = (l.y - wy0) * k, r = l.r * k * (0.92 + 0.08 * f);
+      const x = (l.x - wx0) * k, y = (l.y - wy0) * k, r = l.r * POOL_SCALE * k * (0.92 + 0.08 * f);
       mctx.globalCompositeOperation = 'destination-out';
       const g = mctx.createRadialGradient(x, y, 0, x, y, r);
       // a pool lifts the veil part way (classic: warm glows in a dark town); full erasure made rows of lamps merge
       // into daylight bands along the streets
-      g.addColorStop(0, `rgba(0,0,0,${clamp01(POOL_LIFT * f)})`); g.addColorStop(0.45, `rgba(0,0,0,${POOL_LIFT * 0.45})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+      g.addColorStop(0, `rgba(0,0,0,${clamp01(POOL_LIFT * f)})`); g.addColorStop(1, 'rgba(0,0,0,0)');
       mctx.fillStyle = g; mctx.fillRect(x - r, y - r, r * 2, r * 2);
+      // parity: night.warm-glow (a warm additive glow pool per light, drawn over the veil once night passes GLOW_FROM)
       gctx.globalCompositeOperation = 'lighter';
-      const w = gctx.createRadialGradient(x, y, 0, x, y, r * 0.8);
-      const a = 0.35 * f * (l.warm ?? 1);
-      w.addColorStop(0, `rgba(255,190,110,${a})`); w.addColorStop(1, 'rgba(255,150,60,0)');
+      const w = gctx.createRadialGradient(x, y, 0, x, y, r * 0.65);
+      const a = 0.24 * f * (l.warm ?? 1);
+      w.addColorStop(0, `rgba(255,170,70,${a})`); w.addColorStop(1, 'rgba(255,170,70,0)');
       gctx.fillStyle = w; gctx.fillRect(x - r, y - r, r * 2, r * 2);
     }
     mctx.globalCompositeOperation = 'source-over'; gctx.globalCompositeOperation = 'source-over';

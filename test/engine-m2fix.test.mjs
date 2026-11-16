@@ -13,6 +13,11 @@ function fakeCanvas(w, h) {
     save() {}, restore() {}, translate() {}, scale() {}, fillRect() {}, ellipse() {}, globalAlpha: 1, globalCompositeOperation: '' };
   return { width: w, height: h, getContext: () => ctx, ctx };
 }
+// wait for a real condition (the renderer's own artReady flag) instead of one macrotask tick; bounded so a hang fails loudly
+async function artReady(r, limit = 200) {
+  for (let i = 0; i < limit && !r.stats().artReady; i++) await new Promise(res => setImmediate(res));
+  assert.ok(r.stats().artReady, 'classic art finished loading');
+}
 let made = 0;
 setCanvasFactory((w, h) => { made++; return fakeCanvas(w, h); });
 
@@ -45,7 +50,7 @@ test('a model the art cannot draw is cached once (as its placeholder), not retri
   const cache = new SpriteCache({});
   const r = createRenderer({ canvas: {}, gfx: gfx(), mod: {}, deps: { ...stubs, cache, placeholder, loadClassicArt: async () => {}, rasterize: () => { calls++; return null; } } });
   r.setWorld({ version: 1, objects: new Map([['a', obj('a', 'nosuch', 0, 0)], ['b', obj('b', 'nosuch', 1, 0)]]), villages: [] });
-  await new Promise(res => setTimeout(res, 0));
+  await artReady(r);
   for (let i = 0; i < 10; i++) r.draw(frame());
   assert.equal(calls, 1, 'one raster attempt for the shared key');
   assert.equal(r.stats().pending, 0, 'nothing left pending');
@@ -76,7 +81,7 @@ test('the art gets the settlement style object, not the key string', async () =>
     rasterize: (m, st) => { styles.push([m, st]); return { img: fakeCanvas(8, 8), bounds: { x: 0, y: 0, w: 8, h: 8 }, pivot: { x: 4, y: 8 }, anchors: {} }; } } });
   // injected rasterize keeps the old string fallback; use the real one's contract through villages
   r.setWorld({ version: 1, villages: [{ name: 'pa', style }], objects: new Map([['a', obj('a', 'cottage', 0, 0, { kind: 'building', project: 'pa' })], ['b', obj('b', 'tree', 1, 0, { project: 'pa' })]]) });
-  await new Promise(res => setTimeout(res, 0));
+  await artReady(r);
   r.draw(frame());
   assert.deepEqual(styles.find(s => s[0] === 'cottage')[1], style);
   assert.equal(styles.find(s => s[0] === 'tree')[1], null);
@@ -101,7 +106,7 @@ test('actor frames: facing column and walk / hammer rows', () => {
 
 test('actor art: engine-scale stickers, cached per look/facing/row, feet pivot', async () => {
   const sheet = { width: 64, height: 112 };
-  const art = createActorArt({ base: '/x/', loadImage: async () => sheet, createCanvas: fakeCanvas });
+  const art = createActorArt({ folk: 'ninja', base: '/x/', loadImage: async () => sheet, createCanvas: fakeCanvas });
   assert.equal(art.frame({ kind: 'folk', id: 'f', look: { seed: 0 } }), null, 'null before the sheets load');
   await art.load();
   const a = { kind: 'folk', id: 'f', look: { seed: 0 }, anim: 'walk', frame: 1, face: 3 };

@@ -1,7 +1,7 @@
 // The village art (docs/DESIGN.md §11): sprite sheets load, day/night, selection both ways, the procedural
 // fallback when the sheets are missing, and a 2560px big-home overview. Shared fixture server.
 import { test, expect, startDocked } from './fixtures.mjs'
-import { SHOTS, claudeId, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, row, villagerPoint } from './helpers.mjs'
+import { clearStorage, SHOTS, claudeId, clearOverrides, prepareBigHome, startServer, tmpDir, nextPort, row, villagerPoint } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 
@@ -13,7 +13,7 @@ test.beforeEach(async ({ request }, testInfo) => {
 for (const night of ['0', '1']) {
   test(`sprite art renders (${night === '1' ? 'night' : 'day'}), stalled tags stay legible`, async ({ page }) => {
     await page.goto(`/?night=${night}`)
-    await page.evaluate(() => localStorage.clear())
+    await clearStorage(page)
     await page.goto(`/?night=${night}`)
     await expect(page.locator('#cv')).toHaveAttribute('data-art', 'ready')
     await expect(page.locator('#labels .tag.st').first()).toBeVisible()

@@ -54,7 +54,7 @@ async function open(page, { panel = 'docked', view = 'team', query = '' } = {}) 
   const st = await withFleet(page)
   await page.goto(`/${query}`)
   await page.evaluate(([p, v]) => {
-    localStorage.clear()
+    localStorage.clear(); localStorage.setItem('va.engine', '1')
     localStorage.setItem('va.panel', JSON.stringify(p))
     localStorage.setItem('va.view', JSON.stringify({ docked: v, full: v }))
   }, [panel, view])

@@ -13,6 +13,7 @@
 //     Output <out>/<tag>/: overview.png (grid centre, largest z<=1 that fits), <village-slug>-z<zoom>.png per
 //     settlement (block centre), index.json (files, cameras, villageDebug summary).
 //   node tools/artpass/capture.mjs --sheet [--night]        the sprite sheet page (?artsheet)
+//   node tools/artpass/capture.mjs --sheet --engine 2 [--night] [--q anchors=1] [--tag sheet]   the engine v2 sheet, one PNG per page
 //
 // Output: <out>/<tag>/overview.png (zoom 1, whole town) and r<row>c<col>.png tiles at --zoom, plus
 // index.json (each tile's view-px rect, and each settlement's rect).
@@ -43,7 +44,8 @@ page.on('pageerror', e => console.error('pageerror:', e.message));
 page.on('console', m => { if (m.type() === 'error') console.error('console:', m.text()); });
 
 if (flag('sheet')) {
-  await page.goto(`${BASE}?mock&artsheet=1${flag('night') ? '&night=1' : ''}${opt('q') ? `&${opt('q')}` : ''}`);
+  // --engine 2: the engine v2 sheet (web/src/dev/engine-sheet.js); &anchors=1 via --q anchors=1
+  await page.goto(`${BASE}?mock${opt('engine') === '2' ? '&engine=2' : ''}&artsheet=1${flag('night') ? '&night=1' : ''}${opt('q') ? `&${opt('q')}` : ''}`);
   await page.waitForFunction(() => window.artSheetReady === true, null, { timeout: 60000 });
   const n = await page.evaluate(() => window.artSheetPages.length);
   for (let i = 0; i < n; i++) {
@@ -79,6 +81,12 @@ if (engine) {
   const shot = async (file, cam) => {
     await page.evaluate(c => window.villageSetCamera(c), { v: 2, ...cam });
     await settle();
+    // sprites stream in under the renderer's bake budget: wait until nothing visible is pending/queued (and ground chunks are baked)
+    await page.waitForFunction(() => { const s = window.villageDebug?.().sprites; return !s || (!s.pending && !s.queued && !s.groundPending && s.artReady !== false); }, null, { timeout: 30000, polling: 100 })
+      .catch(() => console.error(`warn: sprites still pending for ${file} (shooting anyway)`));
+    await settle();
+    const sp = await page.evaluate(() => window.villageDebug?.().sprites);
+    if (sp?.failed) console.error(`warn: ${file}: ${sp.failed} raster failures: ${(sp.failedKeys || []).join(', ')}`);
     await page.screenshot({ path: path.join(out, file) });
     return { file, cam };
   };

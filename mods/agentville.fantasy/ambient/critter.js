@@ -4,6 +4,7 @@
 // Pure, no DOM. ctx.rand is called as rand(...keys) (stateless) or rand() (stream); both work.
 // Movement follows the engine rule (web/src/engine/sim/actor.js): set a.path, read a.arrived / a.stuck; the sim moves.
 // Facing uses ctx.faceFrom (sim/actor.js) so every actor kind shares one facing convention.
+import { firstWithin } from './near.js';
 export const MAX_PATH = 8;
 const SPECIES = {
   chicken: { speed: 0.9, roam: 4, idle: [2, 6], walkP: 0.7, hops: false },
@@ -12,6 +13,7 @@ const SPECIES = {
   gull: { speed: 1.6, roam: 4, idle: [4, 10], walkP: 0.4, hops: false },
 };
 const POSES = { chicken: ['idle', 'idle', 'sit'], cat: ['idle', 'sit', 'sleep'], pigeon: ['idle'], gull: ['idle'] };
+export const CHICKENS_MAX = [3, 4];   // per settlement: hamlet, village (classic ambient.js)
 const WAIT_SEE = 7, SIT_MIN = 15, SIT_MAX = 40;
 
 /** a critter may stand here: inside the grid, free of objects, walkable, not hidden behind a building. */
@@ -24,6 +26,7 @@ const between = (r, [lo, hi]) => lo + r * (hi - lo);
 
 /** Chickens in village blocks (yards), one cat and pigeons on the square, gulls on the dock. Deterministic in rand.
  *  @returns {object[]} actor specs { id, kind:'critter', species, x, y, home:{x,y}, state:'idle', anim:'idle' } */
+// parity: amb.pigeons-on-squares
 export function spawnCritters(world, rand) {
   const grid = world?.grid, out = [];
   if (!grid) return out;
@@ -41,9 +44,19 @@ export function spawnCritters(world, rand) {
   const sq = world.square;
   spots(sq, 1, 'cat').forEach(p => add('cat', 'critter:cat', p));
   spots(sq, 4, 'pigeon').forEach((p, i) => add('pigeon', `critter:pigeon:${i}`, p));
-  (world.villages || []).forEach((v, vi) => {
+  // parity: amb.chickens-hamlet-village
+  (world.villages || []).forEach(v => {   // ids come from the settlement name, never its array position
+    const tier = v.tier | 0;
+    if (tier > 1) return;                  // classic: chickens only in hamlet (0) and village (1) yards, none in towns or cities
     const b = Array.isArray(v.block) ? { x: v.block[0], y: v.block[1], w: v.block[2], h: v.block[3] } : v.block;
-    spots(b, 3, `chicken${vi}`).forEach((p, i) => add('chicken', `critter:chicken:${vi}:${i}`, p));
+    // classic count: min(tier 0 ? 3 : 4, 1 + floor(free yard tiles / 12)); free ground inside the block stands in for yard tiles
+    const tiles = [];
+    if (b && b.w > 0 && b.h > 0) for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) if (critterOk(grid, x, y)) tiles.push([x, y]);
+    const n = tiles.length ? Math.min(tier === 0 ? CHICKENS_MAX[0] : CHICKENS_MAX[1], 1 + Math.floor(tiles.length / 12)) : 0;
+    for (let i = 0; i < n; i++) {          // pick from the free tiles themselves, so a sparse block still gets its hens
+      const [tx, ty] = tiles.splice(Math.floor(R(`chicken:${v.name}`, 'p', i) * tiles.length) % tiles.length, 1)[0];
+      add('chicken', `critter:chicken:${v.name}:${i}`, { x: tx + 0.5, y: ty + 0.5 });
+    }
   });
   const d = world.layoutData?.dock;   // this mod's own layout data (layout/dock.js)
   const drect = d && d.rect ? d.rect : d && d.w > 0 ? d : null;
@@ -99,11 +112,7 @@ function waitingAgent(a, ctx) {
 
 function nearWalker(a, ctx) {
   if (!ctx.actors) return null;
-  for (const o of ctx.actors.values()) {
-    if (o === a || o.kind === 'critter') continue;
-    if (Math.hypot(o.x - a.x, o.y - a.y) < 1) return o;
-  }
-  return null;
+  return firstWithin(ctx, a.x, a.y, 1, o => o !== a && o.kind !== 'critter');   // near.js: the step's tile index
 }
 
 export function init(a, ctx) {

@@ -128,7 +128,7 @@ truth for every signature is `web/src/engine/mod/api.js`.
 | `capacity` | `(tier, need, ctx) → number` | each poll | capacity only grows within a tier (engine-enforced) |
 | `lots` | `(project, agents, prs, ctx) → LotRequest[]` | each poll | who and what needs a lot (homes, PR sites), with rank `L/M/S` |
 | `crowns` | `(project, agents, ctx) → number` | each poll | boss slots a project shows |
-| `planSettlement` | `({ tier, seed, lots, crowns, style }, ctx) → Plan` | re-plan only | ground codes come from the mod's `terrain` table (1..199) |
+| `planSettlement` | `({ tier, seed, lots, crowns, style, from?, grow? }, ctx) → Plan` | re-plan only | ground codes come from the mod's `terrain` table (1..199); `from`: the chain the block drew before (nest it); `grow` (M7): grow thin, toward a corner of `grow.room` that fits (see `web/src/engine/world/room.js`) |
 | `style` | `(projectKey, ctx, preset?) → { key, accent? }` | once per project | opaque to the engine except `accent` |
 | `layout` | `(LayoutInput, ctx) → LayoutResult` | world rebuild, only when a block moves | input `{ settlements, square, parks, paths }`; `ctx.time` is not given and the result is cached. Returns bounds, focus, terrain-class, ground, road and lot rasters, `outside`, venue sites and `data` |
 | `scatter` | `(ScatterTile, draw, ctx) → ScatterPick \| null` | world rebuild, per unbuilt tile whose class `grows` | optional |
@@ -144,12 +144,69 @@ not resolve. Most mods leave it out.
 `color`). Class 0 is required and means "outside the grid". Ground codes 1..199 belong to the mod; 200..255 are the
 engine's `LAYOUT_GROUND` (`EDGE` 200, `VENUE` 201, `HUB` 202, `ROUTE` 203).
 
-**Venues.** `mod.venues[kind]` is a `VenueDef`: `level(load, prev, ctx) → 0..16`, `plan({ site, level }, ctx) → { objects,
+**Venues.** `mod.venues[kind]` is a `VenueDef`: `level(load, prev, ctx) → 0..63`, `plan({ site, level }, ctx) → { objects,
 nodes, berths }` and an optional `assign`. The layout names venue sites in `LayoutResult.venues[siteId]`; the engine
 builds `world.venues[siteId]`, and `resolvePlace('venue:<siteId>')` goes to the site anchor.
 
+**World events (M6, additive).** A mod may export `events(diff, ctx) → EventSpec[]` next to its data keys (not in
+`hooks`, so `MOD1_HOOKS` and API v1 are unchanged; the nearest mod in the `extends` chain that defines one wins, a mod
+without one just has no event effects). Each poll the engine drains what the sim saw change (`merge`, `found`, `tierUp`,
+`arrive`, `leave`; payloads hold only opaque ids and project keys) and hands it to the hook as `diff`. `ctx` is the usual
+ModCtx plus `accentOf(project)`, `actorsOf(project)` and `newObjects` (objects new in the last world build, for tier-ups).
+The hook returns `EventSpec`s (api.js): `at` is `plaza:<project>`, `actor:<id>` or `pr:<id>`; `effect` is `burst`
+(confetti, colours from `colors`), `ring` (an expanding ring), `site:<objId>` (scaffolds drawn over that object) or
+`anim:<name>` (an actor pose for `seconds`; actor targets only). `seconds` is clamped to 30; at most 32 effects are
+active and 32 specs are taken per poll. The engine allows the hook 10 ms: a call that throws or overruns costs only its
+own specs, malformed specs are dropped, and the village keeps running. Drawing is a pure function of the sim clock
+(no randomness, no wall clock), so a pinned `?t=` frame is reproducible.
+
+**Actors (M6, additive).** `mod.actors` is an `ActorsDecl` (api.js), merged like the data keys (parts and anims per id or
+name; `lookOf` and the fallback lists replace) and frozen. The engine draws people as paper dolls
+(`web/src/engine/art/doll.js`): a mod supplies the parts, the engine supplies the outline, rim, shadow, mirroring and the
+frame cache.
+
+- `parts: { [id]: PartDef }`. A part is `{ layer, bob?, draw(g, facing, anim, f, pal) }` or pixel rows
+  `{ layer, bob?, x?, y?, rows: string[] | { 0, 2 }, keys: { ch: colour } }`. It draws into a `size` box (default
+  16 x 24 px, feet on the bottom row, centred on x = 8) for the drawn facing only: 0 (SE, front) or 2 (NW, back). The
+  engine mirrors SE for SW (1) and NW for NE (3). Parts sort by `layer` (ties keep look order). A colour is a palette
+  slot name, `#rgb`, `#rrggbb`, `#rrggbbaa` or `[r, g, b, a]`. The painter `g` has `w`, `h`, `facing`, `anim`, `f`, `dy`,
+  `px(x, y, c)`, `rect(x, y, w, h, c)`, `rows(x, y, rows, keys)`, `erase(x, y, w, h)` and `col(c)`; in rows, `.` and space
+  are transparent. `bob` (default true) moves the part by the anim's `bob[f]`; feet and shadows set it false. Parts must
+  be pure: no randomness, time or I/O.
+- `anims: { [name]: { frames, bob? } }` for the engine anim names (`idle walk hammer sit carry wave cheer sleep enter`).
+  An anim the mod does not list draws as `idle`; the frame index wraps at `frames`.
+- `lookOf(actor, style, ctx) → { parts, palette?, extras? } | null`. `actor` is a frozen `ActorView`: `id` (opaque),
+  `kind` (`agent`, `folk`, `critter`), `role`, `parent`, `crown`, `important`, `project`, `status`, `species`, `seed` and
+  `seen`. For agents `seen` is the install-stable first-seen ordinal (classic `va.seen`, kept in `va.engine2.seen`); for
+  folk it is their spawn look seed. `style` is the actor's settlement style object or null; `ctx` is `{ hash, api }`. The
+  engine calls it once per actor while those inputs stay the same, so it must be pure. Return null to leave an actor to
+  the sheet fallback (critters, for example). `extras` are overlays such as a crown or a carried tool.
+- `size: { w, h }` (optional) and `fallback: { looks, subs, boss, critters, defaultCritter? }`: the character-sheet
+  names the engine draws as stickers (`actors/<name>.png`, `animals/<name>.png`).
+
+The engine draws the sheet fallback when the viewer asks for it (`?folk=ninja`, or localStorage
+`va.engine2.folk = 'ninja'`), when the mod has no `parts` or `lookOf`, and for the rest of the session once `lookOf`
+throws. A world with no `actors` at all uses the default world's fallback names. Frames are cached per look, facing,
+anim, frame and selection in an LRU of about 4,096 frames or 6 MB.
+
+Additive to v1 (M5; every field optional, so a mod written before them works unchanged; a mod that uses one checks for
+it, e.g. `typeof load.merged === 'number'`):
+
+**Opt-in, so v1 mods are unchanged:** an open PR reaches a mod as `state: 'building'` (plus `live: true`, additive) exactly as before. Only a world that declares `features: ['prs.loading']` (a `FEATURES` name; first-party or not, resolved per mod, not inherited along `extends`; a child of fantasy that wants ships at the harbour declares it too) receives open PRs as `state: 'loading'` with `live: true`. A mod that does not declare it never sees `'loading'`.
+
+| Addition | Where | Meaning |
+|---|---|---|
+| `state: 'loading'` and `live?: boolean` | `WorldInput.prs[]` | Only for a world that declares `features: ['prs.loading']`: the host's PR source says the PR is open now (`'loading'`) or merged (`'merged'`), and an open PR is `'loading'` with `live: true`. Every other world sees an open PR as `'building'` (with `live: true`). A rule that means "being worked on" may read `p.live ?? p.state === 'building'` in either case. |
+| `history?: { merged, rank }` | `WorldInput` | Lifetime PR totals the host knows: `merged` = PRs ever merged (never decreases), `rank` = the host's lifetime level (1 up; 0 = unknown). |
+| `load.merged`, `load.rank` | `VenueDef.level` | `WorldInput.history`, 0 when the host gives none. The same for every venue kind. |
+| level range `0..63` | `VenueDef.level` | Was `0..16`. Room to pack more than one dimension (the fantasy harbour packs `tier + 4·(rank − 1)`). |
+| `shrinkAfterMs?: number` | `VenueDef` | A level lower than the persisted one is taken only after it has been wanted for longer than this (by `ctx.time.now`); a higher level is taken at once. The engine keeps the low-since time in `persisted.venues[siteId].low`. Without it a lower level is taken at once, as before. |
+| `deck: true` | plan object (walk `'floor'` only) | The footprint becomes walkable ground: `LAYOUT_GROUND.VENUE` (walkable over water) where the ground is empty and `ROAD.PATH` where there is no road, so actors and the road graph reach a pier. `deck` on any other walk mode is dropped with lint. |
+| 5th argument `info` | `VenueDef.assign(prIds, berths, prev, ctx, info)` | `prId → { model?, state? }`: the PrSpec model and the PR state, e.g. to give big ships the long berths. Frozen. |
+
 **Features.** `FEATURES` is `layout`, `terrain.classes`, `scatter.at`, `represent.pr`, `represent.project`, `venues`,
-`persist`. A mod asks `ctx.api.has(name)` before relying on one.
+`persist`, `prs.loading`. A mod asks `ctx.api.has(name)` before relying on one. `prs.loading` is also a declaration: list it in the mod's
+`features: [...]` array to receive open PRs as `'loading'` (unknown names are ignored with a lint).
 
 **Design backlog, not in API v1.** These belong to the later sandbox and data-pack layers (`placeSites` is gone:
 `layout` replaced it; `terrain`, `objects`, `represent`, `behaviour` and `venues` are the v1 data keys above):
@@ -157,9 +214,10 @@ builds `world.venues[siteId]`, and `resolvePlace('venue:<siteId>')` goes to the 
 | Hook | Signature | When | Notes |
 |---|---|---|---|
 | `ambient` | **not in API v1.** First-party worlds carry ambient behaviour as trusted code (children inherit it); an own `ambient` on any other mod is ignored and linted (M6). Planned later as declarative data: `[{ id, count(tier), look, routine: [{ go: 'anchor:vend', dwell: [20, 90] }…], night }]` | world rebuild | — |
-| `events` | `(diff, ctx) → EventSpec[]` | each poll | `{ kind, at: 'plaza:<proj>'\|'actor:<id>'\|'pr:<id>', effect: '<sprite anim>', seconds }` |
+| `lightsFor`, `extraLights` | **not in API v1.** First-party night light pools (code, like `ambient`): `lightsFor(obj)` adds per-object pools, `extraLights(world, actors)` adds plaza/square/actor pools; another mod's own copies are ignored and linted (M6) | world rebuild | — |
+| `events` | **in the engine since M6 as an optional top-level `events` function** (World events, below): `(diff, ctx) → EventSpec[]` | each poll that changes something | `{ kind, at: 'plaza:<proj>'\|'actor:<id>'\|'pr:<id>', effect: 'burst'\|'ring'\|'site:<objId>'\|'anim:<name>', seconds, colors? }`; 10 ms deadline |
 | `sprites` | `render(model, variant, style, opts) → { bitmap, pivot, bounds?, anchors }` | sprite-cache miss (batched) | code art; data packs use an atlas instead |
-| `actors` | `render(look, facing, anim, frame, style) → { bitmap, pivot, head }` | cache miss | |
+| `actors` | **in the engine since M6 as `mod.actors`** (Actors, above): parts + `lookOf`, drawn by the engine's doll | cache miss | |
 | `ground` | `renderTile(code, neighbours, style) → bitmap` | chunk bake (batched) | |
 | `lighting` | data: `{ tint(night) → rgba, sources: modelId → { r, warm } }` | load | |
 | `ui` | data: badge sprites, label tokens, sign and plate templates (`"{name}"`, `"{name} · {stalled}"`) | load | no CSS strings, no HTML |

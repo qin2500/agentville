@@ -13,15 +13,44 @@
 // live, hidden, important, since, lastActivityAt, folds/pinned/stoppedNote inputs (important.js reads `important`, `hidden`).
 import { visibleProjects } from '../quiet.js';
 
-// Server shape audited 2026-11-13 (A8): prompt is an enum key (permission|question|plan|dialog), severity error|attention|null,
+// Server shape audited (A8): prompt is an enum key (permission|question|plan|dialog), severity error|attention|null,
 // prs ids are digit strings; stoppedNote/folds/pinned are computed client-side (important.js) from reason/live/important/hidden.
-const AGENT_FIELDS = ['id', 'name', 'shortName', 'project', 'bucket', 'severity', 'prompt', 'role', 'parentId', 'childIds', 'prs', 'live', 'hidden',
+export const AGENT_FIELDS = ['id', 'name', 'shortName', 'project', 'bucket', 'severity', 'prompt', 'role', 'parentId', 'childIds', 'prs', 'live', 'hidden',
   'important', 'since', 'lastActivityAt', 'reason', 'color', 'harness', 'kind', 'ask', 'resume', 'reopened', 'neverStarted'];
 const EMPTY_DOCK = { loading: [], sailed: [], total: 0, level: 1 };
 
-const pickAgent = a => {
+// PERF M7 (poll path): the field copy written out (named reads are much faster than a keyed loop over AGENT_FIELDS); the
+// same fields in the same order as `for (const k of AGENT_FIELDS) if (a[k] !== undefined) o[k] = a[k]` (a test pins it).
+export function copyAgentFields(a) {
   const o = {};
-  for (const k of AGENT_FIELDS) if (a[k] !== undefined) o[k] = a[k];
+  if (a.id !== undefined) o.id = a.id;
+  if (a.name !== undefined) o.name = a.name;
+  if (a.shortName !== undefined) o.shortName = a.shortName;
+  if (a.project !== undefined) o.project = a.project;
+  if (a.bucket !== undefined) o.bucket = a.bucket;
+  if (a.severity !== undefined) o.severity = a.severity;
+  if (a.prompt !== undefined) o.prompt = a.prompt;
+  if (a.role !== undefined) o.role = a.role;
+  if (a.parentId !== undefined) o.parentId = a.parentId;
+  if (a.childIds !== undefined) o.childIds = a.childIds;
+  if (a.prs !== undefined) o.prs = a.prs;
+  if (a.live !== undefined) o.live = a.live;
+  if (a.hidden !== undefined) o.hidden = a.hidden;
+  if (a.important !== undefined) o.important = a.important;
+  if (a.since !== undefined) o.since = a.since;
+  if (a.lastActivityAt !== undefined) o.lastActivityAt = a.lastActivityAt;
+  if (a.reason !== undefined) o.reason = a.reason;
+  if (a.color !== undefined) o.color = a.color;
+  if (a.harness !== undefined) o.harness = a.harness;
+  if (a.kind !== undefined) o.kind = a.kind;
+  if (a.ask !== undefined) o.ask = a.ask;
+  if (a.resume !== undefined) o.resume = a.resume;
+  if (a.reopened !== undefined) o.reopened = a.reopened;
+  if (a.neverStarted !== undefined) o.neverStarted = a.neverStarted;
+  return o;
+}
+const pickAgent = a => {
+  const o = copyAgentFields(a);
   o.project ||= '—';
   o.prs = (a.prs || []).map(p => ({ ...p, id: String(p.id) }));
   return o;
@@ -40,6 +69,7 @@ export function makeView(src, { now = Date.now(), selected = null, demo = false 
   let agents = all, quiet = [];
   if (!demo) {
     const sel = selected && byId.get(selected);
+    // parity: world.quiet-projects-hidden, world.selected-project-always-shown
     const vis = visibleProjects(all, { hideQuiet: !!src.hideQuiet, keep: sel ? [sel.project] : [], now });
     agents = all.filter(a => vis.shown.has(a.project));
     quiet = vis.quiet || [];

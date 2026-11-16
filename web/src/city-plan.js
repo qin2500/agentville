@@ -549,7 +549,8 @@ function spurs(P, code) {
   }
 }
 // Walkable tiles that cannot reach a gate become garden (back yards with no way out).
-function connect(P) {
+function connect(P, lock = null) {
+  const locked = i => !!lock && (i % P.w) >= lock.x && (i % P.w) < lock.x + lock.w && ((i / P.w) | 0) >= lock.y && ((i / P.w) | 0) < lock.y + lock.h;
   const { w, h, g } = P, seen = new Uint8Array(w * h), q = [];
   for (let i = 0; i < w * h; i++) { const x = i % w, y = (i / w) | 0; if (edge(P, x, y) && WALKABLE.has(g[i])) { seen[i] = 1; q.push(i); } }
   for (let qi = 0; qi < q.length; qi++) {
@@ -560,7 +561,7 @@ function connect(P) {
       if (!seen[j] && WALKABLE.has(g[j])) { seen[j] = 1; q.push(j); }
     }
   }
-  for (let i = 0; i < w * h; i++) if (WALKABLE.has(g[i]) && !seen[i]) g[i] = g[i] === G.YARD ? G.GARDEN : G.LAWN;
+  for (let i = 0; i < w * h; i++) if (WALKABLE.has(g[i]) && !seen[i] && !locked(i)) g[i] = g[i] === G.YARD ? G.GARDEN : G.LAWN;
   for (let i = 0; i < w * h; i++) if (g[i] === G.NONE) g[i] = G.GARDEN;
 }
 function finishProps(P) {
@@ -620,6 +621,13 @@ function stepFor(tier, lots) {
   while (capAt(tier, s) < n) s++;
   return s;
 }
+// Plot size of a fresh plan (seed-independent): the size a ring wrapped round an older plan grows to at least.
+const dimMemo = new Map();
+function dimsAt(tier, s) {
+  const k = tier * 1000 + s;
+  if (!dimMemo.has(k)) { const p = generate(tier, s, 0); dimMemo.set(k, { w: p.w, h: p.h }); }
+  return dimMemo.get(k);
+}
 
 // The lot capacity bucket planSettlement builds for: the smallest growth step with room for `lots`.
 export function capacityFor(tier, lots) {
@@ -627,10 +635,354 @@ export function capacityFor(tier, lots) {
   return capAt(t, stepFor(t, lots));
 }
 
-// Deterministic in (tier, seed, capacityFor(tier, lots)).
-export function planSettlement({ tier = 0, seed = 0, lots = 0 } = {}) {
-  const t = clampTier(tier);
-  const p = generate(t, stepFor(t, lots), seed);
-  p.cap = capAt(t, stepFor(t, lots));
+// ---- nested growth (design decision: decor never shrinks on tier-up) ---------------------------
+// A plan grows by WRAPPING the plan it grew from: the old plan is kept whole (every lot, civic and prop at the same
+// tile and variant, the same lot ids, the same ground) at a fixed offset `nest = { from, dx, dy }` inside the new one,
+// and a ring of the new tier's streets, house rows and decor is built round it (a new tier also gets its civic band:
+// the village green with chapel, inn and smithy; the town square with guildhall, clock tower and market; the city's
+// square with the cathedral). So the plan for tier N+1 is a superset of tier N's: higher tiers only add.
+// A plan is named by its `chain`, e.g. '0.2>1.0>2.1': the fresh plan '0.2' (tier.step) wrapped by a tier-1 ring sized
+// like a fresh tier-1 step-0 plan, then by a tier-2 ring sized like step 1. Hosts persist `plan.chain` and pass it back
+// as `from` on the next re-plan; plans are deterministic in (seed, chain). Without `from` (or after a tier drop)
+// the plan is fresh, exactly as before nesting.
+//
+// LINK FORMAT (versioned, M7): a link is `<tier>.<step><tag>`. The tag names the rule that grew this link:
+//   no tag   v1 ring (wrap): a full ring round the old plan, sized like a fresh (tier, step) plan. Every chain saved before
+//            M7 has only untagged links, and they replay byte-identically forever (test/city-plan-golden.test.mjs).
+//   a b c d  v2 thin growth (thinWrap): the old plan stays in one corner and the plot grows only away from it, by the
+//            new tier's civic band and `step` extra bands; a = south-east, b = south-west, c = north-east, d = north-west.
+// The first link is always untagged (a fresh plan). Links of different rules mix freely in one chain ('0.2>1.0a>2.1'):
+// each link is applied to the plan before it by its own rule. A new rule takes new letters (or a longer tag, up to 3
+// lowercase letters), never a new meaning for an old one; a tag this code does not know makes the chain unreadable, so
+// it plans fresh. The planner picks the tag: `grow` absent = v1 (classic callers), `grow` given = v2 (planSettlement).
+const CHAIN_MAX = 128;   // a longer (corrupt) chain plans fresh
+const THIN = { a: [1, 1], b: [-1, 1], c: [1, -1], d: [-1, -1] };   // v2 tag -> [east +1 / west -1, south +1 / north -1]
+const LINK = /^([0-3])\.(\d{1,3})([a-z]{0,3})$/;
+const KNOWN_TAGS = new Set(['', ...Object.keys(THIN)]);
+export function parseChain(from) {
+  if (typeof from !== 'string' || !from) return null;
+  const parts = from.split('>');
+  if (parts.length > CHAIN_MAX) return null;
+  const out = [];
+  for (const p of parts) {
+    const m = LINK.exec(p);
+    if (!m || !KNOWN_TAGS.has(m[3]) || (m[3] && !out.length)) return null;
+    out.push(m[3] ? [Number(m[1]), Number(m[2]), m[3]] : [Number(m[1]), Number(m[2])]);
+  }
+  for (let i = 1; i < out.length; i++) if (out[i][0] < out[i - 1][0]) return null;
+  return out;
+}
+const chainKey = c => c.map(([t, s, tag = '']) => `${t}.${s}${tag}`).join('>');
+
+function freshPlan(t, s, seed) {
+  const p = generate(t, s, seed);
+  p.cap = capAt(t, s);
+  p.chain = `${t}.${s}`;
+  p.nest = null;
   return p;
+}
+function buildChain(chain, seed) {
+  let p = freshPlan(chain[0][0], chain[0][1], seed);
+  for (let i = 1; i < chain.length; i++) {
+    const [t, st, tag] = chain[i], key = chainKey(chain.slice(0, i + 1));
+    p = tag ? thinWrap(p, t, st, seed, i, key, tag) : wrap(p, t, st, seed, i, key);
+  }
+  return p;
+}
+
+// The new tier's civic band pieces, west to east: buildings (b) and open squares (q), with the gap after each.
+function civicPieces(t, r, flip) {
+  let a;
+  if (t === 1) a = [{ b: civ('inn'), g: 1 }, { q: 'green', w: 8, g: 1 }, { b: civ('chapel'), g: 1 }, { b: civ('smithy'), g: 0 }];
+  else if (t === 2) a = [{ b: civ('guildhall'), g: 2 }, { q: 'square', w: 12, g: 0 }, { q: 'market', w: 9, g: 2 }, { b: civ('markethall'), g: 2 }, { b: lot('manor', 'L'), g: 0 }];
+  else a = [{ b: lot('manor', 'L'), g: 2 }, { b: civ('guildhall'), g: 2 }, { q: 'square', w: 14, g: 2 }, { b: civ('cathedral'), g: 2 }, { b: civ('markethall'), g: 2 }, { q: 'market', w: 9, g: 0 }];
+  if (flip) { a.reverse(); for (let i = 0; i < a.length; i++) a[i].g = i < a.length - 1 ? a[i + 1].g : 0; }
+  return a;
+}
+const piecesW = ps => ps.reduce((n, p) => n + (p.b ? p.b.w : p.w) + p.g, 0);
+
+// What every grown plan builds with (old ring and thin growth alike): tier constants, a band of houses, the civic band,
+// the edge dressing. Each call draws from `r` in the same order as the code it replaced, so plans stay byte-identical.
+function ringKit(P, t, r) {
+  const urbanT = t >= 2, C = t === 3;
+  const style = TIERS[t], sw = urbanT ? 2 : 1, gr = 2, HB = gr + 3 + 1 + sw, e = 1;
+  const LN = urbanT ? G.STREET : G.LANE, fcCode = urbanT ? G.PLAZA : G.YARD;
+  const edgeCode = C ? G.LAWN : urbanT ? G.ORCHARD : G.PASTURE;
+  const lampKind = C ? 'lamppost' : 'lamp';
+  const houseKey = rank => (C ? (rank === 'M' ? 'townhouseM' : 'townhouse') : urbanT ? (rank === 'M' ? 'timberM' : 'timber') : t === 1 ? 'cottage' : 'farmhouse');
+  const gap = urbanT ? 2 : 1;
+  // A band of houses on [xa..xb] x [y0..y0+hb-1]: gardens, the row, its forecourt and a street that runs on to xs0..xs1.
+  const band = (xa, xb, y0, hb, rank, xs0, xs1) => {
+    const fc = y0 + hb - sw - 1;
+    fill(P, xa, y0, xb - xa + 1, fc - y0 + 1, G.GARDEN);
+    const key = houseKey(rank), [w] = DIM[key], n = fit(xb - xa + 1 - 2, w, gap);
+    const houses = n > 0 ? row(P, xa + 1, xb - 1, fc, many(n, key, rank), gap) : [];
+    dressBlock(P, r, xa, xb, y0, fc, style, houses, fcCode);
+    fill(P, xs0, fc + 1, xs1 - xs0 + 1, sw, LN);
+    if (urbanT) prop(P, lampKind, xa + 0.5, fc + 1 + 0.15, 0);
+    return houses;
+  };
+  // The civic band (a new tier's centre) on rows [y..y+HBc-1], across the plot: squares and civic buildings centred,
+  // rows of M houses either side, the street along its foot.
+  const civicBand = (pieces, y, HBc) => {
+    const W = P.w, civics = [];
+    const fc = y + HBc - sw - 1, tot = piecesW(pieces), xa = e, xb = W - 1 - e;
+    fill(P, xa, y, xb - xa + 1, fc - y + 1, G.GARDEN);
+    let x = xa + ((xb - xa + 1 - tot) >> 1);
+    const left = [xa, x - 1], right = [x + tot, xb];
+    for (const pc of pieces) {
+      if (pc.b) civics.push(place(P, pc.b, x, fc - pc.b.h));
+      else {
+        const q = { x, y, w: pc.w, h: fc - y + 1, kind: pc.q };
+        fill(P, q.x, q.y, q.w, q.h, pc.q === 'green' ? G.LAWN : pc.q === 'market' ? G.MARKET : G.PLAZA);
+        P.squares.push(q);
+        if (pc.q !== 'market') P.plaza = { x: q.x, y: q.y, w: q.w, h: q.h };
+        dressSquare(P, r, q, t);
+      }
+      x += (pc.b ? pc.b.w : pc.w) + pc.g;
+    }
+    const sideRow = ([a, b]) => {
+      const key = houseKey('M'), [w] = DIM[key], n = fit(b - a + 1 - 2, w, gap);
+      return n > 0 && b - a + 1 >= w + 2 ? row(P, a + 1, b - 1, fc, many(n, key, 'M'), gap) : [];
+    };
+    const hs = [...sideRow(left), ...sideRow(right)];
+    dressBlock(P, r, xa, xb, y, fc, style, [...hs, ...civics].sort((a, b) => a.x - b.x), fcCode);
+    fill(P, 0, fc + 1, W, sw, LN);
+  };
+  // the edge: a hedge round a village, orchard trees round a town, the tree-lined lawn belt round a city (`skip(x, y)`:
+  // tiles that are not this ring's, e.g. the old plan where it reaches the plot edge)
+  const dressEdge = (skip = null) => {
+    const W = P.w, H = P.h;
+    const edgeAt = (x, yy) => !(skip && skip(x, yy)) && (get(P, x, yy) === edgeCode || (!urbanT && get(P, x, yy) === G.FIELD));
+    for (let x = 1; x < W - 1; x += 3) {
+      if (edgeAt(x, 0)) prop(P, urbanT ? 'tree' : 'bush', x + 0.5, 0.5, x % 4);
+      if (edgeAt(x, H - 1)) prop(P, urbanT ? 'tree' : 'bush', x + 0.5, H - 0.5, (x + 1) % 4);
+    }
+    for (let yy = 1; yy < H - 1; yy += 3) {
+      if (edgeAt(0, yy)) prop(P, C ? 'pine' : urbanT ? 'tree' : 'bush', 0.5, yy + 0.5, 2);
+      if (edgeAt(W - 1, yy)) prop(P, C ? 'pine' : urbanT ? 'tree' : 'bush', W - 0.5, yy + 0.5, 3);
+    }
+  };
+  // the plot: edge ground, (rural) field rows north and south, garden inside; then the old plan locked in at (dx, dy)
+  const ground = (core, dx, dy) => {
+    const W = P.w, H = P.h, cw = core.w, ch = core.h;
+    fill(P, 0, 0, W, H, edgeCode);
+    if (!urbanT) { fill(P, 0, 0, W, 1, G.FIELD); fill(P, 0, H - 1, W, 1, G.FIELD); }
+    fill(P, e, e, W - 2 * e, H - 2 * e, G.GARDEN);
+    // the old plan: its footprints block the ring, its tiles are locked
+    for (const b of [...core.lots, ...core.civic]) for (let j = b.y; j < b.y + b.h; j++) for (let i = b.x; i < b.x + b.w; i++) P.occ[(j + dy) * W + i + dx] = -1;
+    for (let j = 0; j < ch; j++) for (let i = 0; i < cw; i++) P.g[(j + dy) * W + i + dx] = core.ground[j * cw + i];
+    return { x: dx, y: dy, w: cw, h: ch };
+  };
+  return { urbanT, C, style, sw, HB, e, LN, houseKey, gap, band, civicBand, dressEdge, ground };
+}
+
+// Wrap `core` (a plan) in a ring of tier `t` sized at least like a fresh (t, s) plan. `depth` salts the rng.
+function wrap(core, t, s, seed, depth, key) {
+  const fresh = core.tier < t;
+  const r = rng(seedNum(seed) ^ Math.imul(t + 1, 0x9e3779b1) ^ Math.imul(s + 1, 0x85ebca6b) ^ Math.imul(depth + 7, 0xc2b2ae35));
+  const pieces = fresh ? civicPieces(t, r, !!(seedNum(seed) & 2)) : [];
+  const { w: tw, h: th } = dimsAt(t, s);
+  const cw = core.w, ch = core.h, urbanT = t >= 2, minWs = urbanT ? 6 : 5;
+  const sw = urbanT ? 2 : 1, e = 1, HB = 2 + 3 + 1 + sw;
+  const HBc = fresh ? Math.max(HB, Math.max(...pieces.map(p => (p.b ? p.b.h : 0))) + 1 + sw + 1) : HB;
+  const ws = Math.max(minWs, Math.ceil((tw - 2 * e - 2 * sw - cw) / 2), Math.ceil((piecesW(pieces) + 2 - 2 * sw - cw) / 2));
+  const nBands = Math.max(2, Math.ceil((th - 2 * e - ch - sw - (HBc - HB)) / HB));
+  const nN = nBands >> 1, nS = nBands - nN;
+  const W = 2 * e + 2 * ws + 2 * sw + cw;
+  const dx = e + ws + sw, dy = e + nN * HB;
+  const H = dy + ch + sw + HBc + (nS - 1) * HB + e;
+  const P = grid(W, H);
+  P.tier = t;
+  const K = ringKit(P, t, r), { band, LN } = K;
+  const lock = K.ground(core, dx, dy);
+  // north bands (the last one's street is the ring road along the old plan's north edge)
+  for (let k = 0; k < nN; k++) band(e, W - 1 - e, e + k * HB, HB, 'S', 0, W - 1);
+  // the ring road west, east and south of the old plan
+  fill(P, dx - sw, dy, sw, ch, LN);
+  fill(P, dx + cw, dy, sw, ch, LN);
+  fill(P, 0, dy + ch, W, sw, LN);
+  // side bands beside the old plan, each with a street out to the plot edge and in to the ring road
+  const nSide = Math.floor(ch / HB), y1 = dy + ch - nSide * HB;
+  for (let k = 0; k < nSide; k++) {
+    band(e, dx - sw - 1, y1 + k * HB, HB, 'S', 0, dx - sw - 1);
+    band(dx + cw + sw, W - 1 - e, y1 + k * HB, HB, 'S', dx + cw + sw, W - 1);
+  }
+  // south: the civic band (a new tier's centre) or a plain band, then plain bands to the south edge
+  let y = dy + ch + sw;
+  if (fresh) { K.civicBand(pieces, y, HBc); y += HBc; }
+  for (let k = fresh ? 1 : 0; k < nS; k++) { band(e, W - 1 - e, y, HB, k === 0 ? 'M' : 'S', 0, W - 1); y += HB; }
+  K.dressEdge();
+  connect(P, lock);
+  return assemble(P, core, dx, dy, key);
+}
+
+// v2 thin growth (link tags a-d, see parseChain): the old plan stays whole in one CORNER of the new plot and the plot only
+// grows away from it, by as little as the new lots and the new tier's centre need:
+//   - bands of houses across the whole new width on one side (south: a ring road along the old plan's south edge first,
+//     so its gates stay connected; north: the band nearest the old plan has its street along the old plan's north edge),
+//     the new tier's civic band (green / square / cathedral close) nearest the old plan;
+//   - a side strip east or west only when the civic band is wider than the old plan: a street along the old plan's side,
+//     side bands of houses when it is wide enough, the edge.
+// So a cap step grows one side by one band (HB = 7 village / 8 town and city) plus the street and the edge, and a tier-up
+// grows one side by the civic band and, when the old plan is narrower than the civic band, a second side to its width.
+// The corner is the tag: a = grow south-east, b = south-west, c = north-east, d = north-west. `s` = extra plain bands.
+function thinDims(core, t, s) {
+  const fresh = core.tier < t, urbanT = t >= 2, sw = urbanT ? 2 : 1, e = 1, HB = 2 + 3 + 1 + sw;
+  const pieces = fresh ? civicPieces(t, () => 0, false) : [];   // widths and heights only (the order does not matter)
+  const HBc = fresh ? Math.max(HB, Math.max(...pieces.map(p => (p.b ? p.b.h : 0))) + 1 + sw + 1) : HB;
+  let X = Math.max(0, piecesW(pieces) + 2 * e - core.w);
+  if (X > 0) X = Math.max(X, sw + 1 + e);
+  const bands = HBc + s * HB;
+  return { X, north: e + bands, south: sw + bands + e, sw, e, HB, HBc };
+}
+function thinWrap(core, t, s, seed, depth, key, tag) {
+  const [gx, gy] = THIN[tag];
+  const fresh = core.tier < t;
+  const r = rng(seedNum(seed) ^ Math.imul(t + 1, 0x9e3779b1) ^ Math.imul(s + 1, 0x85ebca6b) ^ Math.imul(depth + 7, 0xc2b2ae35) ^ Math.imul(tag.charCodeAt(0), 0x27d4eb2f));
+  const pieces = fresh ? civicPieces(t, r, !!(seedNum(seed) & 2)) : [];
+  const { X, north, south, sw, e, HB, HBc } = thinDims(core, t, s);
+  const cw = core.w, ch = core.h, Y = gy > 0 ? south : north;
+  const W = cw + X, H = ch + Y, dx = gx > 0 ? 0 : X, dy = gy > 0 ? 0 : Y;
+  const P = grid(W, H);
+  P.tier = t;
+  const K = ringKit(P, t, r), { band, LN } = K;
+  const lock = K.ground(core, dx, dy);
+  const inLock = (x, y) => x >= dx && x < dx + cw && y >= dy && y < dy + ch;
+  // the bands, nearest the old plan first: the civic band (a new tier) or an M band, then S bands outwards
+  const n = 1 + s, hs = k => (k === 0 ? (fresh ? HBc : HB) : HB);
+  let y = gy > 0 ? ch + sw : dy;
+  if (gy > 0) fill(P, 0, ch, W, sw, LN);   // the ring road along the old plan's south edge
+  for (let k = 0; k < n; k++) {
+    const h = hs(k);
+    if (gy < 0) y -= h;
+    if (k === 0 && fresh) K.civicBand(pieces, y, h);
+    else band(e, W - 1 - e, y, h, k === 0 ? 'M' : 'S', 0, W - 1);
+    if (gy > 0) y += h;
+  }
+  // the side strip beside the old plan: a street along its side (edge to edge of the old plan's rows, on to the bands'
+  // street or ring road), then side bands whose streets run out to the plot edge
+  if (X > 0) {
+    const rx = gx > 0 ? cw : X - sw, y0 = gy > 0 ? 0 : dy, y1 = gy > 0 ? ch : H;
+    fill(P, rx, y0, sw, y1 - y0, LN);
+    const xa = gx > 0 ? cw + sw : e, xb = gx > 0 ? W - 1 - e : X - sw - 1;
+    const [hw] = DIM[K.houseKey('S')];
+    if (xb - xa + 1 >= hw + 2) {
+      const rows = ch - e, nSide = Math.floor(rows / HB), top = gy > 0 ? ch - nSide * HB : H - e - nSide * HB;
+      for (let k = 0; k < nSide; k++) band(xa, xb, top + k * HB, HB, 'S', gx > 0 ? xa : 0, gx > 0 ? W - 1 : xb);
+    }
+  }
+  K.dressEdge(inLock);
+  connect(P, lock);
+  return assemble(P, core, dx, dy, key);
+}
+
+// The grown plan: the old plan shifted by (dx, dy), then what was built round it (P: the new plot, the old one locked in it).
+function assemble(P, core, dx, dy, key) {
+  const W = P.w, H = P.h;
+  const props = finishProps(P);
+  const sh = o => ({ ...o, x: o.x + dx, y: o.y + dy });
+  const pl = P.plaza || sh(core.plaza), pcx = pl.x + pl.w / 2, pcy = pl.y + pl.h / 2;
+  const order = { L: 0, M: 1, S: 2 };
+  const base = core.lots.length;
+  const lots = [...core.lots.map(sh), ...P.blds.filter(b => b.kind === 'lot')
+    .map(b => ({ b, d: Math.hypot(b.x + b.w / 2 - pcx, b.y + b.h / 2 - pcy) }))
+    .sort((a, c) => order[a.b.rank] - order[c.b.rank] || a.d - c.d || a.b.y - c.b.y || a.b.x - c.b.x)
+    .map(({ b }, i) => ({ id: `L${base + i}`, x: b.x, y: b.y, w: b.w, h: b.h, doorX: b.w * 8, rank: b.rank, look: b.look }))];
+  const n = {};
+  for (const c of core.civic) n[c.look] = (n[c.look] || 0) + 1;
+  const civic = [...core.civic.map(sh), ...P.blds.filter(b => b.kind === 'civic').map(b => {
+    const c = n[b.look] = (n[b.look] || 0) + 1;
+    const o = { id: c > 1 ? `${b.look}-${c - 1}` : b.look, look: b.look, x: b.x, y: b.y, w: b.w, h: b.h };
+    if (b.door) o.doorX = b.w * 8;
+    return o;
+  })];
+  const gates = [];
+  for (let yy = 0; yy < H; yy++) for (let x = 0; x < W; x++) if (edge(P, x, yy) && WALKABLE.has(P.g[yy * W + x])) gates.push([x, yy]);
+  return {
+    tier: P.tier, w: W, h: H, cap: lots.length, ground: P.g, lots, civic,
+    props: [...core.props.map(sh), ...props], squares: [...core.squares.map(sh), ...P.squares],
+    plaza: { ...pl }, gates, chain: key, nest: { from: core.chain, dx, dy, plan: core },
+  };
+}
+
+// A new tier's square, green or market: its centrepiece and dressing.
+function dressSquare(P, r, q, t) {
+  const cx = q.x + q.w / 2, cy = q.y + q.h / 2;
+  if (q.kind === 'market') {
+    for (let y = q.y; y < q.y + q.h; y += 2) for (let xx = q.x + 1; xx + 2 <= q.x + q.w - 1; xx += 3) prop(P, 'stall', xx + 1, y + 0.5, Math.floor(r() * 8), { dir: 'x' });
+    prop(P, 'cart', q.x + 0.5, q.y + q.h - 0.5, 0);
+    prop(P, 'crate', q.x + q.w - 0.5, q.y + 0.5, 0);
+    return;
+  }
+  if (q.kind === 'green') {
+    prop(P, 'maypole', cx - 1.5, cy, 0);
+    prop(P, 'well', cx + 1.5, cy, 0);
+    prop(P, 'tree', q.x + 0.5, q.y + 0.5, 0);
+    prop(P, 'tree', q.x + q.w - 0.5, q.y + 0.5, 1);
+    prop(P, 'bench', q.x + 0.5, q.y + q.h - 0.5, 0);
+    prop(P, 'bench', q.x + q.w - 0.5, q.y + q.h - 0.5, 1);
+    prop(P, 'flowers', cx - 2.5, q.y + 0.5, 1);
+    return;
+  }
+  const C = t === 3;
+  if (C) {
+    prop(P, 'fountain', Math.floor(cx), Math.floor(cy), 0);
+    prop(P, 'statue', q.x + 1.5, q.y + 0.6, 0);
+    prop(P, 'statue', q.x + q.w - 1.5, q.y + 0.6, 1);
+    prop(P, 'lamppost', cx - 2.5, q.y + q.h - 0.5, 0);
+    prop(P, 'lamppost', cx + 2.5, q.y + q.h - 0.5, 0);
+  } else {
+    place(P, civ('clocktower'), q.x + q.w - 3, q.y);
+    prop(P, 'fountain', Math.floor(cx), Math.floor(cy), 0);
+    prop(P, 'lamp', cx - 2.5, q.y + q.h - 0.5, 0);
+    prop(P, 'noticeboard', q.x + 0.5, q.y + q.h - 0.5, 0);
+  }
+  prop(P, 'tree', q.x + 0.5, q.y + 0.5, 1);
+  prop(P, 'bench', cx - 1.5, q.y + q.h - 0.5, 0);
+  prop(P, 'bench', cx + 1.5, q.y + q.h - 0.5, 1);
+  prop(P, 'flowers', cx - 1.5, cy + 1.5, 2);
+}
+
+// Deterministic in (tier, seed, capacityFor(tier, lots)) and, with `from` (the `chain` of the plan the host drew
+// before this re-plan), in that chain: the result contains the `from` plan unchanged at `plan.nest` = { from, dx, dy }
+// when the tier did not drop. Every plan carries `chain` (persist it) and `nest` (null for a fresh plan).
+export function planSettlement({ tier = 0, seed = 0, lots = 0, from = null, grow = null } = {}) {
+  const t = clampTier(tier);
+  const need = Math.max(1, Math.floor(Number(lots) || 0));
+  const chain = parseChain(from);
+  if (!chain || chain[chain.length - 1][0] > t) return freshPlan(t, stepFor(t, lots), seed);
+  const prev = buildChain(chain, seed);
+  if (prev.tier === t && prev.lots.length >= need) return prev;
+  const at = (s, tag) => `${chainKey(chain)}>${t}.${s}${tag}`;
+  if (!grow) {
+    for (let s = 0; ; s++) {
+      const p = wrap(prev, t, s, seed, chain.length, at(s, ''));
+      if (p.lots.length >= need || s >= 400) return p;
+    }
+  }
+  // v2 thin growth: the fewest extra bands that hold the lots (the lot count is the same in every corner), then the corner
+  // with room for it (grow.room, see growCorner), else the default, a (south-east)
+  for (let s = 0; ; s++) {
+    const p = thinWrap(prev, t, s, seed, chain.length, at(s, 'a'), 'a');
+    if (p.lots.length < need && s < 400) continue;
+    const tag = growCorner(thinDims(prev, t, s), grow.room);
+    return tag === 'a' ? p : thinWrap(prev, t, s, seed, chain.length, at(s, tag), tag);
+  }
+}
+
+// The corner for a thin growth of dims d (thinDims) given `room`: { se, sw, ne, nw } (any may be missing), each an array
+// R where R[g] is the most the block can grow vertically (toward that corner) when it grows g tiles horizontally (toward
+// it) and still keeps its gap to everything round it; -1 or a missing entry: no room. The corner that fits with the most
+// vertical room to spare wins (it is likeliest to fit the next growth too); ties go a, b, c, d; none fits: a.
+const ROOM_KEYS = { a: 'se', b: 'sw', c: 'ne', d: 'nw' };
+function growCorner(d, room) {
+  if (!room || typeof room !== 'object') return 'a';
+  let best = 'a', slack = -1;
+  for (const tag of Object.keys(THIN)) {
+    const R = room[ROOM_KEYS[tag]], dv = THIN[tag][1] > 0 ? d.south : d.north;
+    const v = Array.isArray(R) && Number.isInteger(R[d.X]) ? R[d.X] - dv : -1;
+    if (v >= 0 && v > slack) { best = tag; slack = v; }
+  }
+  return best;
 }

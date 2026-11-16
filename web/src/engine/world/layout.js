@@ -6,6 +6,7 @@ import { ROAD, LAYOUT_GROUND, LOT } from '../core/grid.js';
 import { MOD_CODE_MAX } from '../mod/api.js';
 import { modCtx } from '../mod/registry.js';
 import { pathsOf } from './sites.js';
+import { drainSync } from '../core/slices.js';
 
 /** @typedef {{ villages: object[], square: object, parks: object[], bounds: { ox: number, oy: number, w: number, h: number },
  *   focus: { ox: number, oy: number, w: number, h: number }, tiles: object|null, outside: number, venues: object, data: object|null,
@@ -123,7 +124,15 @@ function deepFreeze(o) {
  * @param {{ seed?: number, cache?: object|null }} [opts]
  * @returns {Sites}
  */
-export function runLayout(placed, mod, { seed = 0, cache = null } = {}) {
+export function runLayout(placed, mod, opts) {
+  return drainSync(runLayoutSteps(placed, mod, opts));
+}
+
+/** runLayout as a step generator (PERF M7), for the sliced cold build (build.js buildWorldSteps). A layout hook
+ * may carry `hook.steps`: a generator function with the hook's arguments whose return value is the hook's LayoutResult
+ * (the same result; it only yields between its passes). When it does, the hook's passes become steps here; otherwise the
+ * hook is one step. Either way the result, the memo and the validation are runLayout's. */
+export function* runLayoutSteps(placed, mod, { seed = 0, cache = null } = {}) {
   const hook = layoutHookOf(mod);
   let key = null, res = null;
   if (cache) {
@@ -139,7 +148,9 @@ export function runLayout(placed, mod, { seed = 0, cache = null } = {}) {
     const input = inputOf(placed, mod);
     const ctx = modCtx(mod, { seed });
     delete ctx.time;   // the result is cached across polls: a layout may not depend on the clock
-    res = validate(hook(input, ctx), input, mod?.id ?? '?');
+    const out = typeof hook.steps === 'function' ? yield* hook.steps(input, ctx) : hook(input, ctx);
+    yield 'layout-hook';
+    res = validate(out, input, mod?.id ?? '?');
     if (key) cache.set(key, res);
   }
   return { villages: placed.villages, square: placed.square, parks: placed.parks, ...res };

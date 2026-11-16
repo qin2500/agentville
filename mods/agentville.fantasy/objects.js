@@ -41,6 +41,9 @@ const props = {
   flowers: decal(), flowerbox: decal(), hay: decal(), crops: decal(), clover: decal(), sunflower: decal(),
 };
 
+// parity: bld.looks-farmhouse-cottage-timber-townhouse-manor, bld.looks-palace-hall, bld.look-barn, bld.look-granary, bld.look-chapel
+// parity: bld.look-inn, bld.look-guildhall, bld.look-clocktower, bld.look-markethall, bld.look-cathedral, bld.look-legacy-house-and-tower
+// (the looks are drawn by the classic art through the engine rasteriser; this table is the mod's list of them, with heights)
 /** Approximate building height in px at 1x by look (feeds only the cover estimate). */
 const z = n => ({ z: n });
 const buildings = {

@@ -13,7 +13,10 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 8_000 },
   reporter: [['list']],
-  use: { baseURL: BASE, trace: 'retain-on-failure' },
+  // Since M7 the new engine is the default. The classic specs were written for the classic village, so every page starts
+  // with va.engine = 1 (classic). Engine specs opt in per page with ?engine=2, which beats the stored setting, and a spec
+  // that tests the default itself clears this with test.use({ storageState: { cookies: [], origins: [] } }).
+  use: { baseURL: BASE, trace: 'retain-on-failure', storageState: { cookies: [], origins: [{ origin: BASE, localStorage: [{ name: 'va.engine', value: '1' }] }] } },
   webServer: { command: 'node e2e/serve.mjs', url: `${BASE}/api/agents`, reuseExistingServer: false, timeout: 60_000 },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },

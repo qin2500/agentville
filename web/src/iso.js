@@ -2138,13 +2138,22 @@ function make(it, T, lit, site, S = 1) {
     const px0 = Math.max(0, Math.floor(Math.min(...xs) - left)), px1 = Math.min(w - 1, Math.ceil(Math.max(...xs) - left));
     const py0 = Math.max(0, Math.floor(Math.min(...ys) - top)), py1 = Math.min(h - 1, Math.ceil(Math.max(...ys) - top));
     f.left = Math.min(...xs);
-    for (let py = py0; py <= py1; py++) for (let px = px0; px <= px1; px++) {
-      const X = left + px + 0.5, Y = top + py + 0.5;
-      if (!inPoly(X, Y, f.scr)) continue;
-      const gx = (X / s + 2 * Y / s) / 2, gy = (2 * Y / s - X / s) / 2;
-      const t = (f.c - f.n[0] * gx - f.n[1] * gy) / nd;
-      const j = py * w + px;
-      if (t > depth[j] + 1e-4 && (!f.keep || f.keep([gx + t, gy + t, s * t], Math.floor(X - (f.col0 ?? f.left))))) { depth[j] = t; fid[j] = i; }
+    // Row spans instead of a point-in-polygon test per pixel: each row's edge crossings (polyCuts, the same
+    // arithmetic as inPoly), walked left to right. The pixels kept are exactly the ones inPoly keeps.
+    const cuts = polyCuts(f.scr);
+    for (let py = py0; py <= py1; py++) {
+      const Y = top + py + 0.5, m = cuts(Y);
+      if (!m) continue;
+      const cx = cuts.xs;
+      for (let px = px0, k = 0; px <= px1; px++) {
+        const X = left + px + 0.5;
+        while (k < m && cx[k] <= X) k++;
+        if (((m - k) & 1) === 0) { if (k === m) break; continue; }   // an even count of crossings right of X: outside
+        const gx = (X / s + 2 * Y / s) / 2, gy = (2 * Y / s - X / s) / 2;
+        const t = (f.c - f.n[0] * gx - f.n[1] * gy) / nd;
+        const j = py * w + px;
+        if (t > depth[j] + 1e-4 && (!f.keep || f.keep([gx + t, gy + t, s * t], Math.floor(X - (f.col0 ?? f.left))))) { depth[j] = t; fid[j] = i; }
+      }
     }
   });
   // Paint each pixel with its surface's material.
@@ -2169,12 +2178,10 @@ function make(it, T, lit, site, S = 1) {
   for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
     const j = py * w + px;
     if (!solid(j)) continue;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const x = px + dx, y = py + dy;
-      if (x < 0 || y < 0 || x >= w || y >= h || !solid(y * w + x)) { ink[j] = 2; break; }
-      const k = y * w + x;
-      if (fid[k] !== fid[j] && depth[k] > depth[j] + 1.2) ink[j] = Math.max(ink[j], 1);
-    }
+    // 2: a 4-neighbour is off the image or empty (the silhouette); else 1: a 4-neighbour is another, farther face
+    if (px + 1 >= w || px < 1 || py + 1 >= h || py < 1 || !solid(j + 1) || !solid(j - 1) || !solid(j + w) || !solid(j - w)) { ink[j] = 2; continue; }
+    const fj = fid[j], dj = depth[j] + 1.2;
+    if ((fid[j + 1] !== fj && depth[j + 1] > dj) || (fid[j - 1] !== fj && depth[j - 1] > dj) || (fid[j + w] !== fj && depth[j + w] > dj) || (fid[j - w] !== fj && depth[j - w] > dj)) ink[j] = 1;
   }
   for (let j = 0; j < N; j++) if (ink[j]) {
     const here = [col[j * 4], col[j * 4 + 1], col[j * 4 + 2]], c = ink[j] === 2 ? mix(here, OUTLINE, 0.74) : dk(here, 0.5);
@@ -2189,7 +2196,7 @@ function make(it, T, lit, site, S = 1) {
       for (let px = 0; px < w; px++) { const x = px + sh; if (x < 0 || x >= w) continue; const a = (py * w + px) * 4, b = (py * w + x) * 4; col[b] = src[a]; col[b + 1] = src[a + 1]; col[b + 2] = src[a + 2]; col[b + 3] = src[a + 3]; }
     }
   }
-  const c = canvas(w, h), g = c.getContext('2d');
+  const c = canvas(w, h), g = c.getContext('2d', { willReadFrequently: true });   // read back below: keep it on the CPU (no GPU flush)
   g.putImageData(new ImageData(col, w, h), 0, 0);
   // Site timber: posts, beams and the truss as whole-pixel lines (outlined, then wood).
   if (out.lines) {
@@ -2234,7 +2241,26 @@ function rowUp(f, X, Y) {
   const key = f.dir === 'S' ? Y - X / 2 : Y + X / 2;
   return f.sgn * (key - f.k0);
 }
-function inPoly(x, y, p) {
+/**
+ * Row crossings of polygon `p` ([[x, y], ...]) for the even-odd rule, computed exactly as inPoly does. cuts(y) fills
+ * cuts.xs with the x of every edge that crosses row y (inPoly's half-open test), sorted ascending, and returns how many.
+ * inPoly(x, y, p) is true exactly when an odd number of those are > x.
+ */
+export function polyCuts(p) {
+  const n = p.length, xi = new Float64Array(n), yi = new Float64Array(n), xs = [];
+  for (let i = 0; i < n; i++) { xi[i] = p[i][0]; yi[i] = p[i][1]; }
+  const cuts = y => {
+    xs.length = 0;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      if ((yi[i] > y) !== (yi[j] > y)) xs.push((xi[j] - xi[i]) * (y - yi[i]) / (yi[j] - yi[i]) + xi[i]);
+    }
+    if (xs.length > 1) xs.sort((a, b) => a - b);
+    return xs.length;
+  };
+  cuts.xs = xs;
+  return cuts;
+}
+export function inPoly(x, y, p) {
   let inside = false;
   for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
     const [xi, yi] = p[i], [xj, yj] = p[j];

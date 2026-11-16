@@ -23,7 +23,7 @@ leave out is answered by the world you `extends`.
 **API v1 rules.**
 - `apiVersion: 1` is a literal in your file, never the engine's constant. v1 is frozen. New capabilities arrive only as
   names in `FEATURES` (`layout`, `terrain.classes`, `scatter.at`, `represent.pr`, `represent.project`, `venues`,
-  `persist`; `prs.loading` is coming in the next engine update). Before relying on one: `ctx.api.has('<feature>')`.
+  `persist`, `prs.loading`). Before relying on one: `ctx.api.has('<feature>')`.
 - Import only from `#agentville/mod` and from files inside your own folder. Never `web/src/engine/**`, never another
   mod. To build on a world, use `extends` and `ctx.parent`.
 - Hooks are pure and deterministic. Use `ctx.rng(stream)`, `ctx.hash(string)` and `ctx.time.now` (not available in
@@ -79,7 +79,7 @@ const rules = {
 };
 ```
 
-Pull requests can look different via `represent.pr` (the state names `building` and `merged` are produced today; `loading`, via `features: ['prs.loading']`, is coming in the next engine update and is not available yet):
+Pull requests can look different via `represent.pr` (state names `building` and `merged` are produced for every mod; `loading` only for a mod that declares `features: ['prs.loading']`):
 
 ```js
 const represent = { pr: { building: { as: 'lot', model: 'flag' }, merged: { as: 'none' } } };

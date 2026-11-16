@@ -170,15 +170,11 @@ test('D4: reduced motion snaps straight to the slot with no walk and no fade', (
   assert.ok(near(h.a, 16, 10)); assert.equal(h.a.alpha, 1); assert.equal(h.a.state, 'hold'); assert.equal(h.a.frame, 0)
 })
 
-test('D4: a walk longer than 6 s is cut short with a fade at the target', () => {
+test('D4: a trip longer than 6 s (30 tiles at 2.5 t/s = 12 s) fades instead of walking', () => {
   const h = harness('stalled', {}, { places: { ...PLACES, 'pr.site': { tx: 40, ty: 10, slotKind: 'work' } } })
   h.set('working', { prs: ['p#1'] })
-  let t = 0, walkT = 0
-  do { h.run(DT); t += DT; if (h.a.anim === 'walk') walkT += DT } while (h.a.state !== 'hold' && t < 30)
-  assert.ok(walkT > 0, 'it did start walking (30 tiles <= 40)')
-  assert.ok(walkT <= WALK_MAX_S + DT + 1e-6, `walked ${walkT}s`)
-  assert.ok(t <= WALK_MAX_S + FADE_S + 0.35, `arrived at ${t}s`)
-  assert.ok(near(h.a, 40, 10)); assert.equal(h.a.alpha, 1)
+  assertFadeTeleport(h, 40, 10)
+  assert.ok(WALK_MAX_S === 6)
 })
 
 test('stalled agents never move once settled, face the viewer and wave every 4 s', () => {

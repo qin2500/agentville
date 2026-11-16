@@ -210,7 +210,8 @@ export function referenceLayout(input, { paths } = {}) {
     focus: { ox: tx0 - 1, oy: ty0 - 1, w: tx1 - tx0 + 3, h: ty1 - ty0 + 3 },
     tiles: { ox, oy, w, h, terrain, ground, road, lot },
     outside: TERRAIN.SEA_DEEP,
-    venues: { dock: { kind: 'harbour', rect: { x: D.x0 - 2, y: D.foot - 3, w: D.x1 - D.x0 + 5, h: D.sea + 12 - (D.foot - 3) + 1 }, anchor: { tx: D.cx, ty: D.foot }, data: { ...D } } },
+    venues: { dock: { kind: 'harbour', rect: { x: D.x0 - 2, y: D.foot - 3, w: D.x1 - D.x0 + 5, h: D.sea + 24 - (D.foot - 3) + 1 }, anchor: { tx: D.cx, ty: D.foot }, data: { ...D } },
+      square: { kind: 'square', rect: { x: SQ.x, y: SQ.y, w: SQ.w, h: SQ.h }, anchor: { tx: SQ.x + (SQ.w >> 1), ty: SQ.y + (SQ.h >> 1) + 1 } } },
     data: { dock: { ...D }, town: [...W.town], waves: W.waves },
   };
 }

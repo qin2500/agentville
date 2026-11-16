@@ -7,12 +7,13 @@ import { hash } from '../../core/rng.js';
 const rnd = s => (hash(s) % 10000) / 10000;
 const LATTICE = new Map(); // noise lattice values (pure in i, j): a memo, not state
 
+const lat = (i, j) => { const k = i * 100003 + j; let r = LATTICE.get(k); if (r === undefined) { r = rnd(`n${i},${j}`); LATTICE.set(k, r); } return r; };
 /** Smooth value noise in [0, 1): lattice values hash('n<i>,<j>') every `s` tiles, smoothstep-blended. Pure in (x, y, s). */
 export function noise(x, y, s = 7) {
   const gx = Math.floor(x / s), gy = Math.floor(y / s), fx = x / s - gx, fy = y / s - gy;
-  const n = (i, j) => { const k = i * 100003 + j; let r = LATTICE.get(k); if (r === undefined) { r = rnd(`n${i},${j}`); LATTICE.set(k, r); } return r; }, sm = t => t * t * (3 - 2 * t);
-  const a = n(gx, gy), b = n(gx + 1, gy), c = n(gx, gy + 1), d = n(gx + 1, gy + 1);
-  return a + (b - a) * sm(fx) + (c - a) * sm(fy) + (a - b - c + d) * sm(fx) * sm(fy);
+  const a = lat(gx, gy), b = lat(gx + 1, gy), c = lat(gx, gy + 1), d = lat(gx + 1, gy + 1);
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
 }
 
 /** True when rects a and b come closer than `gap` tiles (rects are { x, y, w, h }). */
@@ -55,10 +56,14 @@ const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 /** 4-way flood fill on a raster. `queue` holds the seeds (already marked) and grows in visit order; a neighbour j is
  *  taken when it is in the raster, unmarked and ok(x, y, j). Marks with 1. @returns the queue. */
 export function flood4(R, queue, mark, ok) {
-  const { at, w, ox, oy } = R;
-  for (let h = 0; h < queue.length; h++) {
-    const i = queue[h], x = ox + i % w, y = oy + (i / w | 0);
-    for (const [a, b] of N4) { const j = at(x + a, y + b); if (j >= 0 && !mark[j] && ok(x + a, y + b, j)) { mark[j] = 1; queue.push(j); } }
+  const { w, h, ox, oy } = R;
+  for (let q = 0; q < queue.length; q++) {
+    const i = queue[q], cx = i % w, cy = (i / w | 0), x = ox + cx, y = oy + cy;
+    let j;
+    if (cx + 1 < w) { j = i + 1; if (!mark[j] && ok(x + 1, y, j)) { mark[j] = 1; queue.push(j); } }
+    if (cx > 0) { j = i - 1; if (!mark[j] && ok(x - 1, y, j)) { mark[j] = 1; queue.push(j); } }
+    if (cy + 1 < h) { j = i + w; if (!mark[j] && ok(x, y + 1, j)) { mark[j] = 1; queue.push(j); } }
+    if (cy > 0) { j = i - w; if (!mark[j] && ok(x, y - 1, j)) { mark[j] = 1; queue.push(j); } }
   }
   return queue;
 }
@@ -75,7 +80,8 @@ export function distance4(R, queue, dist, max) {
   return queue;
 }
 
-const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+const SCR = { busy: false, dist: new Float64Array(0), prev: new Int32Array(0), done: new Uint8Array(0), touched: new Int32Array(0) }, SCR_MAX = 1 << 24;
+const DX = [1, -1, 0, 0, 1, -1, 1, -1], DY = [0, 0, 1, -1, 1, 1, -1, -1];
 const NOISE5 = (x, y) => 1 + 3 * noise(x, y, 5) ** 2;
 /**
  * A* on a raster toward `aim` (8-way, a binary heap with a fixed tie order), from the `from` tiles to the first tile
@@ -90,25 +96,37 @@ const NOISE5 = (x, y) => 1 + 3 * noise(x, y, 5) ** 2;
  */
 export function routeOnRaster(R, from, isGoal, box, aim, { block = 0, dear = 0, cheap = 0, dearCost = 41, cheapCost = 0.35, diag = 1.42, field = NOISE5 } = {}) {
   const [x0, y0, x1, y1] = box, Wd = x1 - x0 + 1, idx = (x, y) => (y - y0) * Wd + (x - x0);
-  const { at, flags: F } = R;
+  const { at, flags: F } = R, Rw = R.w, Rox = R.ox, Roy = R.oy, Rh = R.h;
   let memo = R.memo.get(field);
   if (!memo) { memo = new Float64Array(R.n).fill(NaN); R.memo.set(field, memo); }
-  const dist = new Float64Array(Wd * (y1 - y0 + 1)).fill(Infinity), prev = new Int32Array(dist.length).fill(-1);
-  const hd = [], hi = [];
+  const size = Wd * (y1 - y0 + 1);
+  // scratch buffers reused across calls (only touched cells are reset); a re-entrant call (from field) allocates its own
+  const own = SCR.busy || size > SCR_MAX, S = own ? null : SCR;
+  let dist, prev, done, touched = null, tn = 0;
+  if (own) { dist = new Float64Array(size).fill(Infinity); prev = new Int32Array(size).fill(-1); done = new Uint8Array(size); }
+  else {
+    if (SCR.dist.length < size) { const n = Math.max(size, SCR.dist.length * 2); SCR.dist = new Float64Array(n).fill(Infinity); SCR.prev = new Int32Array(n).fill(-1); SCR.done = new Uint8Array(n); SCR.touched = new Int32Array(n); }
+    dist = SCR.dist; prev = SCR.prev; done = SCR.done; touched = SCR.touched; SCR.busy = true;
+  }
+  try {
+  // binary heap (same sift rules as before, so pop order incl. ties is unchanged) on growable typed arrays
+  let cap = 1024, hd = new Float64Array(cap), hi = new Int32Array(cap), hn = 0;
   const push = (d, i) => {
-    hd.push(d); hi.push(i);
-    let k = hd.length - 1;
-    while (k) { const p = (k - 1) >> 1; if (hd[p] <= hd[k]) break; const td = hd[p]; hd[p] = hd[k]; hd[k] = td; const ti = hi[p]; hi[p] = hi[k]; hi[k] = ti; k = p; }
+    if (hn === cap) { cap *= 2; const nd = new Float64Array(cap), ni = new Int32Array(cap); nd.set(hd); ni.set(hi); hd = nd; hi = ni; }
+    let k = hn++;
+    while (k) { const p = (k - 1) >> 1; if (hd[p] <= d) break; hd[k] = hd[p]; hi[k] = hi[p]; k = p; }
+    hd[k] = d; hi[k] = i;
   };
   const fpAt = (x, y) => { const t = at(x, y); return t >= 0 && (F[t] & block) !== 0; };
-  const h = (x, y) => Math.hypot(x - aim[0], y - aim[1]), done = new Uint8Array(dist.length);
-  for (const [x, y] of from) { if (x < x0 || y < y0 || x > x1 || y > y1) continue; dist[idx(x, y)] = 0; push(h(x, y), idx(x, y)); }
-  while (hd.length) {
+  const ax = aim[0], ay = aim[1];
+  for (const [x, y] of from) { if (x < x0 || y < y0 || x > x1 || y > y1) continue; { const ii = idx(x, y); if (touched && dist[ii] === Infinity) touched[tn++] = ii; dist[ii] = 0; } push(Math.hypot(x - ax, y - ay), idx(x, y)); }
+  while (hn) {
     const i = hi[0];
-    { const ld = hd.pop(), li = hi.pop(), n = hd.length;
-      if (n) { hd[0] = ld; hi[0] = li; let k = 0;
-        for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < n && hd[l] < hd[m]) m = l; if (r < n && hd[r] < hd[m]) m = r; if (m === k) break;
-          const td = hd[m]; hd[m] = hd[k]; hd[k] = td; const ti = hi[m]; hi[m] = hi[k]; hi[k] = ti; k = m; } } }
+    { const ld = hd[hn - 1], li = hi[hn - 1], n = --hn;
+      if (n) { let k = 0;
+        for (;;) { const l = 2 * k + 1, r = l + 1; let m = k, mv = ld; if (l < n && hd[l] < mv) { m = l; mv = hd[l]; } if (r < n && hd[r] < mv) m = r; if (m === k) break;
+          hd[k] = hd[m]; hi[k] = hi[m]; k = m; }
+        hd[k] = ld; hi[k] = li; } }
     if (done[i]) continue;
     done[i] = 1;
     const d = dist[i], x = x0 + i % Wd, y = y0 + Math.floor(i / Wd);
@@ -121,20 +139,22 @@ export function routeOnRaster(R, from, isGoal, box, aim, { block = 0, dear = 0, 
       }
       return out;
     }
-    for (const [dx, dy] of DIRS) {
-      const X = x + dx, Y = y + dy;
-      if (X < x0 || Y < y0 || X > x1 || Y > y1 || fpAt(X, Y)) continue;
+    for (let q = 0; q < 8; q++) {
+      const dx = DX[q], dy = DY[q], X = x + dx, Y = y + dy;
+      if (X < x0 || Y < y0 || X > x1 || Y > y1) continue;
+      const rx = X - Rox, ry = Y - Roy, t = rx < 0 || ry < 0 || rx >= Rw || ry >= Rh ? -1 : ry * Rw + rx;
+      if (t >= 0 && (F[t] & block)) continue;
       if (dx && dy && (fpAt(x + dx, y) || fpAt(x, y + dy))) continue;
-      const t = at(X, Y);
       let base;
       if (t >= 0 && (F[t] & dear)) base = dearCost;
       else if (t >= 0 && (F[t] & cheap)) base = cheapCost;
       else if (t >= 0) { base = memo[t]; if (base !== base) base = memo[t] = field(X, Y); }
       else base = field(X, Y);
       const c = base * (dx && dy ? diag : 1);
-      const j = idx(X, Y);
-      if (d + c < dist[j]) { dist[j] = d + c; prev[j] = i; push(d + c + h(X, Y), j); }
+      const j = (Y - y0) * Wd + (X - x0), nd = d + c;
+      if (nd < dist[j]) { if (touched && dist[j] === Infinity) touched[tn++] = j; dist[j] = nd; prev[j] = i; push(nd + Math.hypot(X - ax, Y - ay), j); }
     }
   }
   return [];
+  } finally { if (S) { for (let k = 0; k < tn; k++) { const c = touched[k]; dist[c] = Infinity; prev[c] = -1; done[c] = 0; } SCR.busy = false; } }
 }

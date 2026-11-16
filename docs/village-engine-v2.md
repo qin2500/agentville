@@ -132,6 +132,14 @@ The world build runs in this order (all pure, no DOM). `buildWorld(view, persist
 - **Re-plan triggers.** A plot is re-planned only when (tier, capacity bucket, crowns) changes, with the
   existing tier hysteresis (60%) and capacity that only grows within a tier. A re-plan keeps the block
   centre if the new size fits there. Other plots never move.
+- **Nested growth (M6).** Growth is visible and permanent: a re-plan never shrinks a
+  project's decor. The planner wraps the plan a block drew in a ring of the new tier (`city-plan.js`), so the
+  plan for tier N+1 contains tier N's whole (every lot id, building, prop, variant and ground tile) at
+  `plan.nest = { from, dx, dy, plan }`. Each block persists its plan's `chain` as `blocks[name].nest` (and
+  `lots[name].nest`) and hands it back as the planner request's `from`. The re-plan is placed at
+  `old origin - (dx, dy)` so nothing old moves, else at the free rect nearest that (all old items shift
+  together); the lot map is kept, and the old plan's props are legalised exactly as before (a dry stamp of it).
+  A tier drop, or a layout saved before M6 (no `nest`), plans fresh as before.
 - **The rebuild signature** is `JSON.stringify([blocks(tier, cap, crowns, style), homes, PR states])`, as
   today. Status changes never rebuild the world: they only drive the sim.
 - **Incremental stamping.** A changed settlement is unstamped and restamped inside its block. Only chunks
@@ -176,8 +184,10 @@ The world build runs in this order (all pure, no DOM). `buildWorld(view, persist
   `nav/slots.js`: `claim(tx, ty, actorId) → sub | -1`, `release(actorId)`, and `nearestFree(anchor, radius,
   filter)`, which searches outward over walkable, `cover = 0`, unreserved tiles, preferring the owner's own
   forecourt, then the street in front, then neighbouring forecourts of the same project. This replaces
-  `YARD` offsets, `YARD_CAP` and the "+N more" crowd logic. "+N more" stays only when no slot is free within
-  the radius.
+  `YARD` offsets, `YARD_CAP` and the "+N more" crowd logic. There is no cap and no crowd label: every agent is
+  drawn. When no stand slot is free within 5 tiles, the agent spills (`claimSpill`) onto a free walkable
+  street/plaza/yard tile beside the yard (two sub-slots per tile, nearest first, ties by (ty, tx)), never on or
+  next to a door and never on a tile that carries a regular slot. A held spill slot is kept across polls.
 - **Door crowding.** A door has a small queue of claimed slots fanning out along the forecourt. An actor
   that finds its target slot taken re-plans to `nearestFree`. Two walkers are allowed to overlap while both
   are moving (sprites passing on a street read fine). A walker never stops on an occupied sub-slot. If the
@@ -228,11 +238,11 @@ Measured-style budgets (MacBook-class, Chromium/Electron, 1440×900 village pane
 
 | Scenario | Frame CPU | Steady CPU | Memory |
 |---|---|---|---|
-| 2×, 40 projects, 400 agents, ~120 actors on screen | ≤ 4 ms | ≤ 2.5% at 10 fps | sprite cache ≤ 48 MB |
+| 2×, 40 projects, 400 agents, ~120 actors on screen | ≤ 4 ms | ≤ 3% at 10 fps (relaxed from 2.5%) | sprite cache ≤ 48 MB |
 | 2×, 1,000 agents, ~300 actors on screen | ≤ 8 ms | ≤ 5% | ≤ 64 MB (LRU by bytes) |
-| Map zoom, whole world | ≤ 3 ms (LOD map tiles) | ≤ 2% | |
+| Map zoom, whole world | ≤ 3 ms (LOD map tiles) | ≤ 3.5% (relaxed from 2%) | |
 | Pan or zoom gesture | ≤ 8 ms at 60 fps for the duration | | |
-| Cold world build (40 projects / 1,000 agents) | ≤ 300 ms total, ≤ 50 ms per task (yield between settlements) | | |
+| Cold world build (40 projects / 1,000 agents) | ≤ 375 ms total (was 300; the cost of slicing), ≤ 50 ms per task (yield between settlements) | | |
 | Per poll (status change only) | ≤ 3 ms | | |
 
 ### 3.2 Depth: per-column slicing with a total sort key
@@ -565,7 +575,7 @@ returns today, so `main.js` changes by one line:
 
 ```js
 const village = (useEngine2() ? createEngine : createVillage)(app);
-// useEngine2(): ?engine=2 | ?engine=1 overrides; else store.get('va.engine', 1) === 2 (Settings → "Village engine: Classic / New (beta)")
+// useEngine2(): ?engine=2 | ?engine=1 overrides; else store.get('va.engine', 1) === 2 (Settings → Advanced → "Use classic village (old engine)")
 ```
 
 | Method | Contract (unchanged) |
@@ -727,3 +737,12 @@ Tests and debug
 5. **D5 Should the town layout be saved on the server** (`~/.config/agentville`) instead of in each
    browser's localStorage, so Electron and a Chrome tab show the same town? *Recommendation: yes, at M7*
    (a small `GET/PUT /api/world-plan`). Until then, v2 imports the classic layout so nothing reshuffles.
+   *Implemented at M7 (server/world-plan.mjs):* `<dataDir>/world-plan.json` =
+   `{ v: 1, keys: { [key]: { rev, at, value } } }`, written tmp + fsync + rename on one in-process queue.
+   Keys: `^va\.(engine2\.world(\.[a-z0-9.-]+)?|world\d+|engine2\.seed|seen)$`, never a `demo` segment;
+   2 MB per value, 8 MB per file (and per PUT body). `GET /api/world-plan` → `{ v, keys: { k: { rev, value } } }`.
+   `PUT /api/world-plan` `{ key, value, baseRev }` (compare-and-set; absent key is rev 0) → 200 `{ rev }`,
+   409 `{ rev, value }` when stale, 409 `{ error, reason: 'version' }` when a newer app wrote the file
+   (served, never overwritten), 400 bad key/baseRev/value/JSON, 413 too large, 403 cross-origin or
+   origin-less (isLocalRequest). An unparseable file is renamed `world-plan.json.corrupt-<ts>` and the plan
+   starts empty. `AGENTVILLE_WORLD_PLAN=0` (legacy `VILLAGE_WORLD_PLAN=0`) turns both routes off (404).

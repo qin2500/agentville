@@ -12,6 +12,7 @@
 // `tier` is asked once when no tier is forced (then gt === tier); with ?citytier it is asked twice (unforced gt, forced tier).
 import { hash, streamFor } from '../core/rng.js';
 import { validateLots } from '../mod/validate.js';
+import { growthRoom, anchoredRect, nearRect } from './room.js';
 
 const DAY = 864e5;
 const RANK_KEYS = ['L', 'M', 'S'];
@@ -27,25 +28,34 @@ export function localCtx(mod, projectKey, { seed = 0, now = 0, forcedTier = null
 // projects never share a key inside one rebuild.
 const PLANS = new Map(); // modId → Map(key → { rk, plan })
 const PLAN_MEMO_MAX = 256;
-/** Memoised mod.hooks.planSettlement({ tier, seed, lots: cap, crowns, style, ranks }, ctx). The memo key includes the style
- * key and the world seed, so a restyle or a reseed re-plans. `ranks` ({ L, M, S } lot-request counts) is optional. */
-export function planFor(mod, tier, seed, cap, crowns = 1, ctx = null, style = null, worldSeed = 0, ranks = undefined) {
+/** The style part of a plan memo key: the style's identity plus its tier, so a tier change re-plans. */
+const styleMemoKey = style => (style ? `${style.key ?? style.id ?? style.family ?? ''}${style.tier != null ? '@' + style.tier : ''}` : '');
+/** Memoised mod.hooks.planSettlement({ tier, seed, lots: cap, crowns, style, ranks, from }, ctx). The memo key includes the
+ * style key and the world seed, so a restyle or a reseed re-plans. `ranks` ({ L, M, S } lot-request counts) is optional.
+ * `from` (M6 nested growth, optional): the `chain` string of the plan the block drew before (persisted blocks[name].nest);
+ * a planner that nests keeps that plan whole inside the new one and says where in `plan.nest` = { from, dx, dy }. */
+export function planFor(mod, tier, seed, cap, crowns = 1, ctx = null, style = null, worldSeed = 0, ranks = undefined, from = null, grow = null) {
   const id = mod?.id ?? '';
   let M = PLANS.get(id);
   if (!M || M.fn !== mod.hooks.planSettlement) { M = new Map(); M.fn = mod.hooks.planSettlement; PLANS.set(id, M); } // a reloaded planner drops the memo
-  const styleKey = style ? String(style.key ?? style.id ?? style.family ?? '') : '';
-  const k = `${tier}|${seed}|${cap}|${crowns}|${styleKey}|${worldSeed}`;
+  const styleKey = styleMemoKey(style);
+  const k = `${tier}|${seed}|${cap}|${crowns}|${styleKey}|${worldSeed}|${typeof from === 'string' ? from : ''}${growKey(grow)}`;
   const rk = ranks ? `${ranks.L}|${ranks.M}|${ranks.S}` : null;
   const e = M.get(k);
   if (e && (rk == null || e.rk === rk)) { M.delete(k); M.set(k, e); return e.plan; }   // refresh LRU position
   const req = { tier, seed, lots: cap, crowns, style };
   if (ranks) req.ranks = { L: ranks.L, M: ranks.M, S: ranks.S };
+  if (typeof from === 'string' && from) req.from = from;
+  if (grow) req.grow = grow.room ? { room: grow.room } : {};
   const plan = mod.hooks.planSettlement(req, ctx || localCtx(mod, '', {}));
   M.delete(k);
   M.set(k, { rk, plan });
   while (M.size > PLAN_MEMO_MAX) M.delete(M.keys().next().value);
   return plan;
 }
+
+/** The grow part of a plan memo key: none, thin growth anywhere, or thin growth with this room. */
+const growKey = grow => (!grow ? '' : grow.room ? `|g${['se', 'sw', 'ne', 'nw'].map(c => (grow.room[c] || []).join(',')).join(';')}` : '|g');
 
 /** Seeds the planner memo with plans the rules phase already made, so placeBlocks' positional planFor(...) finds them even
  * when the memo was cleared or the mod's planner may not be called again (hooks run once per rebuild). Bridge until
@@ -56,8 +66,8 @@ export function primePlans(mod, settlements, worldSeed = 0) {
   if (!M || M.fn !== mod.hooks?.planSettlement) { M = new Map(); M.fn = mod.hooks?.planSettlement; PLANS.set(id, M); }
   for (const s of settlements) {
     if (!s.plan) continue;
-    const styleKey = s.style ? String(s.style.key ?? s.style.id ?? s.style.family ?? '') : '';
-    const k = `${s.tier}|${hash(s.name)}|${s.cap}|${s.crowns}|${styleKey}|${worldSeed}`;
+    const styleKey = styleMemoKey(s.style);
+    const k = `${s.tier}|${hash(s.name)}|${s.cap}|${s.crowns}|${styleKey}|${worldSeed}|${typeof s.from === 'string' ? s.from : ''}${growKey(s.grow)}`;
     const rk = s.ranks ? `${s.ranks.L}|${s.ranks.M}|${s.ranks.S}` : null;
     M.delete(k);
     M.set(k, { rk, plan: s.plan });
@@ -72,7 +82,7 @@ export const projectNames = input => [...new Set((input?.agents || []).map(a => 
 export function projectOf(input, name, here, prsHere) {
   const projects = input?.projects || [];
   return projects.find(p => p.key === name) || projects.find(p => p.name === name) || { key: name, name, accent: '',
-    stats: { prsEver: prsHere.length, prsLive: prsHere.filter(p => p.state === 'building').length, agentsEver: 0, agentsNow: here.length, transcriptMB: 0 } };
+    stats: { prsEver: prsHere.length, prsLive: prsHere.filter(p => p.live ?? p.state === 'building').length, agentsEver: 0, agentsNow: here.length, transcriptMB: 0 } };
 }
 
 /** The ctx factory both phases share: the caller's ctxFor (registry modCtx), else localCtx; dev params fill in. */
@@ -115,6 +125,8 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
   const agents = input?.agents || [], prs = input?.prs || [];
   const ctxOf = ctxFactory(mod, { seed, now, forcedTier, forcedStyle, ctxFor });
   const projects = {}, lint = [];   // plain object: the result must structuredClone deep-equal (sandbox)
+  const layout = mod.rules?.layout || {}, thin = !!layout.square && Number.isFinite(layout.gap);
+  const grownTo = new Map();
   for (const name of projectNames(input)) {
     const here = agents.filter(a => (a.project || '—') === name);
     const prsHere = prs.filter(p => p.project === name);
@@ -132,16 +144,35 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
     const lots = [...ok.filter(r => r.owner === 'home'), ...ok.filter(r => r.owner !== 'home')].map(r => ({ ...r, item: itemOf(r) }));
     // classic: an item gone within HOLD_MS still needs its lot (same tier only). Persisted items are in server ids.
     const L = LOTS[name], ids = new Set(lots.map(r => (r.owner === 'home' ? `home:${serverId(r.agent) ?? r.agent}` : r.item)));
+    // parity: world.vanished-hold-12h
     let held = 0;
     if (L && L.tier === tier) for (const id of Object.keys(L.a || {})) if (!ids.has(id) && now - (L.h?.[id] ?? now) <= holdMs) held++;
     const need = lots.length + held;
+    // parity: world.capacity-buckets
     let cap = H.capacity(tier, need, ctx);
     if (b && b.tier === tier && b.cap > cap) cap = b.cap; // classic: capacity only grows within a tier
     const crowns = H.crowns ? H.crowns(project, here, ctx) : 1;
-    const style = H.style ? H.style(name, ctx, project.preset) : { key: '' };
+    const style = H.style ? H.style(name, { ...ctx, tier }, project.preset) : { key: '' };
     const ranks = { L: 0, M: 0, S: 0 };
     for (const r of lots) if (RANK_KEYS.includes(r.rank)) ranks[r.rank]++;
-    const plan = planFor(mod, tier, hash(name), cap, crowns, ctx, style ?? null, seed, ranks);
+    // M6 nested growth: the plan grows from the one this block drew last (its chain), so a re-plan only adds.
+    // M7 thin growth: the planner is asked to grow thin (`grow`), and, when this rebuild will re-plan a standing block,
+    // told how much room the block has round it in each corner (room.js), so it grows where the block keeps its place.
+    const from = typeof b?.nest === 'string' ? b.nest : null;
+    let grow = null, obs = null;
+    if (from && thin) {
+      grow = {};
+      if (!b.away && tier >= b.tier && (b.tier !== tier || b.cap !== cap)) {
+        obs = [layout.square, ...Object.keys(B).filter(n => n !== name && !B[n].away).map(n => grownTo.get(n) || B[n])];
+        grow.room = growthRoom(b, obs, layout.gap);
+      }
+    }
+    const plan = planFor(mod, tier, hash(name), cap, crowns, ctx, style ?? null, seed, ranks, from, grow);
+    // a block that grows in place this rebuild claims its grown rect for the rooms of the projects after it
+    if (obs && plan?.nest && plan.nest.from === from && Number.isInteger(plan.nest.dx) && Number.isInteger(plan.nest.dy)) {
+      const r = anchoredRect(b, plan);
+      if (!obs.some(o => nearRect(r, o, layout.gap))) grownTo.set(name, r);   // it will stand there (else it moves: unknown)
+    }
     projects[name] = { growth, gt, tier, need, cap, crowns, style, lots, ranks, plan };
   }
   return { projects, lint };

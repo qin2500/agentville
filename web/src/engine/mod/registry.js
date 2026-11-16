@@ -32,7 +32,8 @@ export function indexMods(list) {
 const REGISTRY = indexMods(BUNDLED_MODS), BUNDLED = REGISTRY.byId;
 /** Problems found indexing the bundled mods (skipped invalid or duplicate ids). */
 export function registryLint() { return REGISTRY.lint; }
-export const DATA_KEYS = ['rules', 'terrain', 'objects', 'behaviour', 'represent', 'venues'];
+// actors (M6): parts and anims merge per id/name, lookOf and fallback lists replace (api.js ActorsDecl).
+export const DATA_KEYS = ['rules', 'terrain', 'objects', 'behaviour', 'represent', 'venues', 'actors'];
 
 const isPlain = v => v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 /** Data merge: objects merge key by key, arrays and everything else replace (the child wins). */
@@ -86,11 +87,14 @@ function bindLevels(mods) {
     // A one-mod chain (agentville.base resolved alone) keeps its own functions: modCtx already gives it parent {}.
     if (n === 1 || typeof fn !== 'function' || !Object.hasOwn(CTX_AT, name)) return fn;
     const at = CTX_AT[name];
-    return function bound(...args) {
+    const bound = function bound(...args) {
       const ctx = args[at];
       if (ctx !== null && typeof ctx === 'object') args[at] = bindCtx(ctx, p);
       return fn.apply(this, args);
     };
+    // a hook's step-generator form (hooks.layout.steps, world/layout.js runLayoutSteps) sees the same bound ctx
+    if (typeof fn.steps === 'function') bound.steps = wrap(name, fn.steps, p);
+    return bound;
   };
   for (let i = n - 1; i >= 0; i--) {
     const h = { ...levels[i + 1] };
@@ -161,14 +165,35 @@ function resolveIn(byId, id) {
   for (const m of [...mods].reverse()) for (const k of DATA_KEYS) data[k] = mergeModData(data[k], m[k], k);
   const levels = bindLevels(mods);
   const lint = lintTop(top);
+  // `features`: capabilities a world opts in to (FEATURES names that change what the engine hands it, e.g. 'prs.loading').
+  // Top-only, like persist: resolved per mod and NOT inherited along `extends` (a child of fantasy that wants the
+  // loading state declares 'prs.loading' itself; without it open PRs stay 'building' + live).
+  const features = [...new Set((Array.isArray(top.features) ? top.features : []).filter(f => typeof f === 'string' && FEATURES.includes(f)))];
+  for (const f of Array.isArray(top.features) ? top.features : []) if (typeof f !== 'string' || !FEATURES.includes(f))
+    lint.push({ kind: 'features', mod: top.id, reason: `features: unknown feature ${JSON.stringify(String(f)).slice(0, 60)} (known: ${FEATURES.join(', ')}); ignored` });
+  if (top.features != null && !Array.isArray(top.features)) lint.push({ kind: 'features', mod: top.id, reason: 'features must be an array of FEATURES names; ignored' });
   // ambient is code and not in API v1: inherited from first-party mods only (trusted bundled code until the MOD-2 sandbox).
   if (top.ambient != null && !FIRST_PARTY(top.id))
     lint.push({ kind: 'ambient', rule: 'M6', mod: top.id, reason: 'M6 ambient is not in the v1 mod API; this mod\'s own `ambient` is ignored' });
+  for (const k of ['lightsFor', 'extraLights', 'siteWork']) if (top[k] != null && !FIRST_PARTY(top.id))
+    lint.push({ kind: k, rule: 'M6', mod: top.id, reason: `${k} is not in the v1 mod API; this mod's own \`${k}\` is ignored` });
+  if (top.ground != null && !FIRST_PARTY(top.id))
+    lint.push({ kind: 'ground', rule: 'M6', mod: top.id, reason: 'ground is not in the v1 mod API; this mod\'s own `ground` is ignored' });
   const resolved = {
     id: top.id, name: top.name, version: top.version, apiVersion: top.apiVersion, chain,
     rules: data.rules, terrain: data.terrain, objects: data.objects,
     behaviour: data.behaviour, represent: data.represent, venues: data.venues,
+    actors: data.actors ?? null,   // M6 ActorsDecl (api.js); null: the engine draws its sheet fallback
     ambient: mods.find(m => m.ambient && FIRST_PARTY(m.id))?.ambient ?? null,
+    // per-tile ground art (render/ground.js mod.ground.renderTile + reads): code like ambient, first-party only, not in API v1
+    ground: mods.find(m => m.ground && typeof m.ground.renderTile === 'function' && FIRST_PARTY(m.id))?.ground ?? null,
+    events: mods.find(m => typeof m.events === 'function')?.events ?? null,   // M6 events hook (api.js EventSpec): nearest mod in the chain; additive, null when none
+    // night light pools (render/lighting.js lightsFor / extraLights): code like ambient, so first-party only, not in API v1
+    lightsFor: mods.find(m => typeof m.lightsFor === 'function' && FIRST_PARTY(m.id))?.lightsFor ?? null,
+    extraLights: mods.find(m => typeof m.extraLights === 'function' && FIRST_PARTY(m.id))?.extraLights ?? null,
+    // PR-site hammering spots (world/site-work.js): code, first-party only, additive to API v1
+    siteWork: mods.find(m => typeof m.siteWork === 'function' && FIRST_PARTY(m.id))?.siteWork ?? null,
+    features: Object.freeze(features),
     hooks: levels[0], parentHooks: levels[1],
     // persist is top-only: a child of fantasy never inherits its legacy keys (PersistDecl, api.js).
     persist: top.persist ?? null,
@@ -176,7 +201,7 @@ function resolveIn(byId, id) {
   };
   // byName is derived when a terrain table omits it.
   if (resolved.terrain && !resolved.terrain.byName) resolved.terrain = { ...resolved.terrain, byName: Object.fromEntries((resolved.terrain.types || []).map(t => [t.name, t.code])) };
-  deepFreeze(resolved.rules); deepFreeze(resolved.terrain); deepFreeze(resolved.objects); deepFreeze(resolved.behaviour); deepFreeze(resolved.represent); deepFreeze(resolved.venues); deepFreeze(resolved.persist);
+  deepFreeze(resolved.rules); deepFreeze(resolved.terrain); deepFreeze(resolved.objects); deepFreeze(resolved.behaviour); deepFreeze(resolved.represent); deepFreeze(resolved.venues); deepFreeze(resolved.actors); deepFreeze(resolved.persist);
   return resolved;
 }
 

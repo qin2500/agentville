@@ -11,6 +11,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { isLocalRequest } from './local-request.mjs'
 import { defaultDataDir } from './datadir.mjs'
+import { createWorldPlan, worldPlanRoute } from './world-plan.mjs'
 import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
 import { createLoops } from './loops.mjs'
@@ -83,6 +84,7 @@ export { defaultDataDir }
 
 export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWaitMs, update = {}, staleOk = false } = {}) {
   const store = createStore(dataDir)
+  const worldPlan = worldPlanRoute(createWorldPlan(dataDir)) // D5: GET/PUT /api/world-plan
   const loops = createLoops(dataDir)
   const tasks = createTasks(dataDir)
   const helper = createHelper({ dir: dataDir, claudeHome: claude.home })
@@ -428,6 +430,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       }
       if (!isLocalRequest(req)) return send(res, 403, { error: 'Local requests only' })
       if (url.pathname === '/api/agents' && req.method === 'GET') return send(res, 200, { ...(await snapshot()), term: terms.info() })
+      if (url.pathname === '/api/world-plan' && await worldPlan(req, res, send)) return
       if (url.pathname === '/api/termlayout/popout' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         const body = await readBody(req)

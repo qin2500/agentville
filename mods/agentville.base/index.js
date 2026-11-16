@@ -48,7 +48,7 @@ const hooks = {
       if (a.parent && a.role !== 'boss' && a.role !== 'lead') continue;
       out.push({ item: `home:${a.id}`, owner: 'home', rank: a.role === 'boss' ? 'L' : 'S', agent: a.id });
     }
-    for (const pr of prs.filter(p => p.state === 'building').slice(0, MAX_PRS)) {
+    for (const pr of prs.filter(p => p.live ?? p.state === 'building').slice(0, MAX_PRS)) {
       out.push({ item: `pr:${pr.id}`, owner: 'pr', rank: 'S', pr: pr.id, building: true });
     }
     return out;

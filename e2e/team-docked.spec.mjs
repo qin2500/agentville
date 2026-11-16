@@ -56,7 +56,7 @@ async function open(page, { keep = false } = {}) {
   const f = await withFleet(page)
   await page.goto('/')
   await page.evaluate((keep) => {
-    if (!keep) localStorage.clear()
+    if (!keep) { localStorage.clear(); localStorage.setItem('va.engine', '1') }
     localStorage.setItem('va.panel', '"docked"')
     localStorage.setItem('va.view', JSON.stringify({ docked: 'team', full: 'team' }))
   }, keep)

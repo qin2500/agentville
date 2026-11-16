@@ -19,6 +19,7 @@
 // result.classic is true for them (see the report). OffscreenCanvas and DOM canvas both work for the image copy.
 
 import { PROPS as ENGINE_PROPS } from './props/index.js';
+import { READ } from './alpha.js';
 
 export const T = 16;           // classic world px per tile (world.js T)
 export const PAD = 2;          // transparent margin around the classic image, px
@@ -63,7 +64,7 @@ export function measureBounds(imageData, threshold = 0) {
 const pt = (p, ox, oy) => (Array.isArray(p) && Number.isFinite(p[0]) ? { x: p[0] + ox, y: p[1] + oy } : null);
 
 function finish(canvas, pivot, anchors, classic) {
-  const g = canvas.getContext('2d', { willReadFrequently: true }) || canvas.getContext('2d');
+  const g = canvas.getContext('2d', READ) || canvas.getContext('2d');
   const bounds = measureBounds(g.getImageData(0, 0, canvas.width, canvas.height));
   return { img: canvas, bounds, pivot, anchors, classic };
 }
@@ -92,6 +93,7 @@ export function snapAnchor(p, imageData, bounds) {
   return p;
 }
 
+// parity: bld.ground-shadows (the classic building sprite carries its soft ground shadow; the engine keeps it)
 function rasterBuilding(model, style, o) {
   const S = ENGINE_OVER_CLASSIC * (o.scale > 0 ? o.scale : 1);
   const w = Math.max(1, o.w | 0 || 1), h = Math.max(1, o.h | 0 || 1);
@@ -106,7 +108,7 @@ function rasterBuilding(model, style, o) {
   const iw = b.img.width, ih = b.img.height;
   // canvas from the extent (classic sizes its image the same way, floor/ceil apart), never smaller than the image
   const cw = Math.max(iw, Math.ceil(ext[2]) - Math.floor(ext[0])) + 2 * PAD, ch = Math.max(ih, Math.ceil(ext[3]) - Math.floor(ext[1])) + 2 * PAD;
-  const c = createCanvas(cw, ch), g = c.getContext('2d');
+  const c = createCanvas(cw, ch), g = c.getContext('2d', READ);
   g.drawImage(b.img, PAD, PAD);
   const ox = PAD - b.dx, oy = PAD - b.dy;            // isoP(x0, y0) (the north corner) in img px
   const anchors = { door: pt(b.door, ox, oy), ridge: pt(b.ridge, ox, oy), chimney: pt(b.chimney, ox, oy), windows: (b.windows || []).map(p => pt(p, ox, oy)).filter(Boolean) };
@@ -116,7 +118,7 @@ function rasterBuilding(model, style, o) {
   // The classic ridge/chimney points are projected at nominal heights (towers, spires, cupolas, the generic fallback),
   // so they can float off the drawn roof: pull them onto the real opaque top edge.
   if (anchors.ridge || anchors.chimney) {
-    const id = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+    const id = c.getContext('2d', READ).getImageData(0, 0, c.width, c.height);
     for (const k of ['ridge', 'chimney']) if (anchors[k]) anchors[k] = snapAnchor(anchors[k], id, res.bounds);
   }
   return res;
@@ -126,12 +128,12 @@ function rasterBuilding(model, style, o) {
 function rasterEngineProp(m, model, style, o) {
   // no explicit run direction (a venue plan cannot set one): a footprint taller than wide runs along y
   const dir = o.dir === 'y' || (o.dir == null && (o.h | 0) > (o.w | 0)) ? 'y' : 'x', len = Math.max(1, o.len | 0 || Math.max(o.w | 0 || 1, o.h | 0 || 1));
-  const p = { kind: model, v: o.variant | 0, dir, len };
+  const p = { kind: model, v: o.variant | 0, dir, len, w: o.w, h: o.h };
   const st = style && typeof style === 'object' ? style : null;
   const e = m.extent(p, st);
   if (!(e && e[2] - e[0] > 0 && e[3] - e[1] > 0)) return null;
   const cw = Math.ceil(e[2] - e[0]) + 2 * PAD, ch = Math.ceil(e[3] - e[1]) + 2 * PAD;
-  const c = createCanvas(cw, ch), g = c.getContext('2d');
+  const c = createCanvas(cw, ch), g = c.getContext('2d', READ);
   const fx = PAD - Math.floor(e[0]), fy = PAD - Math.floor(e[1]);
   const fr = Math.max(1, m.frames | 0);
   m.draw(g, p, fx, fy, fr > 1 ? ((o.anim | 0) % fr + 0.5) / fr : 0, !!o.lit, st);
@@ -148,7 +150,7 @@ function rasterProp(model, style, o) {
   const e = propArt.extent(p, st);
   if (!(e[2] - e[0] > 0 && e[3] - e[1] > 0)) return null;
   const cw = Math.ceil(e[2] - e[0]) + 2 * PAD, ch = Math.ceil(e[3] - e[1]) + 2 * PAD;
-  const c = createCanvas(cw, ch), g = c.getContext('2d');
+  const c = createCanvas(cw, ch), g = c.getContext('2d', READ);
   const fx = PAD - Math.floor(e[0]), fy = PAD - Math.floor(e[1]);
   const t = ((o.anim | 0) + 0.5) / (PROP_FPS[model] || 1);
   propArt.draw(g, p, fx, fy, t, !!o.lit, st);

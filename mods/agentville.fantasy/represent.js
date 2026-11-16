@@ -37,3 +37,25 @@ export const CUES = {
 
 // REPRESENT lives in represent-pr.js; re-exported here for existing importers.
 export { REPRESENT } from './represent-pr.js';
+
+// A live PR site takes at most SITE_CREW_MAX hammering builders (classic world.js: `n < 4`, spots either side of the front,
+// then either side of the walls). Extra builders get no spot and wait at their own forecourt (the yard). The engine's
+// `pr.site` place claims `work` anchors; this returns the (at most 4) work anchors a PR site's footprint offers, in
+// classic order, as tiles OUTSIDE the footprint (face 0 N, 1 E, 2 S, 3 W). Pure.
+export const SITE_CREW_MAX = 4;
+/** @param {{tx:number,ty:number,w?:number,h?:number}} site @returns {{tx:number,ty:number,sub:number,face:number}[]} */
+export function siteWorkAnchors(site) {
+  if (!site || !Number.isFinite(site.tx) || !Number.isFinite(site.ty)) return [];
+  const w = Math.max(1, site.w | 0), h = Math.max(1, site.h | 0), by = site.ty + h;
+  return [
+    { tx: site.tx - 1, ty: by, sub: 0, face: 1 },          // left of the front, facing the walls
+    { tx: site.tx + w, ty: by, sub: 0, face: 3 },          // right of the front
+    { tx: site.tx - 1, ty: by - 1, sub: 0, face: 1 },      // left of the wall
+    { tx: site.tx + w, ty: by - 1, sub: 0, face: 3 },      // right of the wall
+  ].slice(0, SITE_CREW_MAX);
+}
+/** The builders (ids, in arrival order) who get a hammering spot at a site; the rest wait at the yard. */
+export function crewAt(builderIds) {
+  const ids = [...new Set(builderIds || [])];
+  return { hammering: ids.slice(0, SITE_CREW_MAX), waiting: ids.slice(SITE_CREW_MAX) };
+}

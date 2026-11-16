@@ -47,8 +47,8 @@ test('harbour plan: valid objects for every level, piers cover every berth row',
     }
     const decks = objects.filter(o => o.model === 'pier');
     assert.ok(decks.length >= lv);
-    // a berth sits beside a deck (west: tile left of the pier, east: right of it)
-    for (const b of berths) assert.ok(decks.some(d => (b.tx === d.tx - 1 || b.tx === d.tx + d.w) && b.ty >= d.ty && b.ty < d.ty + d.h), `${b.id} beside a deck`);
+    // a pier berth sits beside a deck (west: tile left of the pier, east: right of it); berths at anchor (a<n>) do not
+    for (const b of berths.filter(x => /^p\d/.test(x.id))) assert.ok(decks.some(d => (b.tx === d.tx - 1 || b.tx === d.tx + d.w) && b.ty >= d.ty && b.ty < d.ty + d.h), `${b.id} beside a deck`);
   }
 });
 

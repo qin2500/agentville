@@ -2,7 +2,7 @@ import './support/ensure-mods-index.mjs';
 // village-mods.md §3.2-§3.4 and §6.1 items 1 and 8 (registry, chain, hooks, ctx rng). Written from the spec.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-const { resolveMod, modCtx, listMods, DEFAULT_MOD, checkPersistOwner, lintTop } = await import('../web/src/engine/mod/registry.js');
+const { resolveMod, modCtx, listMods, DEFAULT_MOD, checkPersistOwner, lintTop, mergeModData } = await import('../web/src/engine/mod/registry.js');
 const { API_VERSION, MOD0_HOOKS, MOD_CODE_MAX } = await import('../web/src/engine/mod/api.js');
 const { listFiles, ROOT } = await import('./mod-support/views.mjs');
 import fs from 'node:fs';
@@ -66,11 +66,14 @@ test('chain merge: objects merge, arrays replace, nearest hook wins (observable 
   assert.deepEqual(resolveMod('agentville.fantasy').rules, f.rules);
 });
 
-test('represent.pr merges per PR state: a child state entry replaces the parent entry whole', () => {
+test('represent.pr merges per PR state: a child state entry replaces the parent entry whole; a function replaces the table', () => {
+  // M5: the fantasy's represent.pr became a function (ship class by PR size), so the per-state merge is shown on a child table
   const f = resolveMod('agentville.fantasy'), b = resolveMod('agentville.base');
   assert.equal(b.represent.pr.building.model, 'flag');
-  assert.deepEqual(f.represent.pr.building, { as: 'lot' }, 'fantasy\'s building spec does not inherit base\'s flag model');
-  assert.deepEqual(f.represent.pr.closed, b.represent.pr.closed, 'a state the child leaves out is inherited');
+  const m = mergeModData(b.represent, { pr: { building: { as: 'lot' } } }, 'represent');
+  assert.deepEqual(m.pr.building, { as: 'lot' }, 'a child\'s building spec does not inherit base\'s flag model');
+  assert.deepEqual(m.pr.closed, b.represent.pr.closed, 'a state the child leaves out is inherited');
+  assert.equal(typeof f.represent.pr, 'function', 'the fantasy\'s function table replaces base\'s whole table');
 });
 
 test('persist: a mod may name only its own va.engine2.world.<id> keys; the legacy keys are fantasy\'s', () => {

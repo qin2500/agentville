@@ -2,8 +2,10 @@
 // (ui.js store or a test fake).
 // Shape: { v: 1, seed, blocks: { [project]: { x, y, w, h, tier, gt, cap, acc, seen, away?, …city4: crowns, style } },
 //          lots: { [project]: { tier, cap, a: { itemId: lotId }, h: { itemId: goneSince } } } }
-// blocks/lots are exactly classic's (world.js, va.world8 / va.world9); unknown fields pass through untouched.
-// v2 never writes a classic key.
+// blocks/lots are classic's (world.js, va.world8 / va.world9) with one rename: classic stores the growth chain of the
+// plan a block / lot map was drawn at as `chain`, the engine reads the same string as `nest` (sites.js, lots.js,
+// rules-phase.js). The import maps it (fromClassic below); unknown fields pass through untouched. v2 never writes a
+// classic key.
 //
 // Keys come from the mod's own PersistDecl (`mod.persist`, api.js; top-only, never inherited, so a child of a mod with
 // legacy keys starts on its own key). A mod reads and writes `persist.key` (demo: `persist.demoKey`), by default
@@ -89,15 +91,19 @@ export function loadSeed(store, { now } = {}) {
 }
 
 /** The mod's own key, else its `also` keys, else its legacy imports (a deep copy), else emptyWorld. Read-only except
- * for the seed, which it may store once. A bad PersistDecl throws before anything is read or written. */
-export function loadWorld(store, { demo = false, now, mod } = {}) {
+ * for the seed, which it may store once, and, with `adopt`, a layout it imported, which it writes to the mod's own key
+ * at once (never to the key it came from), so every later load reads that copy and the classic key stays as it was.
+ * A bad PersistDecl throws before anything is read or written. */
+export function loadWorld(store, { demo = false, now, mod, adopt = false } = {}) {
   const keys = persistKeys(mod, { demo });
   const seed = loadSeed(store, { now });
   for (const k of [keys.write, ...keys.also]) {
     const own = store.get(k, null);
     if (valid(own)) { const w = copy(own); w.v = 1; if (!seedOk(w.seed)) w.seed = seed; return w; }
   }
-  return importFrom(store, keys.import, seed) || emptyWorld(seed);
+  const imported = importFrom(store, keys.import, seed);
+  if (imported && adopt) store.set(keys.write, imported);
+  return imported || emptyWorld(seed);
 }
 
 /** Writes the layout to the mod's own key only. */
@@ -105,12 +111,26 @@ export function saveWorld(store, persisted, { demo = false, mod } = {}) {
   store.set(worldKey(mod, { demo }), persisted);
 }
 
-// The first key (already demo-suffixed) holding a classic-shaped layout → Persisted (a deep copy), or null. Read-only.
+// Classic field -> engine field, for every block and lot map. Classic links are untagged (city-plan.js LINK FORMAT), so
+// the engine replays an imported chain with the v1 full-ring rule, exactly the plan classic drew: every rect stays put.
+const CLASSIC_RENAMES = [['chain', 'nest']];
+function fromClassic(rec) {
+  if (!rec || typeof rec !== 'object') return;
+  for (const [from, to] of CLASSIC_RENAMES) {
+    if (!(from in rec)) continue;
+    if (rec[to] === undefined && typeof rec[from] === 'string') rec[to] = rec[from];
+    delete rec[from];
+  }
+}
+
+// The first key (already demo-suffixed) holding a classic-shaped layout → Persisted (a deep copy, classic fields renamed
+// to the engine's), or null. Read-only.
 function importFrom(store, keys, seed) {
   for (const k of keys) {
     const s = store.get(k, null);
     if (!valid(s)) continue;
     const c = copy(s);
+    for (const rec of [...Object.values(c.blocks), ...Object.values(c.lots)]) fromClassic(rec);
     return { ...c, v: 1, seed: seedOk(seed) ? seed >>> 0 : 0, blocks: c.blocks, lots: c.lots };
   }
   return null;

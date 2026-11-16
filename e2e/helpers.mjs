@@ -21,6 +21,8 @@ export const nextPort = freePort
 export const BASE = `http://127.0.0.1:${PORT}`
 export const HOME = path.join(os.tmpdir(), `agentville-e2e-home-${PORT}`)
 export const SHOTS = path.join(ROOT, 'e2e', 'screenshots')
+/** Empty localStorage but keep the classic pin (va.engine = 1, see playwright.config.mjs): clearing it would send the page to the new engine. */
+export const clearStorage = (page) => page.evaluate(() => { localStorage.clear(); localStorage.setItem('va.engine', '1') })
 /** The middle of a villager's sprite on the page (needs ?debug), or null when it isn't drawn. */
 export async function villagerPoint(page, id) {
   const at = () => page.evaluate((id) => {
@@ -179,10 +181,25 @@ export async function openMenu(page, id) {
 /** A menu action by its data-cm key (term, open, showvillage, copy, fork, stop, important, edit, hide, unhide). */
 export const menuItem = (page, act) => page.locator(`#ctxmenu .cm-item[data-cm="${act}"]`)
 /** Where an agent's villager stands on screen (world px -> canvas CSS px), or null when it isn't drawn. */
+/**
+ * A screen point that lands on villager `id`: the centre of its hit box, unless a villager drawn later (the hit-test
+ * takes the LAST hit containing the point) overlaps it, then the nearest point of the box no later hit covers.
+ * Read it right before the click: villagers walk, and two can cross.
+ */
 export function villagerAt(page, id) {
   return page.evaluate((id) => {
-    const d = window.villageDebug(), h = d.hits.find((x) => x.id === id), v = d.view, cv = document.getElementById('cv').getBoundingClientRect()
-    return h ? { x: cv.left + (h.x + h.w / 2 - v.vx) * v.k * v.px, y: cv.top + (h.y + h.h / 2 - v.vy) * v.k * v.px } : null
+    const d = window.villageDebug(), i = d.hits.findIndex((x) => x.id === id), v = d.view, cv = document.getElementById('cv').getBoundingClientRect()
+    if (i < 0) return null
+    const h = d.hits[i], over = d.hits.slice(i + 1)
+    const free = (x, y) => !over.some((o) => x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h)
+    const cx = h.x + h.w / 2, cy = h.y + h.h / 2
+    let best = null
+    for (let a = 0; a <= 8; a++) for (let b = 0; b <= 8; b++) {
+      const x = h.x + 1 + (h.w - 2) * a / 8, y = h.y + 1 + (h.h - 2) * b / 8, dd = (x - cx) ** 2 + (y - cy) ** 2
+      if (free(x, y) && (!best || dd < best.dd)) best = { x, y, dd }
+    }
+    const p = best || { x: cx, y: cy }
+    return { x: cv.left + (p.x - v.vx) * v.k * v.px, y: cv.top + (p.y - v.vy) * v.k * v.px, covered: !best }
   }, id)
 }
 export const claudeId = (k) => `claude-code:${IDS[k]}`

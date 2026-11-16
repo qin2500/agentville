@@ -174,8 +174,12 @@ test('flow: following dirAt from reachable tiles strictly decreases costAt and n
   if (!m) return t.skip('nav module not present yet');
   const w = getWorld(), g = w.grid, sq = w.square;
   const r = { x: sq.x ?? sq.tx, y: sq.y ?? sq.ty, w: sq.w, h: sq.h };
-  const tx = Math.floor(r.x + r.w / 2), ty = Math.floor(r.y + r.h / 2);
-  assert.ok(walkable(g, tx, ty) || true);
+  // the square's middle tile may hold the big tree (world.central-square): aim at the nearest walkable tile of the square
+  let tx = Math.floor(r.x + r.w / 2), ty = Math.floor(r.y + r.h / 2), best = Infinity;
+  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) {
+    const d = Math.abs(x - tx) + Math.abs(y - ty);
+    if (walkable(g, x, y) && d < best) { best = d; tx = x; ty = y; }
+  }
   const f = m.flowField(g, [{ x: tx, y: ty }], { maxCost: 1e9 });
   let checked = 0;
   for (let y = r.y - 20; y < r.y + r.h + 20; y++) for (let x = r.x - 20; x < r.x + r.w + 20; x++) {
