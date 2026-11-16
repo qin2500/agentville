@@ -483,7 +483,7 @@ node tools/mod.mjs check yourname.autumn      # boundary, resolve and determinis
 node tools/mod.mjs shots yourname.autumn      # hidden headless screenshots in out/mod-shots/
 ```
 
-A mod imports only `#agentville/mod`. See [docs/make-your-own-world.md](docs/make-your-own-world.md).
+A mod imports only `#agentville/mod`. See [docs/make-your-own-world.md](docs/make-your-own-world.md), or point your AI coding agent at [docs/agents/mod-playbook.md](docs/agents/mod-playbook.md).
 
 ## Development
 

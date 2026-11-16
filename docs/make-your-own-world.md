@@ -4,6 +4,8 @@ A world is a mod: a folder `mods/<your-id>/` that decides what your village look
 keeps the grid, walking, drawing, the camera and your saved layout. You keep everything that makes the world yours.
 This takes about 30 minutes for a first change.
 
+Working with an AI coding agent? Point it at [agents/mod-playbook.md](agents/mod-playbook.md).
+
 You need Node 22.13 or newer and a clone of the repo with `npm install` done.
 
 ## The steps

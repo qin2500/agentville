@@ -141,17 +141,16 @@ runs headless by default; keep it that way. Desktop tests set `AGENTVILLE_HEADLE
   `tools/icon/`). Do not copy or trace assets from existing games.
 - Rendering has a budget (see DESIGN.md, "Rendering budget"): keep hundreds of agents smooth.
 
-## Worlds and mods (coming soon, not built yet)
+## Worlds and mods
 
-Planned, nothing below exists in the repo today:
+The village is a mod: each world lives in `mods/<world-id>/`, owned by its author, on top of the shared engine
+(`web/src/engine/**`). Mods may use only the public mod API (`#agentville/mod`): no reaching into engine internals or
+into another mod. A world is previewed with `?engine=2&world=<id>`.
 
-- A new village engine with a mod system, previewed behind `?engine=2`.
-- Each world is a mod in `mods/<world-id>/`, owned by its author.
-- The shared engine (`web/src/engine/**`) is reviewed by both owners.
-- Mods may use only the public mod API: no reaching into engine internals or into another mod.
-
-Do not invent APIs or create these directories ahead of the engine. Until it lands, coordinate with the
-other owner before large changes to the current village files (`web/src/world.js`, `iso.js`, `village.js`,
-`city-plan.js`, `styles-pool.js`, `dock.js`, `dock-art.js`, `dock-walk.js`, `agentsheet.js`) and to the
-account, bypass and autoswitch server modules (`server/account.mjs`, `accounts.mjs`, `autoswitch.mjs`, `permmode.mjs`). Once the engine lands, its documentation
-will be under `docs/`.
+- To make or change a world, follow [docs/agents/mod-playbook.md](docs/agents/mod-playbook.md) step by step.
+- Reference: [docs/make-your-own-world.md](docs/make-your-own-world.md) and [docs/mod-boundary.md](docs/mod-boundary.md).
+- A world PR touches only `mods/<id>/**` and one line at the end of `.github/CODEOWNERS`.
+- Coordinate with the other owner before large changes to the engine, to the current village files
+  (`web/src/world.js`, `iso.js`, `village.js`, `city-plan.js`, `styles-pool.js`, `dock.js`, `dock-art.js`,
+  `dock-walk.js`, `agentsheet.js`) and to the account, bypass and autoswitch server modules
+  (`server/account.mjs`, `accounts.mjs`, `autoswitch.mjs`, `permmode.mjs`).

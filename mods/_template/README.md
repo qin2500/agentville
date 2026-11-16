@@ -11,4 +11,4 @@ node tools/mod.mjs check <id>     # validators, boundary check, determinism on t
 node tools/mod.mjs shots <id>     # headless screenshots into out/mod-shots/<id>/
 ```
 
-Open it in the app with `?engine=2&world=<id>`. Full guide: `docs/make-your-own-world.md`.
+Open it in the app with `?engine=2&world=<id>`. Full guide: `docs/make-your-own-world.md`. For an AI coding agent: `docs/agents/mod-playbook.md`.
