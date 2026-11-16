@@ -17,12 +17,12 @@ test.beforeAll(async () => { home = prepareBigHome(tmpDir('plan-sync'), 40); s =
 /** A new session in a new project: every open village rebuilds (and saves its layout) on its next poll. */
 function addProject(name) {
   const sid = `f${String(Date.now()).slice(-7)}-0000-4000-8000-000000000000`, ts = new Date().toISOString()
-  const folder = path.join(home.VILLAGE_CLAUDE_HOME, 'projects', `-work-${name}`)
+  const folder = path.join(home.AGENTVILLE_CLAUDE_HOME, 'projects', `-work-${name}`)
   fs.mkdirSync(folder, { recursive: true })
   const recs = [{ type: 'user', sessionId: sid, cwd: `/work/${name}`, uuid: `${sid}-u`, timestamp: ts, message: { role: 'user', content: `New work in ${name}` } },
     { type: 'assistant', timestamp: ts, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] } }]
   fs.writeFileSync(path.join(folder, `${sid}.jsonl`), recs.map((r) => JSON.stringify(r)).join('\n') + '\n')
-  fs.writeFileSync(path.join(home.VILLAGE_CLAUDE_HOME, 'sessions', `${sid.slice(0, 8)}.json`), JSON.stringify({ pid: 1, sessionId: sid, kind: 'interactive' }))
+  fs.writeFileSync(path.join(home.AGENTVILLE_CLAUDE_HOME, 'sessions', `${sid.slice(0, 8)}.json`), JSON.stringify({ pid: 1, sessionId: sid, kind: 'interactive' }))
 }
 test.afterAll(async () => { await s?.stop() })
 
