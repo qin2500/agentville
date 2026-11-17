@@ -14,6 +14,8 @@ export const CRAFT_KINDS = new Set(['token', 'tug', 'rowboat', 'gull']);
 const HEAD = ['E', 'S', 'W', 'N'];
 const headOf = a => HEAD[(a.face | 0) & 3] ?? 'S';
 const HEX = /^#[0-9a-fA-F]{6}$/;
+/** Cargo spots per hull class (the vessel art's classes): a full load fills them all. */
+const SPOTS = Object.fromEntries(vessel.CLASSES.map(c => [c, vessel.spotsOf(c)]));
 
 export function createCraftArt({ createCanvas = rasterCanvas } = {}) {
   const memo = new Map();
@@ -43,14 +45,19 @@ export function createCraftArt({ createCanvas = rasterCanvas } = {}) {
     memo.set(key, e);
     return e;
   }
-  /** @returns {{ img: any, pivot: {x:number,y:number} } | null} */
-  function frame(a, { lit = false } = {}) {
+  /** hl: the hovered hull, drawn with the highlight outline (classic: the hull under the pointer lights up).
+   * @returns {{ img: any, pivot: {x:number,y:number} } | null} */
+  function frame(a, { lit = false, hl = false } = {}) {
     const h = headOf(a), n = lit ? 1 : 0;
     switch (a.kind) {
       case 'token': {
         const cls = a.model === 'brig' || a.model === 'dinghy' ? a.model : 'cutter';
         const accent = typeof a.tint === 'string' && HEX.test(a.tint) ? a.tint : undefined;
-        return paint(vessel, { cls, head: h, accent, v: hash(String(a.item ?? a.id)) }, lit, `v|${cls}|${h}|${accent ?? hash(String(a.item ?? a.id)) % 6}|${n}`);
+        // the PR's progress (PrSpec flag / load via the berth): the pennant colour and the crates stowed
+        const flag = typeof a.flag === 'string' && HEX.test(a.flag) ? a.flag : null;
+        const spots = SPOTS[cls] ?? 0, crates = Number.isFinite(a.load) ? Math.round(Math.min(1, Math.max(0, a.load)) * spots) : 0;
+        return paint(vessel, { cls, head: h, accent, v: hash(String(a.item ?? a.id)), flag, crates, hl: !!hl }, lit,
+          `v|${cls}|${h}|${accent ?? hash(String(a.item ?? a.id)) % 6}|${n}|${flag ?? ''}|${crates}|${hl ? 1 : 0}`);
       }
       case 'tug': return paint(tug, { head: h }, lit, `t|${h}|${n}`);
       case 'rowboat': { const oars = a.state === 'row', f = oars ? (a.frame | 0) & 1 : 0; return paint(rowboat, { head: h, oars, frame: f }, lit, `r|${h}|${oars ? 1 : 0}|${f}|${n}`); }

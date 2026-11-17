@@ -7,7 +7,8 @@
 //     hit but still occlude.
 //     Hit = { id, kind, rect: [x0, y0, x1, y1] CSS px, key, z }
 //       slice hits add src: { img, sx, sy, sw, sh } (the source rect the slice draws, for pixel-alpha picking);
-//       actor hits add occluded: true when a slice drawn after the actor overlaps its sprite rect (x-ray).
+//       actor hits add occluded: true when a slice drawn after the actor overlaps its sprite rect (x-ray); a non-agent
+//       actor hit (a hull) also gets src (its whole sprite), so pick.js reads its pixels as it does a slice's.
 //     One hit per slice (a building with five strips gives five hits, all with the building's id), so the empty air
 //     beside a tower is not the tower's.
 //
@@ -94,6 +95,9 @@ export function buildHits(merged, toCss, { index: given = null } = {}) {
       if (!index) index = sliceIndex(merged.filter(m => m && !m.actor));
       const h = { id: it.oid, kind: it.hit, rect: cssRect(toCss, r), key: keyOf(it), z: it.z ?? 0 };
       if (occludersOf(index, it, r).length) h.occluded = true;
+      // a non-agent actor (a hull on a berth) is picked by its pixels like a slice: its sprite is mostly air (sails,
+      // rigging, water round the hull), and that air must fall through to the deck or the hull behind it
+      if (it.hit !== 'agent' && it.img && it.img.width > 0 && it.img.height > 0) h.src = { img: it.img, sx: 0, sy: 0, sw: it.img.width, sh: it.img.height };
       out.push(h);
     } else {
       if (!(it.sw > 0 && it.sh > 0)) continue;

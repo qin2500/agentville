@@ -60,7 +60,7 @@ test('[har.dock-debug] debug().dock carries tier, rect, berths, sails, walkers',
   for (const k of ['tier', 'rect', 'berths', 'sails', 'walkers']) expect(d, `dock.${k}`).toHaveProperty(k)
 })
 
-test('[har.dock-tags] [lbl.ship-pr-tags] [inp.dock-ship-click-va-dock] clicking a ship fires va:dock (no href in the world)', async ({ page }) => {
+test('[har.dock-tags] [lbl.ship-pr-tags] [inp.dock-ship-click-va-dock] clicking a ship fires va:dock naming its PR (the href never enters the world)', async ({ page }) => {
   await open(page, 'harbour-6', BASE_Q)
   await page.evaluate(() => { window.__dock = []; window.addEventListener('va:dock', e => window.__dock.push(e.detail ?? null)) })
   const hit = await page.evaluate(() => (window.villageDebug().hits || []).find(h => h.kind === 'ship') || null)
@@ -69,7 +69,9 @@ test('[har.dock-tags] [lbl.ship-pr-tags] [inp.dock-ship-click-va-dock] clicking 
   await page.mouse.click(cv.x + (hit.cx ?? hit.x), cv.y + (hit.cy ?? hit.y))
   await expect.poll(() => page.evaluate(() => window.__dock.length)).toBeGreaterThan(0)
   const detail = await page.evaluate(() => window.__dock[0])
-  expect(detail === null || detail.href === null || typeof detail.href === 'string').toBe(true)
+  // the click names the ship's own PR (classic: va:dock { href } of the ship): the fixture's dock hrefs end /pull/<n>
+  const n = hit.id.split('#').pop()
+  expect(detail?.href).toMatch(new RegExp(`/pull/${n}$`))
 })
 
 test('[har.dock-panel-summary] clicking a ship opens the dock sheet with loading, delivered today, delivered in all and the level', async ({ page }) => {

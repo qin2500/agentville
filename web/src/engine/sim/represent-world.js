@@ -4,7 +4,7 @@
 // id, project, number, a cleaned title, state, checks, review and size; never an href/URL, a path, conversation text
 // or a server id. Lints never echo a mod-supplied value.
 //
-//   representPr(pr, mod, ctx?)       -> PrSpec       { as: 'lot'|'venue'|'none', model?, venue?, tint? }
+//   representPr(pr, mod, ctx?)       -> PrSpec       { as: 'lot'|'venue'|'none', model?, venue?, tint?, flag?, load? }
 //   representProject(p, mod, ctx?)   -> ProjectSpec  { label, model?, accent? }   label: a clean template
 //   renderLabel(template, name)      -> string       the template with {name} filled in
 //   prView(pr) / projectView(p)      -> the frozen views a mod function receives
@@ -103,6 +103,11 @@ function cleanPr(v, mod, ctx, where) {
   const model = own(v, 'model'), tint = own(v, 'tint'), venue = own(v, 'venue');
   if (model !== undefined) { if (isName(model)) out.model = model; else pushLint(ctx, { kind: 'represent-pr', where, reason: 'model must be a short lower-case name; ignored' }); }
   if (tint !== undefined) { if (typeof tint === 'string' && HEX_RE.test(tint)) out.tint = tint; else pushLint(ctx, { kind: 'represent-pr', where, reason: 'tint must be #rrggbb; ignored' }); }
+  // additive: what a token shows of its PR's progress. flag: a colour (the fantasy pennant: checks failing, approved);
+  // load: 0..1 (the fantasy cargo stowed). Both reach the token through its berth (venue.js venueAssignments).
+  const flag = own(v, 'flag'), load = own(v, 'load');
+  if (flag !== undefined) { if (typeof flag === 'string' && HEX_RE.test(flag)) out.flag = flag; else pushLint(ctx, { kind: 'represent-pr', where, reason: 'flag must be #rrggbb; ignored' }); }
+  if (load !== undefined) { if (typeof load === 'number' && Number.isFinite(load)) out.load = Math.min(1, Math.max(0, load)); else pushLint(ctx, { kind: 'represent-pr', where, reason: 'load must be a number 0..1; ignored' }); }
   if (as === 'venue') {
     const defs = plainObj(mod?.venues) ? mod.venues : null;
     if (!isName(venue) || !defs || !Object.prototype.hasOwnProperty.call(defs, venue)) {
@@ -120,7 +125,7 @@ function cleanPr(v, mod, ctx, where) {
  * @param {object} pr a WorldInput prs[] entry
  * @param {object} mod ResolvedMod
  * @param {object} [ctx] ModCtx (+ `lint: []`, engine-only)
- * @returns {Readonly<{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string }>}
+ * @returns {Readonly<{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string, flag?: string, load?: number }>}
  */
 export function representPr(pr, mod, ctx = {}) {
   const rep = own(mod, 'represent'), spec = rep && typeof rep === 'object' ? own(rep, 'pr') : undefined;

@@ -3,6 +3,7 @@
 //   townWater, outdoors, homes, walkers, iso)
 // - night by local time, the aria-label summary, the 8 fps loop policy, the keyboard bucket order.
 import { toScreen } from '../core/coords.js';
+import { alphaOf } from '../art/alpha.js';
 
 const WATER_GROUND_OK = 201;   // grid.js LAYOUT_GROUND.VENUE: a venue site stands over water on purpose
 
@@ -130,6 +131,23 @@ const INDOORS = 8;
 export const debugOutdoors = (actors, toServer) => actors.filter(a => a.kind === 'agent' && !((a.flags | 0) & INDOORS)).map(a => toServer(a.id) ?? a.id);
 
 /** Classic hits: agent hits only, in canvas css px, server ids, with pose and home. */
+/** A hit picked by its pixels (src): the CSS centre of its opaque source pixel nearest the rect's centre, so a click at
+ *  (cx, cy) lands on it (the middle of a hull's sprite can be air between the sails). null: no pixels to read. */
+function solidPoint(h) {
+  const s = h.src, r = h.rect, e = s?.img ? alphaOf(s.img) : null;
+  if (!e || !(s.sw > 0 && s.sh > 0)) return null;
+  const mu = s.sx + s.sw / 2, mv = s.sy + s.sh / 2;
+  let best = null, bd = Infinity;
+  for (let v = Math.max(0, s.sy | 0); v < Math.min(e.h, s.sy + s.sh); v++) for (let u = Math.max(0, s.sx | 0); u < Math.min(e.w, s.sx + s.sw); u++) {
+    if (e.a[v * e.w + u] < 128) continue;
+    const d = (u + 0.5 - mu) ** 2 + (v + 0.5 - mv) ** 2;
+    if (d < bd) { bd = d; best = { u: u + 0.5, v: v + 0.5 }; }
+  }
+  if (!best) return null;
+  const kx = (r[2] - r[0]) / s.sw, ky = (r[3] - r[1]) / s.sh;
+  return { x: r[0] + (best.u - s.sx) * kx, y: r[1] + (best.v - s.sy) * ky };
+}
+
 export function debugHits(hits, actorOf, toServer, hostKinds = null) {
   const out = [], seen = new Set();
   for (const h of hits || []) {
@@ -138,8 +156,8 @@ export function debugHits(hits, actorOf, toServer, hostKinds = null) {
       const k = `${h.kind}:${h.id}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      const [x0, y0, x1, y1] = h.rect;
-      out.push({ kind: h.kind, id: h.id, x: x0, y: y0, w: x1 - x0, h: y1 - y0, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 });
+      const [x0, y0, x1, y1] = h.rect, c = solidPoint(h) ?? { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+      out.push({ kind: h.kind, id: h.id, x: x0, y: y0, w: x1 - x0, h: y1 - y0, cx: c.x, cy: c.y });
       continue;
     }
     if (h.kind !== 'agent' || seen.has(h.id)) continue;

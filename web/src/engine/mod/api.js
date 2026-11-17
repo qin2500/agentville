@@ -107,8 +107,9 @@ export const FEATURES = Object.freeze(['layout', 'terrain.classes', 'scatter.at'
  *  hooks.scatter(tile: ScatterTile, draw: (k: number) => number, ctx: ModCtx) => ScatterPick|null, called for every
  *  unbuilt tile whose class `grows`; draw(k) = rand(seed, mod.id, 'scatter', x, y, k).
  *
- * @typedef {{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string }} PrSpec
- *  venue: a VenueDef kind. mod.represent.pr: { building?, loading?, merged?, closed?: PrSpec } (data) or (prView, ctx) => PrSpec.
+ * @typedef {{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string, flag?: string, load?: number }} PrSpec
+ *  venue: a VenueDef kind. Additive v1: flag (#rrggbb) and load (0..1, clamped) say how a venue PR is doing; its token
+ *  shows them (the vessel art: a pennant in the flag colour, cargo stowed by load). mod.represent.pr: { building?, loading?, merged?, closed?: PrSpec } (data) or (prView, ctx) => PrSpec.
  *  The data table merges per state over the parent's: a state the child names replaces the parent's whole PrSpec.
  * @typedef {{ label?: string, model?: string, accent?: string }} ProjectSpec
  *  label: a template of at most 40 characters, `{name}` is the project name.

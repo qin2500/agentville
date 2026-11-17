@@ -16,11 +16,23 @@ export function shipClass(size) {
   return lines > BIG_LINES || files > BIG_FILES ? 'brig' : lines < SMALL_LINES ? 'dinghy' : 'cutter';
 }
 
+// parity: har.pennant-and-cargo
+/** The pennant at the masthead (classic dock-art penOf): red while a check fails, green once approved, else cream. */
+export const FLAG = Object.freeze({ failing: '#e5383b', approved: '#2f9e5b', open: '#f4efe4' });
+export function flagOf(pr) {
+  return (pr?.checks?.failed || 0) > 0 ? FLAG.failing : pr?.review === 'approved' ? FLAG.approved : FLAG.open;
+}
+/** Cargo stowed, 0..1 (classic dock-art progress without the clock): checks passed 80%, an approving review 20%. */
+export function loadOf(pr) {
+  const c = pr?.checks || {}, n = (c.passed || 0) + (c.failed || 0) + (c.pending || 0);
+  return Math.min(1, (n ? (c.passed || 0) / n : 0) * 0.8 + (pr?.review === 'approved' ? 0.2 : 0));
+}
+
 /** mod.represent.pr: (prView, ctx) => PrSpec. */
 export function representPr(pr) {
   switch (pr?.state) {
     case 'building': return { as: 'lot' };
-    case 'loading': return { as: 'venue', venue: 'harbour', model: shipClass(pr.size) };
+    case 'loading': return { as: 'venue', venue: 'harbour', model: shipClass(pr.size), flag: flagOf(pr), load: loadOf(pr) };
     default: return { as: 'none' };   // merged: sailed; closed: not shown
   }
 }

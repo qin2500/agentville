@@ -19,7 +19,7 @@ import { toWorldInput, createInputReuse } from './mod/input.js';
 import { drawGridDebug } from './debug/grid-view.js';
 import { createRenderer } from './render/renderer.js';
 import { runEvents, createEventFx } from './render/event-fx.js';
-import { PANEL_HIT_KINDS, openPrPanel, venueParams, venueDebug } from '../engine-host.js';
+import { PANEL_HIT_KINDS, openPrPanel, venueParams, venueDebug, venueHref } from '../engine-host.js';
 import { createNav } from './nav/index.js';
 import { createSim } from './sim/world-sim.js';
 import { pick as pickHit, imageAlphaAt } from './render/pick.js';
@@ -496,6 +496,12 @@ export function createEngine(app) {
     if (PANEL_HIT_KINDS.has(p.kind)) return { panel: p.href ? `link:${p.href}` : p.actor ? `${p.kind}:${p.actor}` : p.kind };
     return null;
   }
+  /** The link of the item a token carries, from a host panel key '<kind>:<actor id>' (null: none, or not a token). */
+  function tokenHref(key) {
+    const k = typeof key === 'string' ? key : '', i = k.indexOf(':');
+    const a = i > 0 && !k.startsWith('link:') ? sim?.actors.get(k.slice(i + 1)) : null;
+    return a?.kind === 'token' && typeof a.item === 'string' ? venueHref(view, a.item) : null;
+  }
   const centerOfId = id => {
     const a = sim?.actors.get(toOpaqueId(id));
     if (!a) return null;
@@ -518,7 +524,8 @@ export function createEngine(app) {
     order: () => bucketOrder(view?.agents || [], id => !!sim?.actors.has(toOpaqueId(id))),
     selected: () => selected,
     isDemoId: id => DEMO && isDemoId(id),
-    openPanel: href => openPrPanel(href),
+    // a token's panel key ('<kind>:<actor id>') names no link: the host finds its PR's from the item it carries
+    openPanel: (href, key) => openPrPanel(href ?? tokenHref(key)),
     onChange: s => {
       const vis = s.hover !== hover || s.hoverVil !== hoverVil || s.hoverPanel !== hoverPanel || s.cursor !== cursor;
       ({ hover, hoverVil, hoverPanel, cursor } = s);

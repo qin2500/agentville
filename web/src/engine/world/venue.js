@@ -360,7 +360,7 @@ export function assignBerths(venue, prSpecs, prev = {}, { mod = null, ctx = {}, 
  * Every venue's berth assignment for this poll; persisted.venues[id].assign keeps it stable across polls and rebuilds.
  * Venues are filled in id order; a PR takes a berth at the first venue of its kind that has one free.
  * @returns {{ venues: Record<string, Record<string, string>>,
- *   prs: Record<string, { venue: string, berth: string, tx: number, ty: number, face: number, model?: string, tint?: string }> }}
+ *   prs: Record<string, { venue: string, berth: string, tx: number, ty: number, face: number, model?: string, tint?: string, flag?: string, load?: number }> }}
  */
 export function venueAssignments(world, input, mod, persisted, ctx = {}) {
   const out = { venues: {}, prs: {} };
@@ -381,7 +381,8 @@ export function venueAssignments(world, input, mod, persisted, ctx = {}) {
     for (const [pr, berth] of Object.entries(a)) {
       taken.add(pr);
       const b = byId.get(berth), s = specOf.get(pr);
-      out.prs[pr] = { venue: id, berth, tx: b.tx, ty: b.ty, face: b.face, ...(s.model ? { model: s.model } : {}), ...(s.tint ? { tint: s.tint } : {}) };
+      out.prs[pr] = { venue: id, berth, tx: b.tx, ty: b.ty, face: b.face, ...(s.model ? { model: s.model } : {}), ...(s.tint ? { tint: s.tint } : {}),
+        ...(s.flag ? { flag: s.flag } : {}), ...(Number.isFinite(s.load) ? { load: s.load } : {}) };
     }
   }
   return out;

@@ -101,3 +101,19 @@ export function dockParams(view, search = '') {
   if (q.has('level')) { const n = Number.parseInt(q.get('level'), 10); next.level = Number.isFinite(n) ? Math.min(5, Math.max(1, n)) : 1; }
   return { ...view, dock: next };
 }
+
+// parity: inp.dock-ship-click-va-dock
+/**
+ * The link of the PR a venue token carries (its item id '<project>#<number>', as dockPrs builds it): the href of the dock
+ * entry (loading first, then sailed) that dockPrs would give that id, else null. Host-side only: the href never enters
+ * the world, it goes straight to the panel event (classic: a ship click names its PR).
+ */
+export function dockHref(view, item) {
+  if (typeof item !== 'string' || !item) return null;
+  const dock = view?.dock && typeof view.dock === 'object' ? view.dock : {};
+  for (const list of [dock.loading, dock.sailed]) for (const x of Array.isArray(list) ? list : []) {
+    const n = prNumberOf(x);
+    if (n != null && `${projectOf(x, view)}#${n}` === item && typeof x.href === 'string') return x.href;
+  }
+  return null;
+}

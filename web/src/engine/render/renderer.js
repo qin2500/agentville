@@ -27,6 +27,7 @@ import * as MARKS from './marks.js';
 import * as EVFX from './event-fx.js';
 import { styleKeyFor } from '../art/style-key.js';
 import * as CRAFT from './craft-art.js';
+import { venueOutlines } from './venue-outline.js';
 import { anchors as lampAnchors } from '../art/props/lighthouse.js';
 import { hash } from '../core/rng.js';
 import { CARRIER_KIND } from '../../engine-host.js';
@@ -315,8 +316,8 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   }
   // People and critters: the classic character sheets as engine-scale stickers (actor-art.js); carts: the engine's cart
   // prop; anything else (or before the sheets load): a small cached placeholder box.
-  function actorSprite(a, x, y) {
-    if (craftArt && CRAFT.CRAFT_KINDS.has(a.kind)) { const c = craftArt.frame(a, { lit: dark }); if (c) return c; }
+  function actorSprite(a, x, y, hl = false) {
+    if (craftArt && CRAFT.CRAFT_KINDS.has(a.kind)) { const c = craftArt.frame(a, { lit: dark, hl }); if (c) return c; }
     // a carrier wears the look of the agent it works for, else a townsperson look by its own seed
     const who = a.kind === CARRIER_KIND ? { ...a, kind: a.agentId != null ? 'agent' : 'folk', id: a.agentId ?? a.id, look: a.look ?? { seed: hash(a.id) } } : a;
     const f = actorArt?.frame?.(who, { selected: hasFlag(a, 'SELECTED') || !!a.selected });
@@ -502,6 +503,8 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     const items = [];
     // event fx: an `anim:<name>` effect swaps an actor's pose for its lifetime (a copy; the sim's actor is untouched)
     const poses = frame.fx?.length && D.animOverrides ? D.animOverrides(frame.fx, frame.t ?? 0) : null;
+    // the hull under the pointer (host panel hover '<kind>:<actor id>') is drawn with its highlight outline
+    const hoverHull = hoveredToken(frame.hoverPanel);
     for (let a of frame.actors || []) {
       if (hasFlag(a, 'INDOORS')) continue;
       if (WATERSIDE.has(a.kind) && !hasFlag(a, 'VISIBLE')) continue;
@@ -511,7 +514,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       if (p.sx < rect[0] - m || p.sx > rect[2] + m || p.sy < rect[1] - m || p.sy > rect[3] + 2 * m) continue;
       it.p = p;
       // the sprite actually drawn: its size and pivot are the actor's hit rect and x-ray shape
-      const e = actorSprite(a, it.x, it.y);
+      const e = actorSprite(a, it.x, it.y, a.kind === 'token' && hoverHull != null && hoverHull === String(a.id));
       const w = e.img?.width ?? 16, h = e.img?.height ?? 24;
       it.img = e.img; it.w = w; it.h = h; it.pivot = { x: e.pivot?.x ?? w / 2, y: e.pivot?.y ?? h };
       if (e.placeholder) it.ph = true;
@@ -617,16 +620,9 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       if (D.importantStars) marks.stars = D.importantStars({ actors: frame.actors || [] });
       D.drawMarks(g, marks, { entryOf: doorOf, frameOf: a => actorArt?.frame?.(a, { selected: true }) ?? null, headOf, now: (frame.t ?? 0) * 1000 });
     }
-    // host panel hover: the venue (or its token) under the pointer lights up its outline
-    if (frame.hoverPanel) {
-      for (const o of visObjs) if (o.kind === 'venue' || o.kind === 'token') outline(o, '#ffe9a8');
-      // a hull under the pointer ('<kind>:<actor id>'): its sprite rect, one px line
-      const hp = String(frame.hoverPanel);
-      for (const it of drawnItems) if (it.actor.kind === 'token' && hp.endsWith(`:${it.actor.id}`)) {
-        const x0 = Math.round(it.p.sx - it.pivot.x) - 1, y0 = Math.round(it.p.sy - it.pivot.y) - 1, x1 = x0 + it.w + 2, y1 = y0 + it.h + 2;
-        g.rect(x0, y0, x1 - x0, 1, '#ffe9a8'); g.rect(x0, y1, x1 - x0, 1, '#ffe9a8'); g.rect(x0, y0, 1, y1 - y0, '#ffe9a8'); g.rect(x1, y0, 1, y1 - y0 + 1, '#ffe9a8');
-      }
-    }
+    // host panel hover: a hull under the pointer is drawn with its own highlight outline (above) and nothing else lights
+    // up; the venue itself (a pier) outlines its walkable decks, one outline per pier rather than one per plank section
+    if (frame.hoverPanel && hoveredToken(frame.hoverPanel) == null) for (const r of venueOutlines(visObjs)) outline(r, '#ffe9a8');
     // screen-space badges are drawn by the engine after g.end() (overlay/badges.js, device px); this hook stays for mods/tests
     D.badges?.draw?.(g, cam, gview, drawn, toCss);
     g.end();
@@ -709,6 +705,12 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   /** The door tile of a building (centre of the door's tile), for the indoors ghost. */
   function doorOf(o) { return o?.door ? { x: o.door.tx + 0.5, y: o.door.ty + 0.5 } : null; }
   function line(p, q, color) { g.poly([[p.sx, p.sy], [q.sx, q.sy], [q.sx, q.sy + 1], [p.sx, p.sy + 1]], color); }
+  /** The token actor id a host panel hover key names ('<kind>:<actor id>', the engine's resolve()), or null. */
+  function hoveredToken(hp) {
+    if (hp == null) return null;
+    const k = String(hp), i = k.indexOf(':');
+    return i > 0 && !k.startsWith('link:') ? k.slice(i + 1) : null;
+  }
   function outline(o, color) {
     const P = [toScreen(o.tx, o.ty), toScreen(o.tx + (o.w || 1), o.ty), toScreen(o.tx + (o.w || 1), o.ty + (o.h || 1)), toScreen(o.tx, o.ty + (o.h || 1))];
     for (let i = 0; i < 4; i++) line(P[i], P[(i + 1) % 4], color);

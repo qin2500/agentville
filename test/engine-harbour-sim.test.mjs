@@ -9,7 +9,7 @@ const { venueAssignments } = await import('../web/src/engine/world/venue.js');
 const { EDGE } = await import('../web/src/engine/core/grid.js');
 const { createTokens } = await import('../web/src/engine/sim/tokens.js');
 const { CAP, PICK, DROP, deckTarget } = await import('../mods/agentville.fantasy/ambient/porter.js');
-const { CAST_STAGGER, spawnHarbourLife } = await import('../mods/agentville.fantasy/ambient/ship.js');
+const { CAST_STAGGER, spawnHarbourLife, pierTiles } = await import('../mods/agentville.fantasy/ambient/ship.js');
 
 const STEP = 0.05;
 const LOAD = ['amber#1000', 'cedar#3000', 'cedar#3001', 'cedar#3002'];
@@ -151,7 +151,7 @@ test('porters: walk to the deck tile when the pier is walkable (no fallback)', (
   for (const s of tokensOf(sim)) {
     const t = deckTarget(ctx, s);
     assert.ok(t && !t.fallback, `${s.id} has a deck target`);
-    const deckX = s.tx < 0.5 ? s.tx + 1 : s.tx - 1;
+    const piers = pierTiles(world, 'dock'), deckX = piers.has(`${s.tx + 1},${s.ty + 1}`) ? s.tx + 1 : s.tx - 1;   // the pier tile beside it
     assert.deepEqual([Math.floor(t.x), Math.floor(t.y)], [deckX, s.ty + 1], 'beside the ship middle on the pier');
   }
 });

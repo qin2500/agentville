@@ -223,7 +223,8 @@ test('assign: overflow at anchor, brigs on pier heads, stable, the 5th argument 
   const specs = Array.from({ length: nPier + 3 }, (_, i) => ({ id: `p#${i}`, state: 'loading', spec: { as: 'venue', venue: 'harbour', model: i === 5 ? 'brig' : 'cutter' } }));
   const a = assignBerths({ id: 'dock', kind: 'harbour', berths }, specs, {}, { mod });
   assert.equal(Object.keys(a).length, specs.length);
-  assert.equal(Object.values(a).filter(b => !PIER_ID.test(b)).length, 3, 'the overflow is at anchor');
+  // the brig holds a pier head and the berth inside it (two pier berths), so one more ship than the 3 extra lies at anchor
+  assert.equal(Object.values(a).filter(b => !PIER_ID.test(b)).length, 4, 'the overflow is at anchor');
   const heads = new Set(berths.filter(b => PIER_ID.test(b.id) && !berths.some(o => PIER_ID.test(o.id) && o.tx === b.tx && o.ty > b.ty)).map(b => b.id));
   assert.ok(heads.has(a['p#5']), 'the brig is on a pier head');
   assert.deepEqual(assignBerths({ id: 'dock', kind: 'harbour', berths }, specs, a, { mod }), a, 'stable across polls');
