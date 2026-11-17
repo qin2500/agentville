@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
-import { HOME, claudeId, row, clearOverrides, openMenu, menuItem, teamView } from './helpers.mjs'
+import { clearStorage, HOME, claudeId, row, clearOverrides, openMenu, menuItem, teamView } from './helpers.mjs'
 
 const LOG = path.join(HOME, 'terminal.log')
 const opened = () => (fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).length : 0)
@@ -11,7 +11,7 @@ const opened = () => (fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8').trim().s
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto('/')
   await expect(page.locator('#conn')).toHaveText(/Live/)
 })

@@ -1,4 +1,4 @@
-// Build cache for incremental world rebuilds (PERF, 2026-11-13). Pure, no DOM, no storage.
+// Build cache for incremental world rebuilds (PERF). Pure, no DOM, no storage.
 // One cache lives as long as the engine instance (index.js) and is passed to buildWorld as opts.cache; buildWorld
 // hands it to placeBlocks (plan keys), runLayout (world/layout.js: the mod's layout result reused when no block moved;
 // kind 'layout') and stampPlan (each project's stamp replayed when its plan, origin, index, style and mod are unchanged). A build with cache = null computes everything
@@ -23,8 +23,10 @@ export function createBuildCache({ limits = {} } = {}) {
     modKey(mod) { return `${mod?.id ?? ''}#${idOf(modIds, mod)}`; },
     /** The content key of a settlement plan: everything mod.hooks.planSettlement is given, plus the project name and the
      * planner function's identity (a hot-reloaded planner re-plans). */
-    planKey({ mod, name, tier, seed, cap, crowns = 1, style = null, worldSeed = 0 }) {
-      return `${this.modKey(mod)}|${idOf(fnIds, mod?.hooks?.planSettlement)}|${JSON.stringify([name, tier, seed, cap, crowns, style, worldSeed])}`;
+    planKey({ mod, name, tier, seed, cap, crowns = 1, style = null, worldSeed = 0, chain = null }) {
+      const k = [name, tier, seed, cap, crowns, style, worldSeed];
+      if (chain != null) k.push(chain);   // M6 nested growth: the same (tier, cap) can name different plans
+      return `${this.modKey(mod)}|${idOf(fnIds, mod?.hooks?.planSettlement)}|${JSON.stringify(k)}`;
     },
     /** Remember which planKey produced a plan object (placeBlocks does this for every plan it uses). */
     notePlan(plan, key) { if (plan && typeof plan === 'object') planKeys.set(plan, key); },
@@ -50,4 +52,59 @@ export function createBuildCache({ limits = {} } = {}) {
       return { hits, misses, sets, evictions, size };
     },
   };
+}
+
+// ---------------------------------------------------------------- rebuild memo keys (M3 rebuild cost, index.js)
+
+const DAY = 864e5;
+const hashWords = (h, buf) => {
+  const n = buf.byteLength >> 2, u = new Uint32Array(buf.buffer, buf.byteOffset, n);
+  for (let i = 0; i < n; i++) h = Math.imul(h ^ u[i], 16777619);
+  for (let i = n << 2; i < buf.byteLength; i++) h = Math.imul(h ^ new Uint8Array(buf.buffer, buf.byteOffset + i, 1)[0], 16777619);
+  return h >>> 0;
+};
+const hashStr = (h, s) => { for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+
+/** Content hash of a grid: bounds plus every typed-array layer (terrain, ground, road, edges, cost, cover, slots, lot, occ).
+ * Two grids with the same hash answer every nav/ground query the same way. */
+export function gridHash(grid) {
+  if (!grid) return '';
+  let h = hashStr(0x811c9dc5, `${grid.ox},${grid.oy},${grid.w},${grid.h}`);
+  for (const k of Object.keys(grid).sort()) {
+    const v = grid[k];
+    if (ArrayBuffer.isView(v) && !(v instanceof DataView)) { h = hashStr(h, k); h = hashWords(h, v); }
+  }
+  return h.toString(36);
+}
+
+/** Everything nav/index.js (with roadgraph.js and slots.js) reads from a World: the grid content, every object's id,
+ * footprint, door and anchors, the square, the venues and the settlement sites. Equal keys mean an existing nav built
+ * for the old world answers exactly as a new one would, so its road graph, labels, flow fields and routes can be kept. */
+export function navKey(world) {
+  if (!world) return '';
+  let h = 0x811c9dc5;
+  for (const o of world.objects?.values?.() ?? []) {
+    h = hashStr(h, `${o.id}|${o.kind}|${o.tx},${o.ty},${o.w},${o.h}|${o.door ? `${o.door.tx},${o.door.ty},${o.door.face ?? ''}` : ''}|${o.anchors ? JSON.stringify(o.anchors) : ''};`);
+  }
+  const sites = (world.villages || []).map(v => [v.id, v.name, v.cx, v.cy]);
+  h = hashStr(h, JSON.stringify([world.square ?? null, world.venues ?? null, sites, world.anchors ?? null]));
+  return `${gridHash(world.grid)}|${h.toString(36)}|${world.objects?.size ?? 0}`;
+}
+
+/** Input key for the rules phase + planSettlements (index.js skips both when it is unchanged). Holds every value they
+ * read except the clock: the mod (identity), seed, forced tier/style, the WorldInput's agents, prs and projects (all a
+ * hook is handed), persisted.blocks (gt/tier/cap), and per persisted lot table its tier and the items still inside the
+ * hold window at `now` (the engine's own clock read). Hooks may also read ctx.time.now: the caller records whether any
+ * did and, if so, also compares `now` (see index.js). */
+export function rulesKey({ input, persisted, mod, seed, forcedTier = null, forcedStyle = null, now }, cache = null) {
+  const holdMs = mod?.rules?.holdMs ?? DAY / 2;
+  const held = {};
+  for (const [name, L] of Object.entries(persisted?.lots || {})) {
+    if (!L || typeof L !== 'object') continue;
+    held[name] = [L.tier, Object.keys(L.a || {}).filter(id => now - (L.h?.[id] ?? now) <= holdMs)];
+  }
+  const blocks = {};
+  for (const [name, b] of Object.entries(persisted?.blocks || {})) blocks[name] = b ? [b.gt ?? null, b.tier ?? null, b.cap ?? null] : null;
+  const modK = cache?.modKey ? cache.modKey(mod) : String(mod?.id ?? '');
+  return JSON.stringify([modK, seed, forcedTier, forcedStyle, input?.agents, input?.prs, input?.projects, blocks, held]);
 }

@@ -64,10 +64,17 @@ function worldPin(name, m = mod) {
 }
 
 // Generated on the base code with VA_PIN_PRINT=1 (see the header). Do not edit by hand.
+// M5 P1 re-pinned the `world` pins with VA_PIN_PRINT=1 (the harbour plan stamps pier and quay decks: ground/road/occ/cost
+// in the cove change); every `sites` pin, i.e. the layout itself, is unchanged. M5 integration re-pinned busy and stress
+// `world` again: the harbour follows the fixtures' dock (lifetime total and level), so its cove holds more; `sites` unchanged. Re-pinned after merging M4 (central square venue: tree + 4 lanterns): `world` only.
+// Re-pinned (M6 nested growth): every block now persists `nest` (its plan's chain, so the next re-plan nests
+// it); the hashed village blocks carry that field. With `nest` left out the old pins still match (geometry unchanged).
+// Re-pinned (M7 dress): the countryside scatter (meadow, bloom-meadow, footpath terrain; copses) changes the terrain
+// and wild-object layers of `world`; every `sites` pin (the layout itself) is unchanged.
 const PINS = {
-  citydemo: { sites: '26d5eee9aebbc525', world: '93c0e75c4f676cf6' },
-  busy: { sites: '66f8727b15575e48', world: '2ac44706dcde8501' },
-  stress: { sites: '7c43cfa035bf7801', world: 'f73269e0a369a0b8' },
+  citydemo: { sites: '71b762831e8e16f5', world: 'cb43c46b2ebea63c' },
+  busy: { sites: 'c56459900054e3cf', world: 'bc6f64602ca96b7c' },
+  stress: { sites: '8d25ba0e1687ea1b', world: '2f065193add09327' },
 };
 
 if (process.env.VA_PIN_PRINT) {

@@ -112,11 +112,13 @@ test('crowns: bosses with homes, clamped 1..3', () => {
   assert.equal(HOOKS.crowns(project({}), resting, ctx()), 2);
 });
 
-test('style: styles-pool per key; forcedStyle, else the preset family', () => {
-  assert.deepEqual(HOOKS.style('alpha', ctx()), poolStyle('alpha'));
-  assert.deepEqual(HOOKS.style('alpha', ctx(), { family: 3 }), poolStyle('alpha', { family: 3 }));
-  assert.deepEqual(HOOKS.style('alpha', ctx({ forcedStyle: 8 }), { family: 3 }), poolStyle('alpha', { family: 2 }));
-  assert.deepEqual(HOOKS.style('alpha', ctx({ forcedStyle: -1 })), poolStyle('alpha', { family: 5 }));
+test('style: styles-pool per key (+ street/folk/banner axes); forcedStyle, else the preset family', () => {
+  // projectStyle = city4's styleFor plus extra axes: the city4 fields it does not extend (paving and folk are extended) are identical
+  const same = (s, p) => { for (const k of Object.keys(p)) if (k === 'roof') assert.equal(s.roof.ridge.length, 7); else if (k !== 'paving' && k !== 'folk') assert.deepEqual(s[k], p[k], k); assert.deepEqual(s.folk.palettes, p.folk.palettes); assert.equal(s.folk.hat, p.folk.hat); };
+  same(HOOKS.style('alpha', ctx()), poolStyle('alpha'));
+  same(HOOKS.style('alpha', ctx(), { family: 3 }), poolStyle('alpha', { family: 3 }));
+  same(HOOKS.style('alpha', ctx({ forcedStyle: 8 }), { family: 3 }), poolStyle('alpha', { family: 2 }));
+  same(HOOKS.style('alpha', ctx({ forcedStyle: -1 })), poolStyle('alpha', { family: 5 }));
   assert.equal(HOOKS.style('alpha', ctx()).key, HOOKS.style('alpha', ctx()).key);
 });
 

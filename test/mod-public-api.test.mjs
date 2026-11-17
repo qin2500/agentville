@@ -50,7 +50,7 @@ test('LAYOUT_GROUND and LOT keep the codes every saved world and golden uses; th
 });
 
 test('FEATURES lists the MOD-READY capabilities; MOD1_HOOKS extends MOD0_HOOKS', () => {
-  assert.deepEqual([...FEATURES], ['layout', 'terrain.classes', 'scatter.at', 'represent.pr', 'represent.project', 'venues', 'persist']);
+  assert.deepEqual([...FEATURES], ['layout', 'terrain.classes', 'scatter.at', 'represent.pr', 'represent.project', 'venues', 'persist', 'prs.loading']);
   assert.ok(Object.isFrozen(FEATURES));
   assert.deepEqual(MOD1_HOOKS, [...MOD0_HOOKS, 'layout', 'scatter']);
 });
@@ -71,6 +71,6 @@ test('registry: persist is top-only, venues is merged data, no classicImport fla
   assert.equal(b.persist, null);
   assert.equal('classicImport' in f, false); assert.equal('classicImport' in b, false);
   assert.deepEqual([...f.lint], []); assert.deepEqual([...b.lint], []);
-  assert.deepEqual(Object.keys(f.venues), ['harbour']);   // P6: the fantasy harbour venue
+  assert.deepEqual(Object.keys(f.venues), ['harbour', 'square']);   // P6: the fantasy harbour venue
   assert.ok(Object.isFrozen(f.venues));
 });

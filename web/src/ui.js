@@ -75,7 +75,13 @@ export function h(tag, props = {}, ...kids) {
 export const reducedMotionQuery = matchMedia('(prefers-reduced-motion: reduce)');
 
 // localStorage that never throws (private mode, blocked storage): values are JSON.
+// onStoreSet(fn): fn(key, value) after each persisted set (plan-sync.js mirrors the layout keys); returns an unsubscribe.
+const storeHooks = new Set();
+export function onStoreSet(fn) { storeHooks.add(fn); return () => storeHooks.delete(fn); }
 export const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* not persisted */ } },
+  set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch { return; /* not persisted */ }
+    for (const fn of storeHooks) { try { fn(k, v); } catch { /* a hook never breaks a save */ } }
+  },
 };

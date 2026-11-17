@@ -9,7 +9,9 @@ sweepStaleTemp()
 const bye = () => { fs.rmSync(HOME, { recursive: true, force: true }); process.exit(0) }
 process.once('SIGTERM', bye).once('SIGINT', bye)
 // The suite opens more terminals a minute than the 30 a person gets (term.test.mjs covers that cap).
-Object.assign(process.env, prepareHome(), { AGENTVILLE_TERM_PER_MINUTE: '600', AGENTVILLE_PORT: String(PORT), XDG_CONFIG_HOME: path.join(HOME, 'xdg') }, SAFE_ENV)
+// World-plan sync is off on the shared e2e server: tests share one server, and a layout one test mirrors would be adopted by the
+// next test's fresh page. The plan-sync e2e runs its own server with it on.
+Object.assign(process.env, prepareHome(), { AGENTVILLE_TERM_PER_MINUTE: '600', AGENTVILLE_PORT: String(PORT), XDG_CONFIG_HOME: path.join(HOME, 'xdg'), AGENTVILLE_WORLD_PLAN: process.env.AGENTVILLE_WORLD_PLAN ?? '0' }, SAFE_ENV)
 const b = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit' })
 if (b.status !== 0) process.exit(1)
 await import('../server/cli.mjs')

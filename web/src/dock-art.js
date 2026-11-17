@@ -208,8 +208,9 @@ export const dockSig = d => d ? [d.level, (d.loading || []).map(p => [p.href, p.
 // ---------- a tiny rasteriser ----------
 const hex = c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
 const INK = hex('#1d1233'), HL = hex('#eaf2ff'); // iso.js's outline; the selection white
-const proj = (x, y, z) => [(x - y) * ISO, (x + y) * ISO / 2 - z];
-const inv = (X, Y, z) => isoInv(X, Y + z);
+let PS = 1; // projection scale: 1 = the classic ISO; the engine's harbour props pass 1.25 (true 32x16 tile) via harbourArt
+const proj = (x, y, z) => [(x - y) * ISO * PS, (x + y) * ISO * PS / 2 - z];
+const inv = (X, Y, z) => (PS === 1 ? isoInv(X, Y + z) : (([a, b]) => [(a + b) / 2, (b - a) / 2])([X / (ISO * PS), 2 * (Y + z) / (ISO * PS)]));
 const rect = (x0, y0, x1, y1, z) => [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]];
 /**
  * Fill each op's polygon (world px corners, projected) in order, pixel centres only (no anti-aliasing).
@@ -250,8 +251,8 @@ function rasterize(ops, ink) {
       const j = (r * w + c) * 4; buf[j] = ink[0]; buf[j + 1] = ink[1]; buf[j + 2] = ink[2]; buf[j + 3] = 255;
     }
   }
-  const img = document.createElement('canvas'); img.width = w; img.height = h;
-  img.getContext('2d').putImageData(new ImageData(buf, w, h), 0, 0);
+  let img = null;
+  if (typeof document !== 'undefined') { img = document.createElement('canvas'); img.width = w; img.height = h; img.getContext('2d').putImageData(new ImageData(buf, w, h), 0, 0); }
   return { img, ox: x0, oy: y0, w, h, data: buf };
 }
 /** A box's three faces the viewer (from the south-east) can see: east, south, top. */
@@ -952,3 +953,22 @@ export function createDockArt(H) {
     debug: () => ({ tier: held.tier, berths: [...slotOf].map(([h, s]) => [h, s.key, s.cls]), sails: sails.map(s => ({ href: s.href, slot: s.slot?.key, t0: s.t0, cur: s.cur && Math.round(s.cur) })), tug: tug && { x: Math.round(tug.x), y: Math.round(tug.y), head: tug.head }, parts: parts.length, walkers: walkers.debug() }),
   };
 }
+
+// ---------- the engine's harbour props (engine/art/props/_harbour-kit.js) ----------
+// The classic builders, re-exported for the engine's 32x16 tile. `s` is the projection scale (default 1 = the
+// classic ISO 0.8; the engine passes 1.25 so ISO * s = 1). Each returns { ox, oy, w, h, data } (img only in a browser).
+const scaled = (s, f) => { const o = PS; PS = s || 1; try { return f(); } finally { PS = o; } };
+export const harbourArt = {
+  ship: (cls, accent, head, hl, s) => scaled(s, () => shipArt(cls, accent, head, hl)),
+  tug: (head, hl, s) => scaled(s, () => tugArt(head, hl)),
+  rowboat: (head, fr, hl, s) => scaled(s, () => rowboatArt(head, fr, hl)),
+  lighthouse: (x, y, hl, s) => scaled(s, () => lighthouseArt(x, y, hl)),
+  beacon: (x, y, hl, s) => scaled(s, () => beaconArt(x, y, hl)),
+  shed: (r, z0, roof, hl, s) => scaled(s, () => shedArt(r, z0, roof, hl)),
+  pierCrane: (c, hl, s) => scaled(s, () => pierCraneArt(c, hl)),
+  jib: (c, hl, s) => scaled(s, () => jibArt(c, hl)),
+  buoy: (col, s) => scaled(s, () => buoyArt(col)),
+  breakwater: (sg, hl, s) => scaled(s, () => segArt(sg, hl)),
+  quay: (q, hl, s) => scaled(s, () => { const ops = []; ops.push({ pts: rect(q.x0 + 3, q.y0 + 2, q.x1 + 6, q.y1 + 5, 0), c: SHADOW, a: 0.3 }); quayOps(ops, { quay: q, piers: [] }); return rasterize(ops, hl ? HL : INK); }),
+};
+export const HARBOUR_SHIPS = SHIPS;

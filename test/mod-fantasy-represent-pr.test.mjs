@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 const { REPRESENT } = await import('../mods/agentville.fantasy/represent-pr.js');
 const { REPRESENT: REEXPORTED } = await import('../mods/agentville.fantasy/represent.js');
-const { VENUES, tierFor } = await import('../mods/agentville.fantasy/venues.js');
+const { VENUES, tierFor, levelOf, decodeLevel } = await import('../mods/agentville.fantasy/venues.js');
 const { resolveMod } = await import('../web/src/engine/mod/registry.js');
 const { toWorldInput } = await import('../web/src/engine/mod/input.js');
 const { representPr, prView, cleanPrTitle } = await import('../web/src/engine/sim/represent-world.js');
@@ -24,18 +24,25 @@ const fantasy = () => resolveMod('agentville.fantasy');
 const pr = (n, state, over = {}) => ({ id: `alpha#${n}`, project: 'alpha', number: n, title: '', state,
   checks: { passed: 0, failed: 0, pending: 0 }, review: null, size: { additions: 0, deletions: 0, files: 0 }, ...over });
 
-test('REPRESENT is plain data (structuredClone deep-equal, no functions)', () => {
-  assert.deepEqual(structuredClone(REPRESENT), REPRESENT);
-  noFunctions(REPRESENT);
+test('REPRESENT.pr is a function of the PR view (M5: ship class by size); represent.js re-exports the same object', () => {
+  assert.equal(typeof REPRESENT.pr, 'function');
+  assert.deepEqual(Object.keys(REPRESENT), ['pr']);
   assert.equal(REEXPORTED, REPRESENT, 'represent.js re-exports the same object');
 });
 
-test('PRs: building is a lot, loading/merged are sloops at the harbour, closed is not shown', () => {
+test('PRs: building is a lot, loading is a ship at the harbour by size, merged and closed are not shown', () => {
   const mod = fantasy(), lint = [];
+  const size = (additions, deletions, files) => ({ size: { additions, deletions, files } });
   assert.deepEqual({ ...representPr(pr(1, 'building'), mod, { lint }) }, { as: 'lot' });
-  for (const s of ['loading', 'merged']) assert.deepEqual({ ...representPr(pr(2, s), mod, { lint }) }, { as: 'venue', venue: 'harbour', model: 'sloop' });
+  assert.deepEqual({ ...representPr(pr(2, 'loading'), mod, { lint }) }, { as: 'venue', venue: 'harbour', model: 'dinghy' });
+  assert.equal(representPr(pr(2, 'loading', size(25, 24, 1)), mod).model, 'dinghy', '< 50 lines: a dinghy');
+  assert.equal(representPr(pr(2, 'loading', size(25, 25, 1)), mod).model, 'cutter', '50 lines: a cutter');
+  assert.equal(representPr(pr(2, 'loading', size(300, 200, 20)), mod).model, 'cutter', '500 lines, 20 files: still a cutter');
+  assert.equal(representPr(pr(2, 'loading', size(300, 201, 1)), mod).model, 'brig', '> 500 lines: a brig');
+  assert.equal(representPr(pr(2, 'loading', size(1, 1, 21)), mod).model, 'brig', '> 20 files: a brig');
+  assert.deepEqual({ ...representPr(pr(2, 'merged'), mod, { lint }) }, { as: 'none' }, 'a merged PR has sailed: no ship, no berth');
   assert.deepEqual({ ...representPr(pr(3, 'closed'), mod, { lint }) }, { as: 'none' });
-  assert.deepEqual(lint, [], 'the fantasy table lints clean');
+  assert.deepEqual(lint, [], 'the fantasy function lints clean');
   assert.equal(typeof mod.venues.harbour.plan, 'function', 'the harbour is a venue kind of the resolved mod');
 });
 
@@ -76,20 +83,26 @@ test('PR titles: first line only, URLs and paths cut, short', () => {
 
 // ---------------------------------------------------------------- the harbour venue
 
-test('harbour level: the classic tier rule, grows at once, shrinks one step only when well below', () => {
-  const { level } = VENUES.harbour;
-  const L = (loading, prev = null) => level({ prs: loading, states: { building: 0, loading, merged: 0, closed: 0 } }, prev);
+test('harbour level: the classic tier rule, the lifetime floor, the rank packed in; shrinking is the engine\'s hold', () => {
+  const { level, shrinkAfterMs } = VENUES.harbour;
+  const L = (loading, prev = null, extra = {}) => level({ prs: loading, states: { building: 0, loading, merged: 0, closed: 0 }, ...extra }, prev);
   assert.deepEqual([0, 3, 4, 7, 8, 12, 13, 99].map(n => tierFor(n)), [1, 1, 2, 2, 3, 3, 4, 4]);
   assert.equal(L(0), 1); assert.equal(L(13), 4);
   assert.equal(L(13, 1), 4, 'grows at once');
-  assert.equal(L(5, 3), 3, 'one level lower: held');
-  assert.equal(L(0, 3), 2, 'two levels lower: one step down');
+  assert.equal(L(5, 3), 2, 'the want, lower than prev: the engine holds it shrinkAfterMs');
+  assert.equal(shrinkAfterMs, 10 * 60e3);
   assert.equal(level({ prs: 20 }, null), 4, 'without states, all PRs count');
+  assert.deepEqual([0, 9, 10, 39, 40, 119, 120].map(m => L(0, null, { merged: m })), [1, 1, 2, 2, 3, 3, 4], 'lifetime floor 10/40/120');
+  assert.equal(L(13, null, { merged: 10 }), 4, 'loading grows it past the floor');
+  assert.equal(L(0, 4, { merged: 40 }), 3, 'never below the floor');
+  assert.deepEqual([1, 2, 3, 4, 5, 9].map(r => L(0, null, { rank: r })), [1, 5, 9, 13, 17, 17], 'rank r adds 4 (r - 1), up to 5');
+  assert.deepEqual(decodeLevel(L(5, null, { rank: 3 })), { tier: 2, rank: 3 });
+  assert.equal(L(0, levelOf(3, 2), { rank: 3 }), levelOf(3, 3), 'a rank step while the tier would drop keeps the tier (the drop waits its turn)');
 });
 
 const SITE = { kind: 'harbour', rect: { x: 20, y: 40, w: 60, h: 30 }, anchor: { tx: 50, ty: 42 }, data: { cx: 50, foot: 42, sea: 43 } };
 
-test('harbour plan: planks, bollards and a skiff; nodes foot and yard; unique berths in the water, main pier first', () => {
+test('harbour plan: piers, bollards; nodes foot, yard, a deck node per pier berth; unique berths in the water, main pier first, anchor last', () => {
   for (const lv of [1, 2, 3, 4]) {
     const p = VENUES.harbour.plan({ site: SITE, level: lv });
     assert.ok(p.objects.some(o => o.model === 'pier') && p.objects.some(o => o.model === 'bollard'), 'the harbour has its art');
@@ -98,8 +111,11 @@ test('harbour plan: planks, bollards and a skiff; nodes foot and yard; unique be
     assert.equal(new Set(p.berths.map(b => b.id)).size, p.berths.length);
     for (const b of p.berths) assert.ok(b.ty > SITE.data.sea && b.face === 2);
     assert.ok(p.berths[0].tx === 49 && p.berths[1].tx === 49, 'main pier, west side first');
+    const pier = p.berths.filter(b => /^p\d/.test(b.id)), first = p.berths.findIndex(b => !/^p\d/.test(b.id));
+    assert.equal(first, pier.length, 'berths at anchor come after every pier berth');
+    for (const b of pier) assert.ok(p.nodes[`deck-${b.id}`], `${b.id} has a deck node`);
   }
-  assert.deepEqual([1, 2, 3, 4].map(lv => VENUES.harbour.plan({ site: SITE, level: lv }).berths.length), [4, 12, 16, 30]);
+  assert.deepEqual([1, 2, 3, 4].map(lv => VENUES.harbour.plan({ site: SITE, level: lv }).berths.filter(b => /^p\d/.test(b.id)).length), [4, 12, 16, 30]);
 });
 
 function world() {
@@ -117,7 +133,7 @@ test('buildVenues with the fantasy mod: world.venues.dock, art stamped, no lint,
   const v = venues.dock;
   assert.equal(v.kind, 'harbour'); assert.equal(v.level, 1);
   assert.deepEqual([v.tx, v.ty], [50, 42]);
-  assert.deepEqual(Object.keys(v.nodes).sort(), ['foot', 'yard']);
+  assert.ok(['foot', 'yard', 'mouth', 'offing', 'deck-p2w0'].every(k => v.nodes[k]), 'the harbour nodes');
   assert.deepEqual(persisted.venues, { dock: { kind: 'harbour', level: 1 } });
   assert.equal(venueSig(input, mod, persisted), 'dock:1');
   const r = resolvePlace('venue:dock', { id: 'x', agentId: 'x' }, w);
@@ -131,16 +147,16 @@ test('no venue sites (today\'s built-in layout): no-op, persisted untouched', ()
   assert.deepEqual(persisted, {});
 });
 
-test('harbour berths: the loading PR gets a berth, kept across polls; new loading PRs evict history, not each other', () => {
+test('harbour berths: the loading PR gets a berth, kept across polls; merged PRs take none', () => {
   const mod = fantasy(), w = world(), persisted = {};
   const merged = [5, 6, 7, 8, 9].map(n => pr(n, 'merged'));
   let input = inputOf([...merged, pr(1, 'loading')]);
   buildVenues(w, { venues: { dock: SITE } }, input, mod, persisted, {}, { seed: 1 });
   const a1 = venueAssignments(w, input, mod, persisted);
-  assert.equal(Object.keys(a1.venues.dock).length, 4, 'level 1 has four berths');
+  assert.deepEqual(Object.keys(a1.venues.dock), ['alpha#1'], 'merged PRs no longer compete for berths');
   const b1 = a1.venues.dock['alpha#1'];
   assert.ok(b1, 'the loading PR has a berth');
-  assert.equal(a1.prs['alpha#1'].model, 'sloop');
+  assert.equal(a1.prs['alpha#1'].model, 'dinghy');
   input = inputOf([pr(2, 'loading'), ...merged, pr(1, 'loading')]);
   const a2 = venueAssignments(w, input, mod, persisted);
   assert.equal(a2.venues.dock['alpha#1'], b1, 'stable across polls');

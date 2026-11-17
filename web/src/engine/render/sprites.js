@@ -1,9 +1,17 @@
 // Sprite cache (design §3.4, seam R4).
 //
 //   new SpriteCache({ maxBytes = 56<<20, now, budgetMs = 6 })
-//     get(key, make) -> SpriteEntry | null   build synchronously while this frame's budget lasts, else queue and return null
+//     get(key, make, budgetMs?) -> SpriteEntry | null   build synchronously while this frame's budget lasts (budgetMs, default
+//                                             the cache's), else queue and return null
 //     pump(budgetMs) -> number                build queued items within budgetMs (by the injected clock); returns builds done
-//     stats() -> { entries, bytes, maxBytes, queued, hits, misses, builds, evictions }
+//     cancel() -> number                      drop the queue (the view no longer needs it: Map zoom draws no sprite)
+//     trim() -> number                        evict down to maxBytes now (stale, then prefetched); returns how many went
+//     prefetch(key, make) -> 'hit' | 'built' | 'full' | 'failed'
+//                                             build a sprite the view does not show yet (idle time: the next zoom step,
+//                                             the pan margin) only while it fits under maxBytes; see "Prefetch" below
+//     adopt(key, entry, pre?) -> boolean      put back an entry this cache evicted that its user still holds (no build,
+//                                             the same object); pre: as a prefetched entry, only into free room
+//     stats() -> { entries, bytes, maxBytes, queued, hits, misses, builds, evictions, adopted }
 //   spriteKey({ model, styleKey, variant, w, h, door, lit, site, crown, anim, dir, len }) -> string (order independent)
 //   batchMisses(keys, render) -> Promise<Map<key, SpriteEntry>>   render = mod.sprites.render(model, variant, style, opts)
 //   placeholder(obj) -> SpriteEntry   flat-shaded iso box from footprint (w, h tiles) and z (px)
@@ -11,6 +19,10 @@
 // SpriteEntry = { img, bounds, pivot, slices: [], anchors, bytes, lastUsed }. A hit returns the SAME entry object (the
 // renderer caches slices by entry identity). A make() that returns null (art not loaded) is never cached.
 // LRU by bytes; an entry used in the last 2 s is never evicted.
+// Prefetch: a prefetched entry is marked `pre` until a get() uses it. It is never protected by the 2 s rule, and
+// eviction takes stale entries first (least recently used), then prefetched ones, never one the view used in the last
+// 2 s. A prefetch itself only evicts stale entries: when the new entry does not fit beside the view's sprites and the
+// other prefetched ones it is dropped again ('full'), so prefetching never pushes out what is on screen or thrashes.
 import { createCanvas } from '../art/raster.js';
 
 export const MAX_W = 512, MAX_H = 768, KEEP_MS = 2000, FRAME_MS = 16;
@@ -56,7 +68,7 @@ export class SpriteCache {
     this.maxBytes = maxBytes; this.now = now; this.budgetMs = budgetMs;
     this.map = new Map(); this.queue = new Map();
     this.bytes = 0; this.spent = 0; this.winStart = -Infinity;
-    this.n = { hits: 0, misses: 0, builds: 0, evictions: 0 };
+    this.n = { hits: 0, misses: 0, builds: 0, evictions: 0, prefetched: 0, preUsed: 0, preDropped: 0, adopted: 0 };
   }
 
   _build(key, make) {
@@ -69,23 +81,82 @@ export class SpriteCache {
     return e;
   }
 
-  _evict(keep) {
+  /** Evict down to maxBytes: stale entries (LRU) first, then prefetched ones (unless `stale` only); never `keep`. */
+  _evict(keep, staleOnly = false) {
     if (this.bytes <= this.maxBytes) return;
-    const t = this.now();
-    const cand = [...this.map.entries()].filter(([, e]) => e !== keep && t - e.lastUsed >= KEEP_MS).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    const t = this.now(), stale = [], pre = [];
+    for (const kv of this.map) {
+      const e = kv[1];
+      if (e === keep) continue;
+      if (e.pre) pre.push(kv);
+      else if (t - e.lastUsed >= KEEP_MS) stale.push(kv);
+    }
+    const byAge = (a, b) => a[1].lastUsed - b[1].lastUsed;
+    const cand = staleOnly ? stale.sort(byAge) : [...stale.sort(byAge), ...pre.sort(byAge)];
     for (const [k, e] of cand) {
       if (this.bytes <= this.maxBytes) break;
       this.map.delete(k); this.bytes -= e.bytes; this.n.evictions++;
     }
   }
 
-  get(key, make) {
+  /**
+   * Evict down to maxBytes now. Eviction otherwise runs only when something is built, so a cache that went over the cap
+   * while many sprites were in use (a sweep of views) stayed over it once the view held still. The host calls this now
+   * and then (renderer.draw, at most twice a second, O(1) while under the cap).
+   */
+  trim() {
+    if (this.bytes <= this.maxBytes) return 0;
+    const n = this.n.evictions;
+    this._evict(null);
+    return this.n.evictions - n;
+  }
+
+  /**
+   * Build `key` ahead of need (idle time). 'hit': already cached (its LRU time is not touched); 'built': cached as a
+   * prefetched entry; 'full': it would not fit under maxBytes without evicting the view's sprites or other prefetched
+   * ones, so it was dropped (stop prefetching for now); 'failed': make() returned nothing (not cached).
+   */
+  prefetch(key, make) {
+    if (this.map.has(key)) return 'hit';
+    this.queue.delete(key);
+    let r = null;
+    try { r = make(); } catch { r = null; }
+    if (!r) return 'failed';
+    const e = toEntry(r, this.now());
+    e.pre = true;
+    this.map.set(key, e); this.bytes += e.bytes; this.n.builds++;
+    this._evict(e, true);
+    if (this.bytes > this.maxBytes) {
+      this.map.delete(key); this.bytes -= e.bytes; this.n.preDropped++;
+      return 'full';
+    }
+    this.n.prefetched++;
+    return 'built';
+  }
+
+  /**
+   * Put `e` (an entry this cache made and evicted, still held by the caller: the renderer's slices) back under `key`, as
+   * it is: no make(), the same object, so the caller's per-entry caches stay valid. Its bytes count again and eviction
+   * runs as for a build. With `pre` it goes in as a prefetched entry and only into free room (as prefetch). Returns
+   * whether it is cached now.
+   */
+  adopt(key, e, pre = false) {
+    if (!e || !e.img || this.map.has(key)) return false;
+    this.queue.delete(key);
+    e.lastUsed = this.now(); e.pre = !!pre;
+    this.map.set(key, e); this.bytes += e.bytes; this.n.adopted++;
+    this._evict(e, pre);
+    if (pre && this.bytes > this.maxBytes) { this.map.delete(key); this.bytes -= e.bytes; this.n.adopted--; e.pre = false; return false; }
+    return true;
+  }
+
+  get(key, make, budgetMs = this.budgetMs) {
     const hit = this.map.get(key);
-    if (hit) { hit.lastUsed = this.now(); this.n.hits++; return hit; }
+    if (hit) { hit.lastUsed = this.now(); if (hit.pre) { hit.pre = false; this.n.preUsed++; } this.n.hits++; return hit; }
     this.n.misses++;
     const t0 = this.now();
     if (t0 - this.winStart >= FRAME_MS) { this.winStart = t0; this.spent = 0; }
-    if (this.spent < this.budgetMs) {
+    if (this.spent < budgetMs) {
       this.queue.delete(key);
       const e = this._build(key, make);
       this.spent += Math.max(0, this.now() - t0);
@@ -108,8 +179,17 @@ export class SpriteCache {
     return done;
   }
 
+  /** Drop every queued build (nothing is cached for them; a later get() queues them again). Returns how many. */
+  cancel() {
+    const n = this.queue.size;
+    this.queue.clear();
+    return n;
+  }
+
   stats() {
-    return { entries: this.map.size, bytes: this.bytes, maxBytes: this.maxBytes, queued: this.queue.size, ...this.n };
+    let preBytes = 0;
+    for (const e of this.map.values()) if (e.pre) preBytes += e.bytes;
+    return { entries: this.map.size, bytes: this.bytes, maxBytes: this.maxBytes, queued: this.queue.size, preBytes, ...this.n };
   }
 }
 

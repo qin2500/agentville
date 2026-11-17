@@ -122,7 +122,8 @@ const { toWorldInput } = await import('../web/src/engine/mod/input.js');
 const { viewFromFixture, loadFixture } = await import('./engine-support/world-views.mjs');
 
 const FIX_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'e2e', 'fixtures', 'engine');
-const FIXTURES = fs.readdirSync(FIX_DIR).filter(f => f.endsWith('.json')).sort();
+// *.layout.json files are saved-layout histories (tools/engine/make-nested-history.mjs), not world fixtures.
+const FIXTURES = fs.readdirSync(FIX_DIR).filter(f => f.endsWith('.json') && !f.endsWith('.layout.json')).sort();
 const baseWorld = name => {
   let fx = loadFixture(name);
   if (fx.frames) fx = { ...fx, ...fx.frames[0] };

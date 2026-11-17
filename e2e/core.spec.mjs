@@ -1,13 +1,13 @@
 // Buckets, hierarchy, panel modes, search/filters, detail view, selection. Shared fixture server.
 import { test, expect } from './fixtures.mjs'
-import { EXPECTED, IDS, SHOTS, row, claudeId, clearOverrides, openMenu, villagerPoint, teamView } from './helpers.mjs'
+import { clearStorage, EXPECTED, IDS, SHOTS, row, claudeId, clearOverrides, openMenu, villagerPoint, teamView } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto('/')
   await expect(page.locator('#conn')).toHaveText(/Live/)
 })

@@ -180,7 +180,7 @@ test('D4: a long route (> 40 tiles) fades instead of walking', () => {
   assert.deepEqual([s.actors.get('A').x, s.actors.get('A').alpha], [80, 1]);
 });
 
-test('D4: off-screen actors fade; walks over 6 s are cut short', () => {
+test('D4: off-screen actors fade; a trip over 6 s fades, one within 6 s walks', () => {
   const s = createSim({ world: makeWorld(), seed: 1, serverId, onScreen: () => false, deps: deps([], { goals: { working: { x: 16, y: 12 } } }) });
   s.applySnapshot(input([agent('A')]));
   for (let i = 0; i < 3; i++) s.tick(STEP);
@@ -188,17 +188,26 @@ test('D4: off-screen actors fade; walks over 6 s are cut short', () => {
   s.tick(0.2);
   assert.equal(s.actors.get('A').x, 16);
 
-  // 30 tiles at a slow speed: walks, then fades at 6 s
+  // 30 tiles at speed 1 = 30 s > 6 s: fades (by design), never in between
   const d = deps([], { goals: { working: { x: 41, y: 12 } } });
   const init = d.agentBehaviour.init;
   d.agentBehaviour.init = (a, ctx) => { init(a, ctx); a.speed = 1; };
   const t = createSim({ world: makeWorld(), seed: 1, serverId, deps: d });
   t.applySnapshot(input([agent('A')]));
-  for (let i = 0; i < 6 / STEP - 2; i++) t.tick(STEP);
-  const mid = t.actors.get('A').x;
-  assert.ok(mid > 15 && mid < 18, `walked ~6 tiles, at ${mid}`);
-  for (let i = 0; i < 12; i++) t.tick(STEP);
+  for (let i = 0; i < 12; i++) { t.tick(STEP); assert.ok([11, 41].includes(t.actors.get('A').x), `no walk: ${t.actors.get('A').x}`); }
   assert.equal(t.actors.get('A').x, 41);
+
+  // 5 tiles at speed 1 = 5 s <= 6 s: walks
+  const d2 = deps([], { goals: { working: { x: 16, y: 12 } } });
+  const init2 = d2.agentBehaviour.init;
+  d2.agentBehaviour.init = (a, ctx) => { init2(a, ctx); a.speed = 1; };
+  const u = createSim({ world: makeWorld(), seed: 1, serverId, deps: d2 });
+  u.applySnapshot(input([agent('A')]));
+  for (let i = 0; i < 2.5 / STEP; i++) u.tick(STEP);
+  const mid = u.actors.get('A').x;
+  assert.ok(mid > 12.5 && mid < 14.5, `walking, at ${mid}`);
+  for (let i = 0; i < 3 / STEP; i++) u.tick(STEP);
+  assert.equal(u.actors.get('A').x, 16);
 });
 
 test('D4: stalled and error agents never walk', () => {

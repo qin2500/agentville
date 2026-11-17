@@ -19,10 +19,10 @@ export function loadWorlds() {
   return cached;
 }
 
-/** True when the village runs on engine v2 (?engine=2, or Settings va.engine = 2 unless ?engine=1). */
+/** True when the village runs on engine v2: ?engine=1|2 for the page, else the stored setting (default v2). */
 export function engineActive(search, store) {
   const e = new URLSearchParams(search || '').get('engine');
-  return e ? e === '2' : store.get('va.engine', 1) === 2;
+  return e === '1' || e === '2' ? e === '2' : storedEngine(store) === 2;
 }
 
 /** A <select data-set="world"> listing the worlds, `current` selected. */
@@ -52,5 +52,29 @@ export function applyWorld(id, store, reload = defaultReload) {
 function defaultReload() {
   const u = new URL(location.href);
   u.searchParams.delete('world');
+  location.assign(u.href);
+}
+
+// Settings → Advanced → "Use classic village (old engine)", bound to va.engine (1 classic, 2 new). Since M7 the new engine
+// is the default: unset (or 2) is v2, only an explicit stored 1 keeps classic. ?engine=1|2 overrides it for the page;
+// the choice reloads without that param so the setting takes effect. Picking never touches a layout key.
+export const ENGINE_KEY = 'va.engine';
+/** The engine the stored setting picks (ignores ?engine): 1 or 2. Rollback: default back to 1 here. */
+export const storedEngine = store => (store.get(ENGINE_KEY, 2) === 1 ? 1 : 2);
+/** The classic-village opt-out: a checkbox inside a collapsed <details class="settings-advanced"> at the bottom of Settings. */
+export function classicToggleHtml(store) {
+  const classic = storedEngine(store) === 1;
+  return `<details class="settings-advanced"><summary>Advanced</summary>
+        <label><input type="checkbox" data-set="engine"${classic ? ' checked' : ''}>Use classic village (old engine)</label>
+        <p class="helper">The old village. It will be removed in a later version.</p></details>`;
+}
+/** Persist the choice (1 | 2) and reload without ?engine. */
+export function applyEngine(value, store, reload = engineReload) {
+  store.set(ENGINE_KEY, +value === 2 ? 2 : 1);
+  reload();
+}
+function engineReload() {
+  const u = new URL(location.href);
+  u.searchParams.delete('engine');
   location.assign(u.href);
 }

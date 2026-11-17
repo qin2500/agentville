@@ -13,7 +13,7 @@
 // bleed into the next layer/sub/depth slot (ordering on depth, sub, layer stays exact). In a ±2048 world
 // col = x - y can reach ±4096; such far columns tie with the clamp edge and fall back to merge stability.
 // Within one 16-px column (the slice unit) that never matters.
-// Sizing (checked 2026-11-13): the largest fixture (e2e stress.json, grid 358x303 at ox -181, oy -161) spans
+// Sizing (checked): the largest fixture (e2e stress.json, grid 358x303 at ox -181, oy -161) spans
 // col -322..337 and depth -342..317, so 4096 col slots are 6x headroom; the field is NOT widened (the seam stays).
 // Slice.col (render/slice.js) is the 16-px screen strip index k (sx in [16k, 16k+16)), which is within one of the
 // tile column x - y, so the same range applies.

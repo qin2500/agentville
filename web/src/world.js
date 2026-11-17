@@ -178,12 +178,12 @@ export function tierWithHysteresis(growth, prev) {
 }
 // Plans are pure in (tier, seed, capacity): computed once per session per plot shape.
 const PLANS = new Map();
-function planFor(tier, seed, cap, crowns = 1) {
-  const k = `${tier}|${seed}|${cap}|${crowns}`;
+function planFor(tier, seed, cap, crowns = 1, from = null) {
+  const k = `${tier}|${seed}|${cap}|${crowns}|${from || ''}`;
   let p = PLANS.get(k);
   if (!p) {
     if (PLANS.size > 64) PLANS.clear();
-    p = planSettlement({ tier, seed, lots: cap, crowns }); // lots = the capacity bucket itself: same plan for every need in it
+    p = planSettlement({ tier, seed, lots: cap, crowns, from }); // `from` = the chain this block was last drawn at, so a tier-up wraps the old plan whole; lots = the capacity bucket itself: same plan for every need in it
     PLANS.set(k, p);
   }
   return p;
@@ -281,22 +281,43 @@ export function layout(P, now = Date.now()) {
     const obs = obstacles(self);
     // Only spots touching (or just off) what is already there can make the most compact town, so the
     // search is the obstacles' box grown by the plot's size (clamped to the old ±120 × ±90 window).
-    const m = GAP + 2, bx0 = Math.max(-120, Math.min(...obs.map(o => o.x)) - w - m), bx1 = Math.min(120, Math.max(...obs.map(o => o.x + o.w)) + m);
-    const by0 = Math.max(-90, Math.min(...obs.map(o => o.y)) - h - m), by1 = Math.min(90, Math.max(...obs.map(o => o.y + o.h)) + m);
-    let best = null;
-    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
-      const r = { x, y, w, h };
-      if (obs.some(o => near(r, o, GAP))) continue;
-      const s = score(r, self) - contact(r, obs) * 0.05;
-      if (!best || s < best[0]) best = [s, r];
-    }
+    const m = GAP + 2, ox0 = Math.min(...obs.map(o => o.x)) - w - m, ox1 = Math.max(...obs.map(o => o.x + o.w)) + m;
+    const oy0 = Math.min(...obs.map(o => o.y)) - h - m, oy1 = Math.max(...obs.map(o => o.y + o.h)) + m;
+    const scan = (bx0, bx1, by0, by1) => {
+      let best = null;
+      for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+        const r = { x, y, w, h };
+        if (obs.some(o => near(r, o, GAP))) continue;
+        const s = score(r, self) - contact(r, obs) * 0.05;
+        if (!best || s < best[0]) best = [s, r];
+      }
+      return best;
+    };
+    let best = scan(Math.max(-120, ox0), Math.min(120, ox1), Math.max(-90, oy0), Math.min(90, oy1));
+    // The window is full: search the obstacles' whole box instead (always has a free spot just outside it).
+    best ||= scan(ox0, ox1, oy0, oy1);
     return best[1];
   }
   const fitsAt = (r, self) => !obstacles(self).some(o => near(r, o, GAP));
+  // The free spot of the same size nearest `want` (a ring search, clamped to the same ±120 × ±90 window).
+  function nearestSpot(want, self) {
+    const obs = obstacles(self);
+    let best = null;
+    for (let d = 0; d <= 240 && !best; d++) {
+      for (let dy = -d; dy <= d; dy++) for (let dx = -d; dx <= d; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== d) continue;
+        const r = { x: want.x + dx, y: want.y + dy, w: want.w, h: want.h };
+        if (r.x < -120 || r.y < -90 || r.x + r.w > 120 || r.y + r.h > 90 || obs.some(o => near(r, o, GAP))) continue;
+        const k = dx * dx + dy * dy;
+        if (!best || k < best[0]) best = [k, r];
+      }
+    }
+    return best ? best[1] : null;
+  }
 
   // Each plot is the plan for its tier and capacity, sized w × h. Existing plots go first (they keep
   // their ground); new ones take the free spot nearest the square, biggest and busiest first.
-  const plans = new Map(P.villages.map(pv => [pv.name, planFor(pv.tier, hash(pv.name), pv.cap, pv.crowns)]));
+  const plans = new Map(P.villages.map(pv => [pv.name, planFor(pv.tier, hash(pv.name), pv.cap, pv.crowns, B[pv.name]?.chain || null)]));
   const live = n => B[n] && !B[n].away ? 0 : 1, area = pv => plans.get(pv.name).w * plans.get(pv.name).h;
   const order = [...P.villages].sort((a, b) => live(a.name) - live(b.name) || area(b) - area(a) || b.busy - a.busy || a.name.localeCompare(b.name));
   const byName = new Map();
@@ -309,8 +330,14 @@ export function layout(P, now = Date.now()) {
     if (!b || b.away || replan) {
       let r = null;
       if (replan) {
-        const c = { x: b.x + Math.round((b.w - p.w) / 2), y: b.y + Math.round((b.h - p.h) / 2), w: p.w, h: p.h };
+        // A nested plan holds the old plot whole at +(dx, dy): the new origin is the old one minus that,
+        // so every old building stays on its tile. If that does not fit, the whole block moves together
+        // (one shared shift) to the nearest free spot. A plan that does not nest recentres as before.
+        const n = p.nest && p.nest.from === b.chain ? p.nest : null;
+        const c = n ? { x: b.x - n.dx, y: b.y - n.dy, w: p.w, h: p.h }
+          : { x: b.x + Math.round((b.w - p.w) / 2), y: b.y + Math.round((b.h - p.h) / 2), w: p.w, h: p.h };
         if (fitsAt(c, name)) r = c;
+        else if (n) r = nearestSpot(c, name);
       }
       r ||= findSpot(p.w, p.h, name);
       if (b) { delete b.away; Object.assign(b, r); }
@@ -322,7 +349,7 @@ export function layout(P, now = Date.now()) {
       }
       evict(b, name);
     }
-    Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, crowns: pv.crowns, seen: now });
+    Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, crowns: pv.crowns, chain: p.chain, seen: now });
     const v = { ...pv, block: b, plan: p, accent: ACCENT[b.acc % ACCENT.length], bossIds: new Set(pv.homes.filter(a => a.role === 'boss').map(a => a.id)) };
     byName.set(name, v);
     placeVillage(W, v, S, now);
@@ -361,7 +388,14 @@ function placeVillage(W, v, S, now) {
   // shows; one that is gone keeps it HOLD_MS (then it is freed), and is the first to give it up when a
   // newcomer finds every lot taken.
   let L = S.lots[name];
-  if (!L || L.cap !== v.cap || L.tier !== v.tier || (L.crowns ?? 1) !== v.crowns) L = S.lots[name] = { cap: v.cap, tier: v.tier, crowns: v.crowns, a: {}, h: {} };
+  // A re-plan that nests the plan the lots were dealt on keeps the map (lot ids are the same): only
+  // entries whose lot vanished are dropped below. Anything else starts afresh.
+  const nests = L && L.chain && (p.chain === L.chain || p.nest?.from === L.chain);
+  if (!L || L.cap !== v.cap || L.tier !== v.tier || (L.crowns ?? 1) !== v.crowns || (L.chain && L.chain !== p.chain)) { // a saved map with no chain (pre-nesting) is adopted as it is
+    if (L && nests) Object.assign(L, { cap: v.cap, tier: v.tier, crowns: v.crowns });
+    else L = S.lots[name] = { cap: v.cap, tier: v.tier, crowns: v.crowns, a: {}, h: {} };
+  }
+  L.chain = p.chain;
   L.h ||= {};
   const lots = new Map(p.lots.map(l => [l.id, l]));
   const want = [], extra = new Map();
@@ -690,14 +724,14 @@ export function placeAgents(W, agents, byId, seenIdx) {
 }
 
 // A stroller (chicken, cat) walks between hashed points inside `rect` (world px), then pauses, on a
-// fixed 3.2 s leg. Pure in t. It faces the way it is walking (`right`), keeps facing that way while it
+// fixed 3.2 s leg. Pure in t. It faces the way it is walking on screen (`right`: iso screen x grows with x - y), keeps facing that way while it
 // pauses, and steps its walk cycle only while `moving`.
 export function stroll(seed, rect, t) {
   const LEG = 3.2, u = t + rnd(seed) * LEG * 5, leg = Math.floor(u / LEG), s = u - leg * LEG;
   const pt = i => [rect.x + rnd(`${seed}:x${i}`) * rect.w, rect.y + rnd(`${seed}:y${i}`) * rect.h];
   const a = pt(leg), b = pt(leg + 1), dx = b[0] - a[0], dy = b[1] - a[1];
   const dur = Math.min(LEG - 1, Math.max(0.6, Math.hypot(dx, dy) / 14)), k = Math.min(1, s / dur);
-  return { x: Math.round(a[0] + dx * k), y: Math.round(a[1] + dy * k), moving: s < dur && Math.abs(dx) + Math.abs(dy) > 1, right: dx >= 0 };
+  return { x: Math.round(a[0] + dx * k), y: Math.round(a[1] + dy * k), moving: s < dur && Math.abs(dx) + Math.abs(dy) > 1, right: dx - dy >= 0 };  // on screen: the iso x axis is (x - y), so a walk down-left is a walk left
 }
 
 // ---------------- sheets ----------------
@@ -1124,7 +1158,7 @@ function createRenderer(IMG) {
     ctx.drawImage(b.img, b.x, b.y);
     it.px = b.x; it.py = b.y; it.iso = b;
     if (it.kind === 'home') { // the neighbourhood's flag on the ridge
-      const fr = still ? 0 : (Math.floor(t * 4) + hash(it.id)) % 4, fx = b.ox + b.ridge[0] - 2, fy = b.oy + b.ridge[1] - 15;
+      const fr = still ? 0 : (Math.floor(t * 4) + hash(it.id)) % 4, fx = Math.round(b.ox + b.ridge[0] - 2), fy = Math.round(b.oy + b.ridge[1] - 15); // whole px: a fractional iso origin would resample the 16 px flag
       ctx.drawImage(flagSheet(it.village.accent), fr * 16, 0, 16, 16, fx, fy, 16, 16);
       flagsDrawn.push({ id: it.id, x: fx, y: fy, frame: fr, accent: it.village.accent });
     }
@@ -1171,8 +1205,12 @@ function createRenderer(IMG) {
   }
   function drawNight(ctx, f, vills, resting) {
     const { vx, vy, bw, bh, still, t } = f, W = Wcur, w = Math.ceil(bw), h = Math.ceil(bh);
-    if (!veil || veil.width !== w || veil.height !== h) veil = canvas(w, h);
+    // The veil is drawn in view px but never needs more pixels than the canvas has: zoomed out on a big home the view is
+    // thousands of px wide, and a full-size veil costs ~13 ms a frame. s = canvas px per view px, capped at 1.
+    const s = Math.min(1, f.k), vw = Math.max(1, Math.ceil(w * s)), vh = Math.max(1, Math.ceil(h * s));
+    if (!veil || veil.width !== vw || veil.height !== vh) veil = canvas(vw, vh);
     const g = veil.getContext('2d');
+    g.setTransform(s, 0, 0, s, 0, 0);
     g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, w, h);
     g.fillStyle = `rgba(14, 18, 50, ${0.6 * f.night})`; g.fillRect(0, 0, w, h);
     // Light pools, in view px: [x, y, radius, warm glow?]. Every lamp; every home's windows (brighter when
@@ -1195,7 +1233,9 @@ function createRenderer(IMG) {
     const vis = pools.filter(([x, y, r]) => x + r > vx && x - r < vx + bw && y + r > vy && y - r < vy + bh);
     g.globalCompositeOperation = 'destination-out';
     for (const [x, y, r] of vis) { const fr = r * (1 + (still ? 0 : Math.sin(t * 3 + x) * 0.04)), gr = g.createRadialGradient(x - vx, y - vy, 0, x - vx, y - vy, fr); gr.addColorStop(0, 'rgba(0,0,0,0.88)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(x - vx - fr, y - vy - fr, fr * 2, fr * 2); }
-    ctx.drawImage(veil, vx, vy);
+    ctx.imageSmoothingEnabled = s < 1;
+    ctx.drawImage(veil, vx, vy, vw / s, vh / s);
+    ctx.imageSmoothingEnabled = false;
     if (f.night < 0.35) return;
     // The warm glow fades in with the dark.
     const a = Math.min(1, (f.night - 0.35) / 0.4);
@@ -1208,7 +1248,9 @@ function createRenderer(IMG) {
   // (its frame's opaque pixels compared with the canvas at 1×+, where a canvas px is a world px).
   function flagCheck(ctx) {
     if (!lastView || lastView.k !== 1) return [];
-    return flagsDrawn.map(fl => {
+    const cw = ctx.canvas.width, ch = ctx.canvas.height;
+    // Only flags wholly inside the canvas: iso draws every home's flag, in view or not, and one off the edge is no flag to check.
+    return flagsDrawn.filter(fl => fl.x - lastView.vx >= 0 && fl.y - lastView.vy >= 0 && fl.x - lastView.vx + 16 <= cw && fl.y - lastView.vy + 16 <= ch).map(fl => {
       const want = flagSheet(fl.accent).getContext('2d').getImageData(fl.frame * 16, 0, 16, 16).data;
       const got = ctx.getImageData(fl.x - lastView.vx, fl.y - lastView.vy, 16, 16).data;
       let opaque = 0, matched = 0;

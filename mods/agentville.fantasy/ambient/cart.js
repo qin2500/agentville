@@ -3,7 +3,9 @@
 // Behaviour module shape: { init(a, ctx), update(a, dt, ctx) }, ctx = { world, nav, slots, rand(...keys), now, emit, night }.
 // Movement follows the engine rule (web/src/engine/sim/actor.js): the cart sets a.path one leg at a time (legs end at
 // junctions) and reads a.arrived / a.stuck; the world-sim moves it. Imports nothing from the engine (constants copied).
+import { tileIndex, onTile } from './near.js';
 const LANE = 2;                       // ROAD.LANE (core/grid.js)
+// parity: amb.carts-in-towns-cities
 const CART_BY_TIER = [0, 0, 1, 2];    // max carts per town by tier (classic: carts from tier 2)
 const SPEED = 1.8;                    // tiles per second
 const NEAR_ROAD = 12;                 // spawn/hub snap radius to the nearest road tile
@@ -114,6 +116,37 @@ function legsOf(grid, tiles) {
   return legs;
 }
 
+// ---- reserve the way (spec 2.3): never roll onto a pedestrian -------------------------------------------------------
+const YIELD_MAX = 3;                               // seconds a cart waits for the way before turning back
+const AHEAD = 2;                                   // cells of the path kept clear
+const pedOk = p => (p.kind === 'agent' || p.kind === 'folk') && !(p.flags & 8) && !(p.flags & 16) && !p.fade && (p.alpha ?? 1) > 0.5;
+/** Tiles the cart is about to enter: the next AHEAD waypoints of `pts` (x,y pairs) then of the queued legs. */
+function aheadTiles(pts, from, legs) {
+  const out = [];
+  for (let i = from; i + 1 < pts.length && out.length < AHEAD; i += 2) out.push({ tx: Math.floor(pts[i]), ty: Math.floor(pts[i + 1]) });
+  for (const l of legs || []) for (let i = 0; i + 1 < l.length && out.length < AHEAD; i += 2) out.push({ tx: Math.floor(l[i]), ty: Math.floor(l[i + 1]) });
+  return out;
+}
+/** Is a pedestrian on a tile ahead or on the cart's own tile? (Pedestrians in turn never step onto a cart's tile:
+ *  townsfolk.js yields to ctx.actors carts, so two moving parties cannot deadlock on adjacency.) */
+function blockedAhead(a, ctx, tiles) {
+  const cx = Math.floor(a.x), cy = Math.floor(a.y);
+  const ix = tileIndex(ctx);                        // the step's tile index (near.js): only the asked tiles' buckets
+  if (ix) {
+    const hit = (tx, ty) => { const l = onTile(ix, tx, ty); for (let i = 0; i < l.length; i += 2) if (l[i] !== a && pedOk(l[i])) return true; return false; };
+    if (hit(cx, cy)) return true;
+    for (const t of tiles) if (hit(t.tx, t.ty)) return true;
+    return false;
+  }
+  for (const p of ctx.actors?.values?.() ?? []) {
+    if (p === a || !pedOk(p)) continue;
+    const px = Math.floor(p.x), py = Math.floor(p.y);
+    if (px === cx && py === cy) return true;
+    for (const t of tiles) if (t.tx === px && t.ty === py) return true;
+  }
+  return false;
+}
+
 function wait(a, secs) { a.state = 'wait'; a.anim = 'idle'; a._t = secs; a._legs = null; a.path = undefined; }
 
 export default {
@@ -122,7 +155,7 @@ export default {
     const c = a.cart || {};
     a._leg = 0;                         // 0 = at/for the village end, 1 = at/for the far end
     a._t = 0.5 + (c.phase ?? rnd(ctx, a, 'phase')) * 3;   // staggered first departure
-    a._legs = null; a._pause = 0;
+    a._legs = null; a._pause = 0; a._rest = null; a._yt = 0;
     a.speed ??= SPEED;
     a.state = 'wait'; a.anim = 'idle';
   },
@@ -141,7 +174,24 @@ export default {
       const tiles = roadRoute(ctx, tileOf(a), to);
       if (!tiles || tiles.length < 2) { wait(a, 4 + rnd(ctx, a, 'retry', Math.floor(ctx.now ?? 0)) * 4); return; }
       a._legs = legsOf(grid, tiles);
+      if (blockedAhead(a, ctx, aheadTiles(a._legs[0] || [], 0, a._legs.slice(1)))) { wait(a, 0.5); return; }   // someone stands on the first tiles: do not roll off yet
       a.path = a._legs.shift(); a.arrived = false; a.state = 'go'; a.anim = 'walk';
+      return;
+    }
+
+    if (a.state === 'yield') {             // waiting for a pedestrian to clear the road ahead
+      a.anim = 'idle';
+      if (!blockedAhead(a, ctx, aheadTiles(a._rest, 0, a._legs))) { a.path = a._rest; a._rest = null; a._yt = 0; a.arrived = false; a.state = 'go'; a.anim = 'walk'; return; }
+      a._yt = (a._yt || 0) + dt;
+      if (a._yt > YIELD_MAX) {             // a settled actor (bench sitter, chatting folk) holds the way: turn back to the other end
+        a._yt = 0; a._rest = null;
+        let tr = a._trail || [];
+        const free = [];                                  // keep only the trail tiles before the first pedestrian-held one
+        for (let i = 0; i + 1 < tr.length; i += 2) { if (blockedAhead(a, ctx, [{ tx: Math.floor(tr[i]), ty: Math.floor(tr[i + 1]) }])) break; free.push(tr[i], tr[i + 1]); }
+        tr = free.length > 2 ? free : [];                 // back out along the tiles we came by, then replan from there
+        if (tr.length) { a._legs = null; a.path = Float32Array.from(tr); a._back = true; a.arrived = false; a.state = 'go'; a.anim = 'walk'; }
+        else wait(a, 0.5);
+      }
       return;
     }
 
@@ -152,7 +202,19 @@ export default {
     }
 
     if (a.state !== 'go') { wait(a, 1); return; }
-    if (a.path) return;                    // the sim is moving us
+    if (a.path) {                          // the sim is moving us, unless someone is in the way
+      if (!a._back) {                      // remember the last tiles rolled over (newest first) for backing out of a blocked road
+        const tx = Math.floor(a.x), ty = Math.floor(a.y), tr = (a._trail ||= []);
+        if (!tr.length || Math.floor(tr[0]) !== tx || Math.floor(tr[1]) !== ty) { tr.unshift(tx + 0.5, ty + 0.5); if (tr.length > 8) tr.length = 8; }
+      }
+      const tiles = aheadTiles(a.path, (a.pathI ?? 0) * 2, a._legs);
+      if (blockedAhead(a, ctx, tiles)) {
+        a._rest = Float32Array.from(a.path.subarray ? a.path.subarray((a.pathI ?? 0) * 2) : Array.from(a.path).slice((a.pathI ?? 0) * 2));
+        a.path = undefined; a.state = 'yield'; a.anim = 'idle';
+      }
+      return;
+    }
+    if (a._back) { a._back = false; a._trail = []; wait(a, 0.5 + rnd(ctx, a, 'back', Math.floor(ctx.now ?? 0))); return; }   // backed out: replan the same trip
     if (a.stuck || !a.arrived) { wait(a, 4 + rnd(ctx, a, 'stuck', Math.floor(ctx.now ?? 0)) * 4); return; }
     if (a._legs?.length) {                 // at a junction: look both ways
       a.state = 'pause'; a._pause = 1 + rnd(ctx, a, 'junction', a._legs.length); a.anim = 'idle';

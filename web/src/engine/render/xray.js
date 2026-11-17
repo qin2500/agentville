@@ -1,14 +1,25 @@
 // X-ray and building fade (design §2.4, §3.6, R9). Pure: reads world.grid.cover and world.objects, draws through Gfx
-// calls only (rect). Never mutates the world or actors.
-//   occluded(actor)        -> true when the actor's feet tile has cover > 0 (grid.cover, derived by world/cover.js)
+// calls only. Never mutates the world, the actors or the draw items.
+//   occluded(actor, { item, slices })  -> true when a slice drawn after the actor (greater sort key, above the
+//                                         ground-prop layer) overlaps the actor's DRAWN sprite rect (item = the
+//                                         renderer's actor item: interpolated x, y, img, pivot). The slice index is
+//                                         built once per `slices` array and shared with draw().
+//   occluded(actor)                     -> legacy fallback without slices: the feet tile has grid.cover > 0
 //   coveringIds(actor)     -> ids of the buildings in front of the actor's box (cover.js keeps no id, so geometry)
 //   fadeFor(obj, actors)   -> 0.35 when obj hides a selected / stalled actor (or houses an indoors one), else 1
-//   draw(gfx, cam, actors) -> flat-colour silhouettes of occluded actors (rim + faded fill), world px, layer 6
+//   draw(gfx, cam, actorItems, sliceItems) -> silhouettes of the occluded actor items, each clipped to the alpha of
+//       the slices in front of it (gfx.silhouettes, one batch per frame), selected alpha 0.9, others 0.6, at most 32,
+//       selected first. actorItems: { actor, x, y, img, pivot, key? } at their drawn (interpolated) positions.
+//       A gfx without silhouette() gets rim + fill rects at the drawn rect.
+//   draw(gfx, cam, actors) -> legacy form: flat rects for actors whose feet tile is covered, at raw a.x, a.y
 import { toScreen } from '../core/coords.js';
+import { actorRect, sliceIndex, occludersOf } from './hits.js';
 
 export const FADE_ALPHA = 0.35;
 export const ALPHA_SELECTED = 0.9;
-export const ALPHA_OTHER = 0.6;
+export const ALPHA_OTHER = 0.5;
+export const RIM_K = 0.55;   // rim opacity as a share of the silhouette alpha (was 0.8: pale halos read as washed-out blobs)
+export const NIGHT_DIM = 0.5;   // at full night the silhouette's colour and rim are scaled to this share, so it sits under the veil
 export const MAX_XRAY = 32;
 const BOX_W = 16, BOX_H = 24;
 // Same bit order as sim/actor.js FLAGS (S2); actor.selected / actor.indoors booleans are also honoured.
@@ -41,8 +52,16 @@ export function createXray({ world }) {
   };
   const tileOf = a => [Math.floor(a.x), Math.floor(a.y)];
 
-  function occluded(actor) {
-    if (!actor || !world?.grid) return false;
+  let index = null;
+  const indexOf = slices => (index && index.src === slices ? index : (index = sliceIndex(slices)));
+
+  function occluded(actor, ctx) {
+    if (!actor) return false;
+    if (ctx && Array.isArray(ctx.slices)) {
+      const it = ctx.item || { actor, x: actor.x, y: actor.y };
+      return occludersOf(indexOf(ctx.slices), it).length > 0;
+    }
+    if (!world?.grid) return false;
     const [tx, ty] = tileOf(actor);
     return world.grid.get('cover', tx, ty) > 0;
   }
@@ -73,8 +92,41 @@ export function createXray({ world }) {
     return 1;
   }
 
-  function draw(gfx, cam, actors) {
+  // parity: vil.xray-silhouette (an occluded actor is drawn as a silhouette of its own sprite, clipped to the slices in front)
+  function drawItems(gfx, items, slices, night = 0) {
+    const dim = 1 - NIGHT_DIM * Math.max(0, Math.min(1, night || 0));
+    const idx = indexOf(slices), hit = [];
+    for (const it of items) {
+      const a = it?.actor;
+      if (!a || isGhost(a) || isIndoors(a)) continue;
+      const r = actorRect(it), occ = occludersOf(idx, it, r);
+      if (occ.length) hit.push({ it, a, r, occ });
+    }
+    hit.sort((p, q) => isSelected(q.a) - isSelected(p.a));
+    // one batch through gfx.silhouettes when the gfx has it (one atlas upload per frame), else one silhouette() each
+    const jobs = hit.slice(0, MAX_XRAY).map(({ it, a, r, occ }) => {
+      const alpha = isSelected(a) ? ALPHA_SELECTED : ALPHA_OTHER;
+      const col = shade(a.color || a.look?.color || '#7fa8d8', dim);
+      const rim = `rgba(${Math.round(255 * dim)},${Math.round(255 * dim)},${Math.round(255 * dim)},${(alpha * RIM_K).toFixed(2)})`;
+      const w = r[2] - r[0], h = r[3] - r[1];
+      return { r, w, h, alpha, col, rim, o: { img: it.img || null, sx: 0, sy: 0, sw: w, sh: h, dx: r[0], dy: r[1], color: col, rim, alpha,
+        clips: occ.map(s => ({ img: s.img, sx: s.sx, sy: s.sy, sw: s.sw, sh: s.sh, dx: s.dx, dy: s.dy })) } };
+    });
+    const oks = typeof gfx.silhouettes === 'function' ? gfx.silhouettes(jobs.map(j => j.o))
+      : jobs.map(j => (typeof gfx.silhouette === 'function' ? gfx.silhouette(j.o) : false));
+    for (let i = 0; i < jobs.length; i++) {
+      if (oks[i] !== false) continue;
+      const { r, w, h, alpha, col, rim } = jobs[i];
+      gfx.rect(r[0] + 1, r[1] + 1, w - 2, h - 1, rim);
+      gfx.rect(r[0] + 2, r[1] + 2, w - 4, h - 2, fade(col, alpha));
+    }
+    const n = jobs.length;
+    return n;
+  }
+
+  function draw(gfx, cam, actors, slices, opts) {
     if (!actors) return 0;
+    if (Array.isArray(slices)) return drawItems(gfx, typeof actors.values === 'function' ? [...actors.values()] : actors, slices, opts?.night);
     const list = typeof actors.values === 'function' ? [...actors.values()] : actors;
     const hit = [];
     for (const a of list) {
@@ -103,4 +155,11 @@ function fade(col, alpha) {
   if (!m) return col;
   const v = parseInt(m[1], 16);
   return `rgba(${v >> 16},${(v >> 8) & 255},${v & 255},${alpha})`;
+}
+
+function shade(col, k) {   // scale a #rrggbb colour's brightness by k (other colour forms pass through)
+  const m = /^#([0-9a-f]{6})$/i.exec(col);
+  if (!m || k >= 1) return col;
+  const v = parseInt(m[1], 16);
+  return `#${[v >> 16, (v >> 8) & 255, v & 255].map(c => Math.round(c * k).toString(16).padStart(2, '0')).join('')}`;
 }

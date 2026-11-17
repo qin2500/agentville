@@ -41,6 +41,15 @@ export function layoutOf(mod) {
     throw new Error(`engine: mod ${mod?.id ?? '?'} rules.layout has a malformed field`);
   return L;
 }
+/** The growth room a new block keeps round it (M7, optional): mod.rules.layout.growRoom = { x: [t0..t3], y: [t0..t3] },
+ *  tiles per side by tier (0..32 each). null when the mod sets none (then findSpot packs at the plain gap, as classic). */
+export function growRoomOf(mod) {
+  const r = mod?.rules?.layout?.growRoom;
+  if (r == null) return null;
+  const ok = a => Array.isArray(a) && a.length === 4 && a.every(v => Number.isInteger(v) && v >= 0 && v <= 32);
+  if (!ok(r.x) || !ok(r.y)) throw new Error(`engine: mod ${mod?.id ?? '?'} rules.layout.growRoom must be { x: [4 ints 0..32], y: [4 ints 0..32] }`);
+  return r.x.some(Boolean) || r.y.some(Boolean) ? { x: [...r.x], y: [...r.y] } : null;
+}
 /** Plan ground codes that count as existing path (LayoutInput.paths): rules.layout.paths, else terrain types tagged
  *  street/walk. Memoised per mod id and source. */
 const PATHS = new Map();
@@ -106,6 +115,10 @@ export function planSettlements(input, persisted, mod, { now, seed, forcedTier =
 export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed = 0, fast = true, cache = null } = {}) {
   if (typeof now !== 'number') throw new TypeError('placeBlocks: `now` (ms) is required');
   const { square: SQUARE, gap: GAP, accents: ACCENT, searchX, searchY, aspect: ASPECT, reserveMs: RESERVE_MS } = layoutOf(mod);
+  // M7 growth room: kept round blocks placed into a standing town; the first build of a world (no block saved yet) packs
+  // every block at the plain gap exactly as before, so a fresh world is as compact as it always was.
+  const ROOM = persisted.blocks && Object.keys(persisted.blocks).length ? growRoomOf(mod) : null;
+  const roomOf = t => { const i = Math.max(0, Math.min(3, Math.floor(Number(t) || 0))); return { x: ROOM.x[i], y: ROOM.y[i] }; };
   persisted.blocks ||= {};
   persisted.lots ||= {};
   const B = persisted.blocks;
@@ -129,18 +142,30 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
     }
     return c;
   };
+  // parity: world.project-blocks-compact
   // classic: findSpot
-  // Engine change (A1, 2026-11-13): classic clamps the search to ±120 × ±90 tiles and crashes (best = null) once
+  // Engine change (A1): classic clamps the search to ±120 × ±90 tiles and crashes (best = null) once
   // that window is full (~100 projects, the stress fixture). The clamp still applies first, so every town that
   // fits today is placed exactly as classic places it; only when it is full does the window grow (by 60 tiles a try).
   // MOD0: the window is mod.rules.layout.searchX / searchY.
-  function findSpot(w, h, self, grow = 0) {
+  // M7 growth room (mod.rules.layout.growRoom; not on a world's first build): a NEW block (or one back from
+  // `away`) of tier t first takes the best spot whose gap to every other block b is GAP + room(t) + room(b.tier) across
+  // and the same up and down (the square: plain GAP), so each of two neighbours has room to grow toward the other: a thin
+  // re-plan (city-plan.js v2) then finds room in some corner and the block keeps its place on a tier-up. That search
+  // grows its window like the plain one; only when no such spot exists within the largest window does the block pack at
+  // the plain gap. Blocks already standing never move for it, and a re-plan never uses it (replanSpot).
+  function findSpot(w, h, self, grow = 0, tier = null) {
+    if (ROOM && tier != null) for (let g = grow; g <= 600; g += 60) { const r = spotAt(w, h, self, g, roomOf(tier)); if (r) return r; }
+    return spotAt(w, h, self, grow, null) || findSpot(w, h, self, grow + 60);
+  }
+  function spotAt(w, h, self, grow, room) {
     const obs = obstacles(self), CX = searchX + grow, CY = searchY + grow;
-    const m = GAP + 2, bx0 = Math.max(-CX, Math.min(...obs.map(o => o.x)) - w - m), bx1 = Math.min(CX, Math.max(...obs.map(o => o.x + o.w)) + m);
-    const by0 = Math.max(-CY, Math.min(...obs.map(o => o.y)) - h - m), by1 = Math.min(CY, Math.max(...obs.map(o => o.y + o.h)) + m);
-    const best = (fast ? scanFast : scanSlow)(w, h, self, obs, bx0, bx1, by0, by1);
-    if (!best) { if (grow >= 600) throw new Error(`placeBlocks: no room for a ${w}×${h} block`); return findSpot(w, h, self, grow + 60); }
-    return best[1];
+    const mx = GAP + 2 + (room ? room.x + Math.max(...ROOM.x) : 0), my = GAP + 2 + (room ? room.y + Math.max(...ROOM.y) : 0);
+    const bx0 = Math.max(-CX, Math.min(...obs.map(o => o.x)) - w - mx), bx1 = Math.min(CX, Math.max(...obs.map(o => o.x + o.w)) + mx);
+    const by0 = Math.max(-CY, Math.min(...obs.map(o => o.y)) - h - my), by1 = Math.min(CY, Math.max(...obs.map(o => o.y + o.h)) + my);
+    const best = room ? scanFast(w, h, self, obs, bx0, bx1, by0, by1, room) : (fast ? scanFast : scanSlow)(w, h, self, obs, bx0, bx1, by0, by1);
+    if (!best && !room && grow >= 600) throw new Error(`placeBlocks: no room for a ${w}×${h} block`);
+    return best ? best[1] : null;
   }
   // classic scan: every window position, every obstacle (kept as the reference for scanFast; opts.fast === false)
   function scanSlow(w, h, self, obs, bx0, bx1, by0, by1) {
@@ -153,20 +178,24 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
     }
     return best;
   }
-  // PERF (2026-11-13): the same scan in the same order with the same float arithmetic, so the same spot wins, but
+  // PERF: the same scan in the same order with the same float arithmetic, so the same spot wins, but
   // O(window + obstacles): blocked positions come from a 2-D prefix sum of each obstacle's forbidden rect, the
   // score's bounding box of the other blocks is computed once, and contact only looks at the obstacles whose edge
   // sits exactly GAP from the candidate's (indexed by that coordinate). Falls back to scanSlow on non-integer rects.
-  function scanFast(w, h, self, obs, bx0, bx1, by0, by1) {
+  // `room` (M7, optional, the candidate's growth room): obstacle o is kept GAP + room + o's room away instead of GAP, and
+  // contact counts at that gap (the town still packs, only looser); with non-integer rects there is then no spot.
+  function scanFast(w, h, self, obs, bx0, bx1, by0, by1, room = null) {
     const ints = [w, h, GAP, bx0, bx1, by0, by1].every(Number.isInteger) && obs.every(o => Number.isInteger(o.x) && Number.isInteger(o.y) && Number.isInteger(o.w) && Number.isInteger(o.h));
-    if (!ints) return scanSlow(w, h, self, obs, bx0, bx1, by0, by1);
+    if (!ints) return room ? null : scanSlow(w, h, self, obs, bx0, bx1, by0, by1);
+    const gx = room ? o => (o === SQUARE ? GAP : GAP + room.x + roomOf(o.tier).x) : () => GAP;
+    const gy = room ? o => (o === SQUARE ? GAP : GAP + room.y + roomOf(o.tier).y) : () => GAP;
     const WD = bx1 - bx0 + 1, HD = by1 - by0 + 1;
     if (WD <= 0 || HD <= 0) return null;
     // forbidden top-left positions of obstacle o: x in [o.x - w - GAP + 1, o.x + o.w + GAP - 1], likewise y
     const D = new Int32Array((WD + 1) * (HD + 1)), S = WD + 1;
     for (const o of obs) {
-      const x0 = Math.max(o.x - w - GAP + 1, bx0) - bx0, x1 = Math.min(o.x + o.w + GAP - 1, bx1) - bx0;
-      const y0 = Math.max(o.y - h - GAP + 1, by0) - by0, y1 = Math.min(o.y + o.h + GAP - 1, by1) - by0;
+      const x0 = Math.max(o.x - w - gx(o) + 1, bx0) - bx0, x1 = Math.min(o.x + o.w + gx(o) - 1, bx1) - bx0;
+      const y0 = Math.max(o.y - h - gy(o) + 1, by0) - by0, y1 = Math.min(o.y + o.h + gy(o) - 1, by1) - by0;
       if (x0 > x1 || y0 > y1) continue;
       D[y0 * S + x0]++; D[y0 * S + x1 + 1]--; D[(y1 + 1) * S + x0]--; D[(y1 + 1) * S + x1 + 1]++;
     }
@@ -177,7 +206,7 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
     for (const n of shown) { const o = B[n]; if (n === self || !o || o.away) continue; X0 = Math.min(X0, o.x); Y0 = Math.min(Y0, o.y); X1 = Math.max(X1, o.x + o.w); Y1 = Math.max(Y1, o.y + o.h); }
     // contact(): obstacles touching at exactly GAP, by the candidate x (left/right neighbours) and y (top/bottom)
     const byX = new Map(), byY = new Map(), add = (M, k, o) => { const l = M.get(k); if (l) l.push(o); else M.set(k, [o]); };
-    for (const o of obs) { add(byX, o.x + o.w + GAP, o); add(byX, o.x - w - GAP, o); add(byY, o.y + o.h + GAP, o); add(byY, o.y - h - GAP, o); }
+    for (const o of obs) { add(byX, o.x + o.w + gx(o), o); add(byX, o.x - w - gx(o), o); add(byY, o.y + o.h + gy(o), o); add(byY, o.y - h - gy(o), o); }
     let best = null, bs = 0;
     for (let y = by0; y <= by1; y++) {
       const row = (y - by0) * S, ly = byY.get(y);
@@ -195,28 +224,97 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
     return best && [bs, best];
   }
   const fitsAt = (r, self) => !obstacles(self).some(o => near(r, o, GAP));
+  // Engine change (M4 layout; design §1.4 "a re-plan keeps the block centre if the new size fits there.
+  // Other plots never move"): classic re-plans a plot at its centre when the new size fits there, else sends it to
+  // findSpot, the most compact spot in the whole town, so a block that grew next to a neighbour or the square jumped
+  // across the map (e2e world.persisted-layout: demo-app moved ~49 tiles). The re-plan now stays put:
+  //   1. the centred rect when it fits (classic, unchanged, so every layout classic kept stays exactly as it was);
+  //   2. else the free rect that still covers the old block (it grows in place, away from whatever blocks it),
+  //      nearest the centred rect;
+  //   3. else (hemmed in on both sides of an axis) the free rect nearest the centred rect: the minimal move.
+  //      Ties: the most overlap with the old block, then smaller y, then smaller x. Other blocks never move.
+  // Plots that never re-plan, new plots and plots coming back from `away` still use findSpot as classic.
+  // M6: `want` (a nested plan's anchored rect, every old item on its exact tile) replaces the centred rect as the target,
+  // so when it does not fit the block takes the covering / nearest free rect that moves the old items least.
+  function replanSpot(old, w, h, self, want = null) {
+    const c = want ? { x: want.x, y: want.y, w, h } : { x: old.x + Math.round((old.w - w) / 2), y: old.y + Math.round((old.h - h) / 2), w, h };
+    if (fitsAt(c, self)) return c;
+    const obs = obstacles(self);
+    const overlap = r => Math.max(0, Math.min(r.x + w, old.x + old.w) - Math.max(r.x, old.x)) * Math.max(0, Math.min(r.y + h, old.y + old.h) - Math.max(r.y, old.y));
+    const better = (r, d, best) => !best || d < best.d || (d === best.d && (overlap(r) > best.o || (overlap(r) === best.o && (r.y < best.r.y || (r.y === best.r.y && r.x < best.r.x)))));
+    // 2. every rect that covers the old block on the axes where the block grew (keeps the old centre band otherwise)
+    const xs = w >= old.w ? [old.x + old.w - w, old.x] : [c.x, c.x], ys = h >= old.h ? [old.y + old.h - h, old.y] : [c.y, c.y];
+    let best = null;
+    for (let y = ys[0]; y <= ys[1]; y++) for (let x = xs[0]; x <= xs[1]; x++) {
+      const r = { x, y, w, h };
+      if (obs.some(o => near(r, o, GAP))) continue;
+      const d = (x - c.x) ** 2 + (y - c.y) ** 2;
+      if (better(r, d, best)) best = { r, d, o: overlap(r) };
+    }
+    if (best) return best.r;
+    // 3. the nearest free rect: rings of growing Chebyshev radius round the centred rect (the first ring with a free
+    //    rect holds the nearest ones within √2 of each other; finish the next ring too so the Euclidean nearest wins)
+    const blocked = forbidden(w, h, obs);
+    let stopAt = Infinity;
+    for (let k = 1; k <= stopAt && k <= 2000; k++) {
+      const at = (x, y) => {
+        if (blocked(x, y)) return;
+        const r = { x, y, w, h }, d = (x - c.x) ** 2 + (y - c.y) ** 2;
+        if (better(r, d, best)) best = { r, d, o: overlap(r) };
+      };
+      for (let i = -k; i <= k; i++) { at(c.x + i, c.y - k); at(c.x + i, c.y + k); }
+      for (let i = -k + 1; i <= k - 1; i++) { at(c.x - k, c.y + i); at(c.x + k, c.y + i); }
+      if (best && stopAt === Infinity) stopAt = Math.ceil(k * Math.SQRT2);
+    }
+    if (best) return best.r;
+    return findSpot(w, h, self);
+  }
+  // Whether a w×h rect with top-left (x, y) is within GAP of an obstacle: a 2-D prefix sum over the obstacles' box.
+  function forbidden(w, h, obs) {
+    const bx0 = Math.min(...obs.map(o => o.x - w - GAP + 1)), bx1 = Math.max(...obs.map(o => o.x + o.w + GAP - 1));
+    const by0 = Math.min(...obs.map(o => o.y - h - GAP + 1)), by1 = Math.max(...obs.map(o => o.y + o.h + GAP - 1));
+    if (![w, h, GAP].every(Number.isInteger) || !obs.every(o => [o.x, o.y, o.w, o.h].every(Number.isInteger)))
+      return (x, y) => obs.some(o => near({ x, y, w, h }, o, GAP));
+    const WD = bx1 - bx0 + 1, HD = by1 - by0 + 1, S = WD + 1, D = new Int32Array((WD + 1) * (HD + 1));
+    for (const o of obs) {
+      const x0 = o.x - w - GAP + 1 - bx0, x1 = o.x + o.w + GAP - 1 - bx0, y0 = o.y - h - GAP + 1 - by0, y1 = o.y + o.h + GAP - 1 - by0;
+      D[y0 * S + x0]++; D[y0 * S + x1 + 1]--; D[(y1 + 1) * S + x0]--; D[(y1 + 1) * S + x1 + 1]++;
+    }
+    for (let y = 0; y <= HD; y++) for (let x = 1; x <= WD; x++) D[y * S + x] += D[y * S + x - 1];
+    for (let y = 1; y <= HD; y++) for (let x = 0; x <= WD; x++) D[y * S + x] += D[(y - 1) * S + x];
+    return (x, y) => x >= bx0 && x <= bx1 && y >= by0 && y <= by1 && D[(y - by0) * S + x - bx0] !== 0;
+  }
 
   // classic: the placement loop (existing plots first, then biggest and busiest)
-  const plans = new Map(villages.map(pv => [pv.name, pv.plan ?? planFor(mod, pv.tier, hash(pv.name), pv.cap, pv.crowns, ctxFor ? ctxFor(pv.name) : null, pv.style ?? null, seed)]));
+  const nestOf = n => (typeof B[n]?.nest === 'string' ? B[n].nest : null);
+  const plans = new Map(villages.map(pv => [pv.name, pv.plan ?? planFor(mod, pv.tier, hash(pv.name), pv.cap, pv.crowns, ctxFor ? ctxFor(pv.name) : null, pv.style ?? null, seed, undefined, nestOf(pv.name))]));
   // PERF: a content key per plan (the planner's inputs; planFor's memo relies on the same purity), so the stamp
   // cache and the layout memo (world/layout.js) can tell an unchanged plan from a new one without hashing it.
-  if (cache) for (const pv of villages) cache.notePlan(plans.get(pv.name), cache.planKey({ mod, name: pv.name, tier: pv.tier, seed: hash(pv.name), cap: pv.cap, crowns: pv.crowns, style: pv.style ?? null, worldSeed: seed }));
+  if (cache) for (const pv of villages) cache.notePlan(plans.get(pv.name), cache.planKey({ mod, name: pv.name, tier: pv.tier, seed: hash(pv.name), cap: pv.cap, crowns: pv.crowns, style: pv.style ?? null, worldSeed: seed, chain: plans.get(pv.name)?.chain ?? null }));
   const live = n => B[n] && !B[n].away ? 0 : 1, area = pv => plans.get(pv.name).w * plans.get(pv.name).h;
-  const order = [...villages].sort((a, b) => live(a.name) - live(b.name) || area(b) - area(a) || b.busy - a.busy || a.name.localeCompare(b.name));
+  // M7: a nested re-plan whose anchored rect is not free as the town stands goes after the blocks that keep their place,
+  // so its move cannot take the room another block grows into this rebuild (no effect without a nested re-plan)
+  const anchorOf = pv => { const b = B[pv.name], p = plans.get(pv.name), n = p?.nest;
+    return b && !b.away && n && b.nest === n.from && Number.isInteger(n.dx) && Number.isInteger(n.dy) && (b.w !== p.w || b.h !== p.h) ? { x: b.x - n.dx, y: b.y - n.dy, w: p.w, h: p.h } : null; };
+  const mover = new Set(villages.filter(pv => { const a = anchorOf(pv); return a && !fitsAt(a, pv.name); }).map(pv => pv.name));
+  const moves = n => (mover.has(n) ? 1 : 0);
+  const order = [...villages].sort((a, b) => live(a.name) - live(b.name) || moves(a.name) - moves(b.name) || area(b) - area(a) || b.busy - a.busy || a.name.localeCompare(b.name));
   const byName = new Map();
   for (const pv of order) {
     const name = pv.name, p = plans.get(name);
     let b = B[name];
+    // parity: world.replan-only-changed-plot
     const replan = b && !b.away && (b.tier !== pv.tier || b.cap !== pv.cap || (b.crowns ?? 1) !== (pv.crowns ?? 1) || b.w !== p.w || b.h !== p.h);
     if (!b || b.away || replan) {
-      let r = null;
-      if (replan) {
-        const c = { x: b.x + Math.round((b.w - p.w) / 2), y: b.y + Math.round((b.h - p.h) / 2), w: p.w, h: p.h };
-        if (fitsAt(c, name)) r = c;
-      }
-      r ||= findSpot(p.w, p.h, name);
+      // classic: a re-plan keeps its centre when it fits, else findSpot. Engine: replanSpot (in place, else the minimal move).
+      // M6 nested growth (design decision): a plan that nests the one this block drew (p.nest.from === b.nest) is first
+      // placed at the origin that leaves every old item on its exact tile (old origin - nest offset), else as near it as fits.
+      const n = p.nest, nested = replan && n && b.nest === n.from && Number.isInteger(n.dx) && Number.isInteger(n.dy);
+      const anchor = nested ? { x: b.x - n.dx, y: b.y - n.dy, w: p.w, h: p.h } : null;
+      const r = replan ? replanSpot(b, p.w, p.h, name, anchor) : findSpot(p.w, p.h, name, 0, pv.tier);
       if (b) { delete b.away; Object.assign(b, r); }
       else {
+        // parity: style.neighbourhood-accent
         const used = Object.keys(B).filter(n => held(n) && near(B[n], r, GAP + 4)).map(n => B[n].acc);
         const tally = i => Object.values(B).filter(o => o.acc === i).length;
         const acc = ACCENT.map((_, i) => i).filter(i => !used.includes(i)).sort((i, j) => tally(i) - tally(j) || i - j)[0] ?? 0;
@@ -225,12 +323,14 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
       evict(b, name);
     }
     Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, crowns: pv.crowns ?? 1, seen: now });
+    if (typeof p.chain === 'string') b.nest = p.chain; else delete b.nest;   // M6: the plan the next re-plan grows from
     // classic placeVillage's geometry only: plaza and centre (lots and ground are A4's)
     const plaza = { x: b.x + p.plaza.x, y: b.y + p.plaza.y, w: p.plaza.w, h: p.plaza.h };
     byName.set(name, { ...pv, block: b, plan: p, accent: ACCENT[b.acc % ACCENT.length], origin: { x: b.x, y: b.y }, plaza,
       cx: plaza.x + (plaza.w >> 1), cy: plaza.y + (plaza.h >> 1) });
   }
   const vs = villages.map((pv, index) => Object.assign(byName.get(pv.name), { index }));
+  // parity: world.hidden-blocks-park-14d
   const parks = Object.keys(B).filter(n => !shown.has(n) && held(n)).map(n => B[n]);
   return { villages: vs, square: SQUARE, parks };
 }

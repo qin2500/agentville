@@ -21,14 +21,17 @@ function oldCost(table) {
     if (ground !== 0) return cost.get(ground) ?? 255;
     if (road > 0) return 1;
     if (lot >= 0) return 255;
-    return terrain === 2 || terrain === 3 ? table.wildCost : 255;
+    // the countryside classes 5-11 are wild land that must walk exactly like grass (terrain 3)
+    return terrain === 2 || terrain === 3 || (terrain >= 5 && terrain <= 11) ? table.wildCost : 255;
   };
 }
 
 test('the fantasy table carries its classes, with today\'s codes', () => {
   assert.equal(TERRAIN_TABLE.classes, CLASSES);
   assert.deepEqual(checkClasses(CLASSES), []);
-  assert.deepEqual(CLASSES.map(c => [c.code, c.name]), [[0, 'deep-sea'], [1, 'sea'], [2, 'shore'], [3, 'grass'], [4, 'forest-floor']]);
+  assert.deepEqual(CLASSES.map(c => [c.code, c.name]), [[0, 'deep-sea'], [1, 'sea'], [2, 'shore'], [3, 'grass'], [4, 'forest-floor'],
+    // the countryside classes (315f485, b866786) are appended: codes 0-4 above keep their meaning
+    [5, 'meadow'], [6, 'bloom-meadow'], [7, 'footpath'], [8, 'tall-grass'], [9, 'drift-gold'], [10, 'drift-rose'], [11, 'drift-violet']]);
   assert.deepEqual([TERRAIN.SEA_DEEP, TERRAIN.SEA, TERRAIN.SHORE, TERRAIN.GRASS, TERRAIN.FOREST_FLOOR], [0, 1, 2, 3, 4]);
   assert.equal(classByName(TERRAIN_TABLE, 'shore').code, 2);
   assert.equal(classByName(TERRAIN_TABLE, 'nope'), undefined);
@@ -38,12 +41,22 @@ test('the fantasy table carries its classes, with today\'s codes', () => {
 test('cost table is identical to the old rule for every (terrain, ground, road, lot, occ) over the fantasy table', () => {
   const f = makeCostFn(TERRAIN_TABLE), old = oldCost(TERRAIN_TABLE);
   let n = 0;
-  for (let terrain = 0; terrain < 8; terrain++) for (let ground = 0; ground < 256; ground++)
+  for (let terrain = 0; terrain < 16; terrain++)   // 12-15 are undeclared codes: blocked, as in the old rule
+    for (let ground = 0; ground < 256; ground++)
     for (const road of [0, 1, 2, 3, 4]) for (const lot of [-3, -2, -1, 0, 5]) for (const occ of [0, 1, 7]) {
       assert.equal(f(terrain, ground, road, lot, occ), old(terrain, ground, road, lot, occ), `t${terrain} g${ground} r${road} l${lot} o${occ}`);
       n++;
     }
-  assert.equal(n, 8 * 256 * 5 * 5 * 3);
+  assert.equal(n, 16 * 256 * 5 * 5 * 3);
+});
+
+test('every countryside class walks exactly like grass, on every ground/road/lot/occ combination', () => {
+  const f = makeCostFn(TERRAIN_TABLE);
+  for (let terrain = 5; terrain <= 11; terrain++) {
+    assert.equal(CLASSES.find(c => c.code === terrain).wild, true, `class ${terrain} is wild`);
+    for (let ground = 0; ground < 256; ground++) for (const road of [0, 1, 4]) for (const lot of [-3, -1, 0, 5]) for (const occ of [0, 7])
+      assert.equal(f(terrain, ground, road, lot, occ), f(TERRAIN.GRASS, ground, road, lot, occ), `t${terrain} g${ground} r${road} l${lot} o${occ}`);
+  }
 });
 
 test('a table with no water class: nothing is sea, and a class without wild is blocked', () => {

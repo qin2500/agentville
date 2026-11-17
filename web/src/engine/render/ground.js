@@ -3,6 +3,8 @@
 // gfx.begin(dpr, cam) is expected to have set the camera transform.
 import { toScreen } from '../core/coords.js';
 import { LAYOUT_GROUND } from '../core/grid.js';
+import { createGroundCache } from './ground-cache.js';
+import { styleKeyFor } from '../art/style-key.js';
 
 export const CHUNK = 16;
 export const MAP_LOD_ZOOM = 0.25;
@@ -25,21 +27,59 @@ const defaultCanvas = (w, h) => {
 };
 
 /** @param {{ world: object, mod?: object, cache?: object, createCanvas?: (w:number,h:number)=>any, style?: string }} o
- *  `cache` (optional) is the shared Map-like for baked chunks; default is private. view = { cssW, cssH, dpr?, cam?, style? }. */
+ *  `cache` = createGroundCache(): opts into content-hashed keys, the per-frame bake budget and baked Map LOD. Without one (or with a
+ *  plain Map) the legacy behaviour holds: version-keyed chunks all baked at once, per-tile polygons at Map LOD. view = { cssW, cssH, dpr?, cam?, style? }. */
 export function createGround({ world, mod = world?.mod, cache, createCanvas = defaultCanvas, style: style0 } = {}) {
   const grid = world.grid;
-  const chunks = cache instanceof Map ? cache : new Map();
-  const mine = new Set();   // keys this ground baked (so a shared cache is only cleared of our own entries)
+  const budgeted = !!cache && typeof cache.put === 'function';
+  const chunks = budgeted ? cache : createGroundCache({ maxChunks: 256, bakesPerFrame: Infinity, budgetMs: Infinity });
+  const legacyMap = cache instanceof Map ? cache : null;   // a caller-supplied plain Map keeps receiving legacy entries
+  const mine = new Map();   // key -> [cx, cy]: keys this ground baked (so a shared cache is only cleared of our own entries)
+  const hashMemo = new Map();
   const byCode = [];
   for (const t of mod?.terrain?.types || []) if (t.color) byCode[t.code] = t.color;
   const classCol = [];   // terrain-layer code -> colour, from the mod's terrain classes
   for (const c of mod?.terrain?.classes || []) if (c && typeof c.color === 'string' && Number.isInteger(c.code)) classCol[c.code] = c.color;
   const terrainCol = t => classCol[t] || TERRAIN_COL[t] || '#444';
   const styleOf = v => v?.style ?? style0 ?? world.style ?? 'default';
+  // Per-settlement art: each tile inside a settlement's block is painted with that settlement's style (nb.style). `reads`
+  // (mod.ground.reads, default the whole style) names the style fields the tile art draws: only those key the memo and the chunk hash.
+  const tileReads = Array.isArray(mod?.ground?.reads) ? mod.ground.reads : null;
+  const blocks = [];
+  for (const v of world.villages || []) if (v?.block && v.style && typeof v.style === 'object') blocks.push({ x: v.block.x, y: v.block.y, x1: v.block.x + v.block.w, y1: v.block.y + v.block.h, style: v.style, key: tileReads ? styleKeyFor(v.style, tileReads) : '' });
+  const blockAt = (tx, ty) => { for (const b of blocks) if (tx >= b.x && tx < b.x1 && ty >= b.y && ty < b.y1) return b; return null; };
   const versionOf = () => world.version ?? grid.version ?? 0;
-  const keyOf = (cx, cy, style) => `${cx},${cy}|${versionOf()}|${style}`;
+  let memoVer = null;
+  // content key: hash of the ground/terrain/road codes of the chunk plus a one-tile ring (neighbour-aware art), not the version
+  const contentHash = (cx, cy) => {
+    const v = versionOf();
+    if (v !== memoVer) { hashMemo.clear(); memoVer = v; }
+    const mk = cx + ',' + cy;
+    let h = hashMemo.get(mk);
+    if (h !== undefined) return h;
+    h = 0x811c9dc5;
+    for (let ty = cy * CHUNK - 1; ty <= (cy + 1) * CHUNK; ty++) {
+      for (let tx = cx * CHUNK - 1; tx <= (cx + 1) * CHUNK; tx++) {
+        const i = idx(tx, ty);
+        const a = i < 0 ? 0xffff : grid.ground[i] | (grid.terrain[i] << 8) | ((grid.road ? grid.road[i] : 0) << 16);
+        h = Math.imul(h ^ (a & 0xffff), 16777619); h = Math.imul(h ^ (a >>> 16), 16777619);
+      }
+    }
+    // the style of every settlement block the chunk (and its ring) touches: a restyle re-bakes, an unchanged style reuses
+    const x0 = cx * CHUNK - 1, x1 = (cx + 1) * CHUNK, y0 = cy * CHUNK - 1, y1 = (cy + 1) * CHUNK;
+    for (const b of blocks) {
+      if (b.x1 <= x0 || b.x > x1 || b.y1 <= y0 || b.y > y1) continue;
+      const k = b.key || JSON.stringify(b.style);
+      for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 16777619);
+    }
+    h = (h >>> 0).toString(36);
+    hashMemo.set(mk, h);
+    return h;
+  };
+  const keyOf = (cx, cy, style, lod) => budgeted ? `${cx},${cy}|${contentHash(cx, cy)}|${style}${lod ? '|lod' : ''}` : `${cx},${cy}|${versionOf()}|${style}`;
 
   const idx = (tx, ty) => grid.idx ? grid.idx(tx, ty) : ((tx - grid.ox >= 0 && ty - grid.oy >= 0 && tx - grid.ox < grid.w && ty - grid.oy < grid.h) ? (ty - grid.oy) * grid.w + tx - grid.ox : -1);
+  const terrainAt = (tx, ty) => { const i = idx(tx, ty); return i < 0 ? -1 : grid.terrain[i]; };
   const groundAt = (tx, ty) => { const i = idx(tx, ty); return i < 0 ? 0 : grid.ground[i]; };
 
   const colourAt = i => {
@@ -63,14 +103,14 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
   const cMin = (o, n) => Math.floor(o / CHUNK), cMax = (o, n) => Math.floor((o + n - 1) / CHUNK);
 
   /** Visible chunk coordinates (only those overlapping the grid), as [{ cx, cy, key }] in back-to-front (cx+cy) order. */
-  function chunkKeys(view, cam = view.cam) {
+  function chunkKeys(view, cam = view.cam, lod = false) {
     const [vx0, vy0, vx1, vy1] = viewRect(cam, view), style = styleOf(view), out = [];
     if (!grid.w || !grid.h) return out;
     for (let cy = cMin(grid.oy), cyE = cMax(grid.oy, grid.h); cy <= cyE; cy++) {
       for (let cx = cMin(grid.ox), cxE = cMax(grid.ox, grid.w); cx <= cxE; cx++) {
         const [x0, y0, x1, y1] = chunkBox(cx, cy);
         if (x1 < vx0 || x0 > vx1 || y1 < vy0 || y0 > vy1) continue;
-        out.push({ cx, cy, key: keyOf(cx, cy, style) });
+        out.push({ cx, cy, key: keyOf(cx, cy, style, lod) });
       }
     }
     return out.sort((a, b) => (a.cx + a.cy) - (b.cx + b.cy) || a.cx - b.cx);
@@ -86,8 +126,9 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
     }
   };
 
-  function bake(cx, cy, style) {
-    const cv = createCanvas(CHUNK_W, CHUNK_H), ctx = cv.getContext('2d');
+  /** Paint chunk (cx, cy) at 1x into `cv` (a fresh 512x256 canvas unless one is passed in to be reused). */
+  function bake(cx, cy, style, cv = createCanvas(CHUNK_W, CHUNK_H)) {
+    const ctx = cv.getContext('2d');
     const [ox, oy] = chunkBox(cx, cy);
     const render = mod?.ground?.renderTile, memo = new Map();
     for (let ty = cy * CHUNK; ty < (cy + 1) * CHUNK; ty++) {
@@ -100,8 +141,13 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
           const code = grid.ground[i];
           const nb = { n: groundAt(tx, ty - 1), e: groundAt(tx + 1, ty), s: groundAt(tx, ty + 1), w: groundAt(tx - 1, ty),
             ne: groundAt(tx + 1, ty - 1), se: groundAt(tx + 1, ty + 1), sw: groundAt(tx - 1, ty + 1), nw: groundAt(tx - 1, ty - 1),
-            terrain: grid.terrain[i], road: grid.road ? grid.road[i] : 0 };
-          const mk = `${code}|${nb.n},${nb.e},${nb.s},${nb.w},${nb.ne},${nb.se},${nb.sw},${nb.nw}|${nb.terrain}|${nb.road}`;
+            terrain: grid.terrain[i], road: grid.road ? grid.road[i] : 0,
+            tn: terrainAt(tx, ty - 1), te: terrainAt(tx + 1, ty), ts: terrainAt(tx, ty + 1), tw: terrainAt(tx - 1, ty) };
+          const bk = blockAt(tx, ty);
+          nb.tx = tx; nb.ty = ty;
+          if (bk) nb.style = bk.style;
+          // a styled tile may vary by position (nb.tx/ty), so it is memoised per tile; plain tiles share by neighbourhood
+          const mk = `${code}|${nb.n},${nb.e},${nb.s},${nb.w},${nb.ne},${nb.se},${nb.sw},${nb.nw}|${nb.terrain}|${nb.tn},${nb.te},${nb.ts},${nb.tw}|${nb.road}|${tx & 7},${ty & 7}${bk ? `|${bk.key || bk.x + ',' + bk.y}|${tx},${ty}` : ''}`;
           if (memo.has(mk)) bmp = memo.get(mk);
           else { bmp = render(code, nb, style) || null; memo.set(mk, bmp); }
         }
@@ -112,7 +158,7 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
     return { img: cv, x: ox, y: oy, w: CHUNK_W, h: CHUNK_H };
   }
 
-  function drawMap(gfx, cam, view) {
+  function drawMapTiles(gfx, cam, view) {
     const [vx0, vy0, vx1, vy1] = viewRect(cam, view);
     let n = 0;
     for (let ty = grid.oy; ty < grid.oy + grid.h; ty++) {
@@ -126,32 +172,137 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
     return { mode: 'map', chunks: 0, tiles: n };
   }
 
-  /** Draw the visible ground. Returns { mode, chunks, baked }. */
+  // Map LOD chunk: the chunk's real 1x bake (mod tile art and all) sampled down to 1/4 scale, cached like any other chunk.
+  // Nearest sampling, not smoothing: chunk boxes sit on multiples of 4 px, so every LOD pixel takes exactly one 1x pixel
+  // and neighbouring chunks still partition the plane (smoothing would leave half-alpha seams along every chunk edge).
+  // It used to paint flat class colours instead, which disagreed with the art: the deep-sea class colour is darker than
+  // the sea tile art and the clear colour, so at map zoom the grid showed as hard-edged dark slabs on the open sea.
+  const LOD = 4;
+  let scratch = null;   // one reused 1x canvas for the bake the LOD is sampled from
+  // When the chunk's 1x bake is cached, the LOD is sampled from it (one small drawImage, no tile art): the same pixels.
+  function bakeLod(cx, cy, style) {
+    const w = CHUNK_W / LOD, h = CHUNK_H / LOD, cv = createCanvas(w, h), ctx = cv.getContext('2d');
+    let full = budgeted ? chunks.get(keyOf(cx, cy, style, false)) : null;
+    if (!full?.img || full.iw) {
+      if (!scratch) scratch = createCanvas(CHUNK_W, CHUNK_H);
+      scratch.getContext('2d').clearRect?.(0, 0, CHUNK_W, CHUNK_H);
+      full = bake(cx, cy, style, scratch);
+    }
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(full.img, 0, 0, CHUNK_W, CHUNK_H, 0, 0, w, h);
+    return { img: cv, x: full.x, y: full.y, w: CHUNK_W, h: CHUNK_H, iw: w, ih: h, bytes: w * h * 4 };
+  }
+  const lodCheap = (cx, cy, style) => budgeted && chunks.has(keyOf(cx, cy, style, false));
+
+  // The latest bake of each chunk position, per LOD (`${cx},${cy}|${style}|${lod}` -> key): an older bake (other content
+  // hash) of a chunk still stands in for it until the new one is baked.
+  const lastAt = new Map();
+  const posKey = (cx, cy, style, lod) => `${cx},${cy}|${style}|${lod ? 1 : 0}`;
+  function store(cx, cy, style, lod, key, c) {
+    chunks.put(key, c); mine.set(key, [cx, cy]); legacyMap?.set(key, c);
+    if (budgeted) lastAt.set(posKey(cx, cy, style, lod), key);
+  }
+  /** Any cached bake of chunk (cx, cy) other than `key`: the other LOD of the same content, then the last bake at either LOD. */
+  function standIn(cx, cy, style, lod) {
+    if (!budgeted) return null;
+    const keys = [keyOf(cx, cy, style, !lod), lastAt.get(posKey(cx, cy, style, lod)), lastAt.get(posKey(cx, cy, style, !lod))];
+    for (const k of keys) { const c = k != null && chunks.has(k) ? chunks.get(k) : null; if (c?.img) return c; }
+    return null;
+  }
+  let flatLast = new Set();   // chunks the last drawChunks drew flat (a moving view's rescue bakes those)
+
+  // A not-yet-baked chunk: one flat quad in the colour of its centre tile, clipped to the grid (a chunk on the grid's
+  // edge only partly overlaps it; drawing its whole diamond put slabs of colour, or grey, out on the open sea).
+  function flat(gfx, cx, cy) {
+    const P = (tx, ty) => [(tx - ty) * HW, (tx + ty) * HH];
+    const x0 = Math.max(cx * CHUNK, grid.ox), x1 = Math.min((cx + 1) * CHUNK, grid.ox + grid.w);
+    const y0 = Math.max(cy * CHUNK, grid.oy), y1 = Math.min((cy + 1) * CHUNK, grid.oy + grid.h);
+    if (x1 <= x0 || y1 <= y0) return;
+    const i = idx((x0 + x1 - 1) >> 1, (y0 + y1 - 1) >> 1);
+    gfx.poly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)], i < 0 ? UNKNOWN_COL : colourAt(i));
+  }
+
+  const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  /**
+   * Draw the visible ground. Returns { mode, chunks, baked, pending, flat, soft }: pending = visible chunks not drawn from
+   * their own bake, of which `soft` drew another bake of the chunk scaled (the other LOD, an older bake) and `flat` one
+   * flat quad (no bake of the chunk exists at all).
+   * view.maxBakes caps this frame's bakes (a moving view: 0). A Map LOD chunk whose 1x bake is cached is sampled from it
+   * (cheap) within the time budget whatever maxBakes says. view.rescue: up to that many chunks drawn flat by the last
+   * call, with no stand-in, are baked anyway, so flat ground never outlasts a frame.
+   */
   function drawChunks(gfx, cam, view) {
-    if (cam.z <= MAP_LOD_ZOOM) return drawMap(gfx, cam, view);
-    const style = styleOf(view);
-    let baked = 0, drawn = 0;
-    for (const { cx, cy, key } of chunkKeys(view, cam)) {
+    const map = cam.z <= MAP_LOD_ZOOM;
+    if (map && !budgeted) return drawMapTiles(gfx, cam, view);
+    const style = styleOf(view), t0 = clock();
+    const maxBakes = view.maxBakes ?? chunks.bakesPerFrame ?? Infinity, budgetMs = chunks.budgetMs ?? Infinity;
+    let baked = 0, drawn = 0, pending = 0, flats = 0, soft = 0, rescue = view.rescue | 0, cheap = 0;
+    const flatNow = new Set();
+    const vis = chunkKeys(view, cam, map);
+    chunks.pin?.(vis.map(c => c.key));   // this frame's chunks are never evicted to make room for each other
+    for (const { cx, cy, key } of vis) {
       let c = chunks.get(key);
-      if (!c) { c = bake(cx, cy, style); chunks.set(key, c); mine.add(key); baked++; }
-      gfx.image(c.img, 0, 0, c.w, c.h, c.x, c.y, c.w, c.h);
+      if (!c) {
+        const inTime = (baked + cheap) === 0 || clock() - t0 < budgetMs;
+        if (map && inTime && lodCheap(cx, cy, style)) { c = bakeLod(cx, cy, style); store(cx, cy, style, true, key, c); cheap++; }
+        else if (baked < maxBakes && inTime) {
+          c = map ? bakeLod(cx, cy, style) : bake(cx, cy, style);
+          store(cx, cy, style, map, key, c); baked++;
+        } else {
+          pending++;
+          const s = standIn(cx, cy, style, map);
+          if (s) { soft++; gfx.image(s.img, 0, 0, s.iw ?? s.w, s.ih ?? s.h, s.x, s.y, s.w, s.h); continue; }
+          if (rescue > 0 && flatLast.has(key)) {
+            rescue--; pending--;
+            c = map ? bakeLod(cx, cy, style) : bake(cx, cy, style);
+            store(cx, cy, style, map, key, c); baked++;
+          } else { flats++; flatNow.add(key); flat(gfx, cx, cy); continue; }
+        }
+      }
+      if (c.iw) gfx.image(c.img, 0, 0, c.iw, c.ih, c.x, c.y, c.w, c.h);
+      else gfx.image(c.img, 0, 0, c.w, c.h, c.x, c.y, c.w, c.h);
       drawn++;
     }
-    return { mode: 'chunks', chunks: drawn, baked };
+    flatLast = flatNow;
+    return { mode: map ? 'map' : 'chunks', chunks: drawn, baked: baked + cheap, pending, flat: flats, soft, tiles: 0 };
+  }
+
+  /**
+   * Idle bake: the chunks a view at `cam` would show, for up to budgetMs (at least one chunk). Returns { baked, more }.
+   * 1x chunks, unless `lod`: then the Map LOD chunks of the view (whatever its zoom: a soft stand-in for a 1x view that
+   * outgrows the 1x cache, the real thing at Map zoom). Without `lod` a Map zoom view bakes nothing. Without `evict`
+   * (renderer prefetchIdle: a view not shown yet) only into free cache room; with it (rasterIdle: the view on screen,
+   * drawn flat where unbaked) like a frame's own bake. Chunks nearest the view centre first.
+   */
+  function prebake(cam, view, budgetMs = 4, { evict = false, lod = false } = {}) {
+    if (!budgeted || !chunks.roomFor || (!lod && cam.z <= MAP_LOD_ZOOM)) return { baked: 0, more: false };
+    const style = styleOf(view), t0 = clock();
+    const c0 = toScreen(cam.x, cam.y), d2 = ({ cx, cy }) => { const b = chunkBox(cx, cy); return ((b[0] + b[2]) / 2 - c0.sx) ** 2 + ((b[1] + b[3]) / 2 - c0.sy) ** 2; };
+    let baked = 0;
+    const todo = chunkKeys(view, cam, lod).filter(c => !chunks.has(c.key));
+    if (todo.length > 1) todo.sort((a, b) => d2(a) - d2(b));
+    for (const { cx, cy, key } of todo) {
+      if (!evict && !chunks.roomFor(lod)) return { baked, more: false };
+      if (baked && clock() - t0 >= budgetMs) return { baked, more: true };
+      const c = lod ? bakeLod(cx, cy, style) : bake(cx, cy, style);
+      store(cx, cy, style, lod, key, c); baked++;
+    }
+    return { baked, more: false };
   }
 
   /** Drop baked chunks overlapping tile rect { ox, oy, w, h } (1 tile margin for neighbour-aware art); no rect drops all. */
   function invalidate(rect) {
-    for (const key of [...mine]) {
+    hashMemo.clear(); memoVer = null;
+    for (const [key, [cx, cy]] of [...mine]) {
       if (rect) {
-        const [cc, , ] = key.split('|'), [cx, cy] = cc.split(',').map(Number);
         const hit = cx * CHUNK <= rect.ox + rect.w && (cx + 1) * CHUNK - 1 >= rect.ox - 1 &&
           cy * CHUNK <= rect.oy + rect.h && (cy + 1) * CHUNK - 1 >= rect.oy - 1;
         if (!hit) continue;
       }
-      chunks.delete(key); mine.delete(key);
+      chunks.delete(key); legacyMap?.delete(key); mine.delete(key);
     }
   }
 
-  return { chunkKeys, drawChunks, invalidate };
+  return { chunkKeys, drawChunks, prebake, invalidate, cache: chunks };
 }

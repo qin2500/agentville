@@ -12,7 +12,7 @@ export const PUBLIC_FILE = 'web/src/engine/mod/public.js';
 export const FIRST_PARTY = ['agentville.base', 'agentville.fantasy'];
 /** Grandfathered: classic still uses these. Remove the entries when classic is deleted and the files move into the mod. */
 export const GRANDFATHERED = {
-  'agentville.fantasy': ['web/src/city-plan.js', 'web/src/styles-pool.js'],
+  'agentville.fantasy': ['web/src/city-plan.js', 'web/src/styles-pool.js', 'web/src/ground-art.js'],
 };
 /** Same as MOD_ID_RE in web/src/engine/mod/registry.js (copied: this tool imports no engine code; a test keeps them equal). */
 export const MOD_ID_RE = /^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$/;

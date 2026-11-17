@@ -252,9 +252,9 @@ export function createNav(world, deps = {}) {
   const rectCentre = r => ({ x: Math.floor((r.x ?? r.tx) + (r.w ?? 1) / 2), y: Math.floor((r.y ?? r.ty) + (r.h ?? 1) / 2) });
   function targetsFor(destId) {
     if (destId && typeof destId === 'object') return [tile(destId)];
-    if (destId === 'square' && world.square) return [rectCentre(world.square)];
     const venue = typeof destId === 'string' && world.venues && Object.prototype.hasOwnProperty.call(world.venues, destId) ? world.venues[destId] : null;
-    if (venue && Number.isFinite(venue.tx)) return [{ x: venue.tx, y: venue.ty }];   // world/venue.js: the site anchor
+    if (venue && Number.isFinite(venue.tx)) return [{ x: venue.tx, y: venue.ty }];   // world/venue.js: the site anchor (a dressed square's centre may be blocked)
+    if (destId === 'square' && world.square) return [rectCentre(world.square)];
     const o = world.objects?.get?.(destId);
     if (o) return [o.door ? { x: o.door.tx, y: o.door.ty } : rectCentre(o)];
     const site = world.villages?.find?.(v => v.id === destId || v.name === destId);

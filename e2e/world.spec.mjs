@@ -4,13 +4,13 @@
 // without blinking, walkers face where they walk, and the fallback keeps all of it.
 // `?debug` exposes window.villageDebug(); /api/agents is rewritten in flight to drive the data.
 import { test, expect, startDocked } from './fixtures.mjs'
-import { SHOTS, clearOverrides, nextPort, prepareBigHome, startServer, tmpDir } from './helpers.mjs'
+import { clearStorage, SHOTS, clearOverrides, nextPort, prepareBigHome, startServer, tmpDir } from './helpers.mjs'
 
 test.beforeEach(async ({ request, page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'the docked panel covers the village on a phone')
   await clearOverrides(request)
   await page.goto('/')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
 })
 
 const dbg = (page) => page.evaluate(() => window.villageDebug())

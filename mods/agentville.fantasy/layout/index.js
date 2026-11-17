@@ -8,8 +8,9 @@
 import { ROAD, LAYOUT_GROUND, LOT, inRect } from '#agentville/mod';
 import { RULES } from '../rules.js';
 import { createTown, stampBlocks, buildRoads, PATH, RING, LANE, FOOT, LAND, DOCKC } from './roads.js';
-import { buildLand } from './land.js';
+import { buildLandSteps } from './land.js';
 import { dockSite, dockShore, dockVenue } from './dock.js';
+import { squareVenue } from './square.js';
 import { terrainAt } from './terrain-rule.js';
 
 export { SEA_MARGIN } from './land.js';
@@ -29,13 +30,28 @@ function pathsOf(input) {
 
 /** @param {import('#agentville/mod').LayoutInput & { paths?: number[] }} input @returns {object} LayoutResult */
 export function layout(input) {
+  const g = layoutSteps(input);
+  let r;
+  while (!(r = g.next()).done);
+  return r.value;
+}
+// the engine runs the step form when it builds in slices (api.js hooks.layout.steps): the same result
+layout.steps = layoutSteps;
+
+const ROWS_PER_STEP = 96;
+/** layout as a step generator (PERF M7): the same passes in the same order, yielding between them and every
+ *  ROWS_PER_STEP rows of the per-tile pass. Returns the LayoutResult. */
+export function* layoutSteps(input) {
   const { settlements, square } = input;
   const G = createTown(settlements, square);
   stampBlocks(G, settlements, pathsOf(input));
+  yield;
   buildRoads(G, settlements);
+  yield;
   const D = G.dock = dockSite(G);
-  buildLand(G);
+  yield* buildLandSteps(G);
   dockShore(G);
+  yield;
   const { R, inBlock, seaDist, town } = G, { ox, oy, w, h, n, at, flags: F } = R;
 
   // the tiles: terrain everywhere (outside the raster is deep sea, `outside`), and outside blocks the ground, road
@@ -46,16 +62,25 @@ export function layout(input) {
     isPath: (x, y) => { const t = at(x, y); return t >= 0 && (F[t] & PATH) !== 0; },
     seaDist: (x, y) => { const t = at(x, y); return t >= 0 ? seaDist[t] : -1; },
   };
-  for (let i = 0, y = oy; y < oy + h; y++) for (let x = ox; x < ox + w; x++, i++) {
-    terrain[i] = terrainAt(r, x, y);
-    if (inBlock[i] >= 0) continue;
-    const f = F[i];
-    if (inRect(square, x, y)) { ground[i] = LAYOUT_GROUND.HUB; road[i] = ROAD.MAIN; lot[i] = LOT.HUB; continue; }
-    if (f & RING) { ground[i] = LAYOUT_GROUND.EDGE; road[i] = ROAD.STREET; }
-    else if (f & LANE) { ground[i] = LAYOUT_GROUND.ROUTE; road[i] = ROAD.LANE; }
-    else if (f & FOOT) { ground[i] = LAYOUT_GROUND.ROUTE; road[i] = ROAD.PATH; }
-    else if (f & DOCKC) ground[i] = LAYOUT_GROUND.VENUE;
-    if (f & DOCKC) lot[i] = LOT.VENUE;
+  // the per-tile pass in bands between yields; each band is a plain function (a hot loop runs slower in a generator's body)
+  const band = (ya, yb) => {
+    for (let i = (ya - oy) * w, y = ya; y < yb; y++) {
+      for (let x = ox; x < ox + w; x++, i++) {
+        terrain[i] = terrainAt(r, x, y);
+        if (inBlock[i] >= 0) continue;
+        const f = F[i];
+        if (inRect(square, x, y)) { ground[i] = LAYOUT_GROUND.HUB; road[i] = ROAD.MAIN; lot[i] = LOT.HUB; continue; }
+        if (f & RING) { ground[i] = LAYOUT_GROUND.EDGE; road[i] = ROAD.STREET; }
+        else if (f & LANE) { ground[i] = LAYOUT_GROUND.ROUTE; road[i] = ROAD.LANE; }
+        else if (f & FOOT) { ground[i] = LAYOUT_GROUND.ROUTE; road[i] = ROAD.PATH; }
+        else if (f & DOCKC) ground[i] = LAYOUT_GROUND.VENUE;
+        if (f & DOCKC) lot[i] = LOT.VENUE;
+      }
+    }
+  };
+  for (let y = oy; y < oy + h; y += ROWS_PER_STEP) {
+    if (y > oy) yield;
+    band(y, Math.min(y + ROWS_PER_STEP, oy + h));
   }
 
   const [bx0, by0, bx1, by1] = G.bounds, [tx0, ty0, tx1, ty1] = town;
@@ -65,7 +90,7 @@ export function layout(input) {
     focus: { ox: tx0 - 1, oy: ty0 - 1, w: tx1 - tx0 + 3, h: ty1 - ty0 + 3 },
     tiles: { ox, oy, w, h, terrain, ground, road, lot },
     outside: 0,   // deep sea
-    venues: { dock: dockVenue(D) },
+    venues: { dock: dockVenue(D), square: squareVenue(square) },
     // town: [x0, y0, x1, y1] inclusive tiles (classic W.town); dock: the classic dock record (world.dock); waves: glints
     data: { dock: { ...D }, town: [...town], waves: G.waves },
   };

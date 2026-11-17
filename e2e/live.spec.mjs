@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
 import AxeBuilder from '@axe-core/playwright'
-import { HOME, IDS, SECRET, SHOTS, prepareHome, prepareBigHome, startServer, tmpDir, nextPort, clearOverrides, row, claudeId, openMenu, menuItem } from './helpers.mjs'
+import { clearStorage, HOME, IDS, SECRET, SHOTS, prepareHome, prepareBigHome, startServer, tmpDir, nextPort, clearOverrides, row, claudeId, openMenu, menuItem } from './helpers.mjs'
 
 const isMobile = (testInfo) => testInfo.project.name === 'mobile'
 const tmp = tmpDir
@@ -12,7 +12,7 @@ const port = nextPort
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
 })
 
 test('overrides: rename, role and hide/undo from the UI persist across reload', async ({ page }, testInfo) => {

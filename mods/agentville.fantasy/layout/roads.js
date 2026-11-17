@@ -43,16 +43,19 @@ export function buildRoads(G, settlements) {
   const { R, square: SQ, box, inBlock } = G, { at } = R;
   const street = i => { R.add(PATH, G.path, i); R.add(STREET, null, i); };
   for (let j = SQ.y; j < SQ.y + SQ.h; j++) for (let i = SQ.x; i < SQ.x + SQ.w; i++) R.add(PATH, G.path, at(i, j));
+  // parity: world.ring-roads
   for (const v of settlements) {
     const b = v.block, ring = i => { street(i); R.add(RING, null, i); };
     for (let i = b.x - 1; i <= b.x + b.w; i++) { ring(at(i, b.y - 1)); ring(at(i, b.y + b.h)); }
     for (let j = b.y; j < b.y + b.h; j++) { ring(at(b.x - 1, j)); ring(at(b.x + b.w, j)); }
   }
+  // parity: world.astar-roads-to-square
   const sq = [SQ.x + SQ.w / 2, SQ.y + SQ.h / 2];
   for (const v of [...settlements].sort((a, b) => Math.hypot(a.cx, a.cy) - Math.hypot(b.cx, b.cy))) {
     const b = v.block, ring = [];
     for (let i = b.x - 1; i <= b.x + b.w; i++) ring.push([i, b.y - 1], [i, b.y + b.h]);
     for (let j = b.y; j < b.y + b.h; j++) ring.push([b.x - 1, j], [b.x + b.w, j]);
+    // parity: world.shared-streets-2-wide
     for (const [x, y] of routeOnRaster(R, ring, (x, y) => inRect(SQ, x, y), box, sq, ROUTE)) {
       for (const [a, c] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { const t = at(x + a, y + c); if (!(t >= 0 && inBlock[t] >= 0)) { street(t); R.add(LANE, null, t); } }
     }

@@ -29,12 +29,14 @@ function setup(objects) {
 }
 const frame = actors => ({ cam: { x: 0, y: 0, z: 1 }, view: { cssW: 800, cssH: 600, dpr: 1 }, actors, t: 0, night: 1, mode: 'town' });
 // actors carry their HOME object id (a.home), never the server id
+// After dark every building shows dim windows (bld.lit-windows-night, warm 0); a resting home's glow is the warm one.
+const glow = l => l.kind === 'window' && l.warm > 0;
 const ag = (id, status, hm) => ({ id, kind: 'agent', home: hm, x: 50, y: 50, face: 0, flags: 0, input: { status } });
 
 test('resting home agent lights its windows at night; working one does not', () => {
   const { r, seen } = setup([home('h1', 'a', 0), home('h2', 'b', 1)]);
   r.draw(frame([ag('a', 'resting', 'h1'), ag('b', 'working', 'h2')]));
-  const w = seen.lights.filter(l => l.kind === 'window');
+  const w = seen.lights.filter(glow);
   assert.ok(w.length >= 1);
   assert.ok(w.every(l => l.id.startsWith('h1#')));
 });
@@ -42,8 +44,8 @@ test('resting home agent lights its windows at night; working one does not', () 
 test('status falls back to status.bucket; unknown agent stays dark', () => {
   const { r, seen } = setup([home('h1', 'a', 0), home('h2', 'zz', 1)]);
   r.draw(frame([{ id: 'a', kind: 'agent', home: 'h1', x: 50, y: 50, flags: 0, status: { bucket: 'resting' } }]));
-  assert.ok(seen.lights.some(l => l.id.startsWith('h1#')));
-  assert.ok(!seen.lights.some(l => l.id.startsWith('h2#')));
+  assert.ok(seen.lights.some(l => glow(l) && l.id.startsWith('h1#')));
+  assert.ok(!seen.lights.some(l => glow(l) && l.id.startsWith('h2#')));
 });
 
 test('statusOf is a map lookup: one call per home building, not per actor', () => {
@@ -57,7 +59,7 @@ test('statusOf is a map lookup: one call per home building, not per actor', () =
 test('statuses refresh each frame', () => {
   const { r, seen } = setup([home('h1', 'a', 0)]);
   r.draw(frame([ag('a', 'resting', 'h1')]));
-  assert.ok(seen.lights.some(l => l.kind === 'window'));
+  assert.ok(seen.lights.some(glow));
   r.draw(frame([ag('a', 'working', 'h1')]));
-  assert.ok(!seen.lights.some(l => l.kind === 'window'));
+  assert.ok(!seen.lights.some(glow));
 });

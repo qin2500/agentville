@@ -9,7 +9,7 @@
 //             >= 255 or not finite blocks the tile (e.g. cart-reserved cells return base * 4).
 // Moves: 8-way. A diagonal is legal only when both L-shaped orthogonal routes are legal (WorldGrid.canStep), so it
 // never cuts a corner past a blocked tile or edge. Entering a tile costs its cost (min 1) x 1 or x SQRT2.
-// Heuristic: octile distance (admissible since every step costs >= 1). Distances are Float64 (2026-10-22 bug).
+// Heuristic: octile distance (admissible since every step costs >= 1). Distances are Float64.
 // Result: tile-centre x,y pairs (tx + .5, ty + .5) from the start tile to the goal tile, with the interior points of
 // straight runs (same step direction) removed. Each kept segment is a straight run of path steps, so it never
 // crosses a blocked tile. from and to in the same tile -> one point. Goal blocked/outside -> null. The start tile

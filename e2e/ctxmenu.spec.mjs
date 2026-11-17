@@ -3,7 +3,7 @@
 // paths; the header (name, status, project/role/harness, PR chips); each action reaching its
 // endpoint or confirm step; and names no longer squeezed by PR chips.
 import { test, expect } from './fixtures.mjs'
-import { claudeId, row, clearOverrides, openMenu, menuItem, villagerAt, IDS, teamView } from './helpers.mjs'
+import { clearStorage, claudeId, row, clearOverrides, openMenu, menuItem, villagerAt, IDS, teamView } from './helpers.mjs'
 
 const SHOT = '/tmp/vshots'
 const API = claudeId('leadBuilding') // API Lead: building, PR #101 (open, 1 check failing)
@@ -19,7 +19,7 @@ const inViewport = async (page) => {
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/?debug')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto('/?debug')
   await expect(page.locator('#conn')).toHaveText(/Live/)
 })

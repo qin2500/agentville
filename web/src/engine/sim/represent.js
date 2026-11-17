@@ -11,6 +11,7 @@
 // only and `artView` copies of world objects, and whatever it returns is sanitised field by field.
 
 import { ANIMS } from './actor.js';
+import { nearIndex } from '../core/near-index.js';
 
 /**
  * Pose vocabulary. The engine knows only the actor anim enum of design §4.1: `POSE_ANIM` is the identity over `ANIMS`.
@@ -28,6 +29,8 @@ export function animOf(pose, mod) {
 /** True when the value is already an anim enum value. */
 export const isAnim = v => ANIM_SET.has(v);
 
+// parity: vil.pose-stand-sit (waiting sits at a sit anchor, stalled and error stand: anims 'sit' and 'idle')
+// parity: vil.stopped-important-faded-doorstep ('resting:doorstep' below: a ghost, drawn at alpha 0.5 by the renderer)
 /** Behaviour keys the engine knows, with the §4.2 table as engine defaults (a mod that gives nothing gets these). */
 export const ENGINE_BEHAVIOUR = Object.freeze({
   working: { place: 'pr.site', pose: 'hammer', idle: ['carry'], idleEvery: null, walk: true },          // live PR
@@ -310,9 +313,40 @@ const objOf = (world, ref) => (ref == null ? null : typeof ref === 'string' ? wo
 function homeObject(agentId, world, ctx) {
   if (agentId == null) return null;
   if (typeof ctx?.homeOf === 'function') return objOf(world, ctx.homeOf(agentId));
-  for (const o of world?.objects?.values?.() || []) if (o.data?.owner === 'home' && o.data.agentId === agentId) return o;
-  return null;
+  return lookupOf(world)?.home.get(agentId) ?? null;
 }
+
+// Per-world lookups (PERF M7): the first home / PR site object per id in object order, and per anchor kind a nearest-point
+// index, built once per world on first use instead of a scan of every object per call. A World does not change after
+// buildWorld; the cache is keyed by the object store and also re-made if its size changes.
+const LOOKUPS = new WeakMap();
+function lookupOf(world) {
+  const objs = world?.objects;
+  if (!objs || typeof objs.values !== 'function') return null;
+  let L = LOOKUPS.get(objs);
+  if (L && L.size === objs.size) return L;
+  L = { size: objs.size, home: new Map(), pr: new Map(), anchors: new Map() };
+  const raw = new Map();   // kind -> [{ tx, ty, sub, seq, o }] in scan order (objects, then each object's anchors)
+  let seq = 0;
+  for (const o of objs.values()) {
+    const d = o?.data;
+    if (d?.owner === 'home' && !L.home.has(d.agentId)) L.home.set(d.agentId, o);
+    if (d?.owner === 'pr' && !L.pr.has(d.pr)) L.pr.set(d.pr, o);
+    const an = o?.anchors;
+    if (!an) continue;
+    for (const kind of Object.keys(an)) {
+      const list = an[kind];
+      if (!list || typeof list[Symbol.iterator] !== 'function') continue;
+      let r = raw.get(kind);
+      if (!r) { r = []; raw.set(kind, r); }
+      for (const s of list) r.push({ tx: s.tx, ty: s.ty, sub: s.sub, seq: seq++, o });
+    }
+  }
+  for (const [kind, r] of raw) L.anchors.set(kind, nearIndex(r));
+  LOOKUPS.set(objs, L);
+  return L;
+}
+const earlier = (a, b) => a.seq < b.seq;
 /** the forecourt tile of a building: its door, else the tile in front of its footprint (south-west face, +y). */
 function forecourtOf(o) {
   if (o.door && Number.isFinite(o.door.tx)) return { tx: o.door.tx, ty: o.door.ty };
@@ -326,7 +360,9 @@ function claimOn(slots, actorId, o, kind, tile) {
   const prefix = `${o.id}:${kind}:`;
   const held = slots.heldBy?.(actorId);
   if (held && held.id.startsWith(prefix) && (!tile || (held.tx === tile.tx && held.ty === tile.ty))) return held;
-  const cands = typeof slots.all === 'function' ? slots.all().filter(s => s.id.startsWith(prefix) && (!tile || (s.tx === tile.tx && s.ty === tile.ty)))
+  // ofObject(id): the object's own slots in registry order (nav/slots.js), so no scan of every slot per claim
+  const pool = typeof slots.ofObject === 'function' ? slots.ofObject(o.id) : typeof slots.all === 'function' ? slots.all() : null;
+  const cands = pool ? pool.filter(s => s.id.startsWith(prefix) && (!tile || (s.tx === tile.tx && s.ty === tile.ty)))
     : tile ? [0, 1, 2, 3].map(sub => ({ id: `${prefix}${tile.tx},${tile.ty}:${sub}` })) : [];
   for (const s of cands) { const c = slots.claim(s.id, actorId); if (c) return c; }
   return null;
@@ -341,7 +377,12 @@ function forecourt(actor, world, ctx, place) {
   return result(place, t.tx, t.ty, 'stand', { objId: home.id, face: 0, ...slotExtra(s) });
 }
 
-function nearestAnchor(world, kind, x, y) {   // no slot registry: plain scan, no reservation
+function nearestAnchor(world, kind, x, y) {   // no slot registry: nearest anchor (first in object order on a tie), no reservation
+  const L = Number.isFinite(x) && Number.isFinite(y) ? lookupOf(world) : null;
+  if (L) {
+    const s = L.anchors.get(kind)?.nearest(x, y, null, earlier);
+    return s ? { id: `${s.o.id}:${kind}:${s.tx},${s.ty}:${s.sub | 0}`, tx: s.tx, ty: s.ty, sub: s.sub | 0, kind } : null;
+  }
   let best = null, bd = Infinity;
   for (const o of world?.objects?.values?.() || []) for (const s of o.anchors?.[kind] || []) {
     const d = (s.tx - x) ** 2 + (s.ty - y) ** 2;
@@ -373,7 +414,7 @@ export function resolvePlace(place, actor, world, ctx = {}) {
     for (const id of prList(actor.prs)) {
       let o = null;
       if (typeof ctx.prSiteOf === 'function') o = objOf(world, ctx.prSiteOf(id));
-      else for (const x of world?.objects?.values?.() || []) if (x.data?.owner === 'pr' && x.data.pr === id) { o = x; break; }
+      else o = lookupOf(world)?.pr.get(id) ?? null;
       if (!o) continue;
       const s = claimOn(slots, actor.id, o, 'work');
       if (s) return result(p, s.tx, s.ty, 'work', { objId: o.id, ...slotExtra(s) });

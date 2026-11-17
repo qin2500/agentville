@@ -62,12 +62,17 @@ function twoPass(name, mod, withRules) {
   return w;
 }
 
-// Golden fingerprints of engine 554bbbf (before the split), re-pinned after m1g's stateless scatter (only wild-scatter objects/occ/cost changed; sig, lint and the other layers are as at 554bbbf), fantasy mod, WorldInput path, seed 7, two passes. Re-pinned after the harbour art (venue plan emits pier, bollard and skiff objects): only objects and occ changed.
+// Golden fingerprints of engine 554bbbf (before the split), re-pinned after m1g's stateless scatter (only wild-scatter objects/occ/cost changed; sig, lint and the other layers are as at 554bbbf), fantasy mod, WorldInput path, seed 7, two passes. Re-pinned after the harbour art (venue plan emits pier, bollard and skiff objects): only objects and occ changed. Re-pinned after merging main's city5 (building family/variety on lot items): only sig and objects changed. Re-pinned for M5 P1 (pier decks stamp walkable ground + path road over the water, VenueDef deck: true): only ground, road and cost changed. Re-pinned for M5 integration (the harbour now follows the fixture's dock: lifetime total 124 is a tier-4 harbour with more decks, cranes and sheds): only the busy world's cost, ground, occ, road and objects changed. Re-pinned after merging M4 (central square venue: tree + 4 lanterns): only objects, cost and occ changed.
+// Re-pinned for builders-cap-4-per-site (world/site-work.js): PR-site objects gained work anchors; only objects changed.
+// Re-pinned for the fantasy countryside (315f485, b866786), cosmetic and recomputed every build: only objects, cost, occ and terrain changed
+// (wild scatter objects `tree:*`, the tiles they occupy, forest-floor opened up as walkable meadow, and the new terrain codes 5-11). sig, lint,
+// ground, lot, road, edges, cover and slots are as before. The test below pins everything that is NOT wild scatter (and the persisted state)
+// to the digests measured at c1b443a, the commit before the countryside.
 const GOLDEN = {
-  citydemo: { sig: '1052876b2985324b', objects: 'ab61d04c50c905e4', lint: '402568c1d9c59f5d', grid: { cost: '65b147c4d6b64c05', cover: 'ee5e0790ce9afa21',
-    edges: '2f7697d7505ce49a', ground: '5eb21dfe9b69ca69', lot: 'd2a184597bb41229', occ: '01cb11a86d7ce21d', road: '1e255e6655bd7a28', slots: '599aac33df4b3572', terrain: 'd903f0b7631f9e12' } },
-  busy: { sig: 'd236d5bbe28b2e4f', objects: '4b9772ad70a8e1d7', lint: '6cc0e0250ce0a055', grid: { cost: '63780a3c14534042', cover: '28ff20eb0ac20b74',
-    edges: '656731783cd6f486', ground: '0d2da4b7f5ac9243', lot: 'aed12d6ba4bf5e27', occ: 'd9c01a5ff5b2ffbb', road: '4bb2bb926ca4f69a', slots: '26acd9d92d3d54c8', terrain: '10dfc77920835b47' } },
+  citydemo: { sig: '1052876b2985324b', objects: '4bd5ef8554d6ce37', lint: '402568c1d9c59f5d', grid: { cost: '69737320d7fe4fa1', cover: 'ee5e0790ce9afa21',
+    edges: '2f7697d7505ce49a', ground: '8da74ec6b027bf0a', lot: 'd2a184597bb41229', occ: '38bf66d8f827c699', road: '95cad267ffbedcac', slots: '599aac33df4b3572', terrain: 'cf81a3ac75513600' } },
+  busy: { sig: 'd236d5bbe28b2e4f', objects: '04895815c47fdd2a', lint: '6cc0e0250ce0a055', grid: { cost: '1f2e4cbd5b009830', cover: '28ff20eb0ac20b74',
+    edges: '656731783cd6f486', ground: 'cc07bc977dd6d64b', lot: 'aed12d6ba4bf5e27', occ: '9f97ab8cf3448ce7', road: 'd71626545f202e89', slots: '26acd9d92d3d54c8', terrain: '57a9a3118b1a7d61' } },
 };
 
 for (const name of ['citydemo', 'busy']) {
@@ -75,6 +80,18 @@ for (const name of ['citydemo', 'busy']) {
     const mod = resolveMod('agentville.fantasy');
     assert.deepEqual(fingerprint(twoPass(name, mod, false)), GOLDEN[name]);
     assert.deepEqual(fingerprint(twoPass(name, mod, true)), GOLDEN[name], 'precomputed rules give the same world');
+  });
+}
+
+const PERSISTED_PINS = { citydemo: { objects: 'a41c88b92dbbf046', persisted: 'd5a13b90f022706f' }, busy: { objects: 'f6f5744d341feede', persisted: '1dcd97cbe460a83d' } };
+for (const name of ['citydemo', 'busy']) {
+  test(`countryside leaves every non-wild object and the persisted state as at c1b443a (fantasy, ${name})`, () => {
+    const mod = resolveMod('agentville.fantasy'), { input, serverId, now } = inputFor(name), P = fresh();
+    let w;
+    for (let pass = 0; pass < 2; pass++) w = buildWorld(input, P, { mod, now: now + pass * 1000, seed: SEED, serverId });
+    const keep = [...w.objects.values()].filter(o => !o.id.startsWith('tree:')).map(o => JSON.stringify(o)).sort();
+    assert.equal(h(JSON.stringify(keep)), PERSISTED_PINS[name].objects, 'buildings, lots, venues and persisted props unchanged');
+    assert.equal(h(JSON.stringify(P)), PERSISTED_PINS[name].persisted, 'persisted state unchanged');
   });
 }
 

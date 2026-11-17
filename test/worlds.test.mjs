@@ -1,7 +1,7 @@
 import './support/ensure-mods-index.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-const { pickWorld, loadWorlds, worldPickerHtml, applyWorld, engineActive, DEFAULT_WORLD, WORLD_KEY } = await import('../web/src/worlds.js');
+const { pickWorld, loadWorlds, worldPickerHtml, applyWorld, engineActive, classicToggleHtml, applyEngine, ENGINE_KEY, DEFAULT_WORLD, WORLD_KEY } = await import('../web/src/worlds.js');
 const { listMods } = await import('../web/src/engine/mod/registry.js');
 
 const IDS = ['agentville.base', 'agentville.fantasy'];
@@ -53,8 +53,24 @@ test('?world= wins for the session without writing va.world.mod', () => {
 });
 
 test('engineActive follows ?engine, then va.engine', () => {
-  assert.equal(engineActive('', mem()), false);
+  assert.equal(engineActive('', mem()), true); // M7: unset is the new engine
+  assert.equal(engineActive('', mem({ 'va.engine': 1 })), false);
   assert.equal(engineActive('?engine=2', mem()), true);
   assert.equal(engineActive('?engine=1', mem({ 'va.engine': 2 })), false);
   assert.equal(engineActive('', mem({ 'va.engine': 2 })), true);
+});
+
+test('classic toggle lives in a collapsed Advanced section, not as a select', () => {
+  const html = classicToggleHtml(mem());
+  assert.match(html, /^<details class="settings-advanced"><summary>Advanced<\/summary>/);
+  assert.doesNotMatch(html, /<details[^>]*\bopen\b/);
+  assert.doesNotMatch(html, /<select|Village engine|retiring/);
+  assert.match(html, /<input type="checkbox" data-set="engine">Use classic village \(old engine\)/);
+  assert.match(classicToggleHtml(mem({ [ENGINE_KEY]: 1 })), /data-set="engine" checked>/);
+  assert.doesNotMatch(classicToggleHtml(mem({ [ENGINE_KEY]: 2 })), /checked/);
+  const m = mem(); let reloads = 0;
+  applyEngine(1, m, () => reloads++);
+  assert.equal(m.get(ENGINE_KEY), 1); assert.equal(reloads, 1);
+  applyEngine(2, m, () => reloads++);
+  assert.equal(m.get(ENGINE_KEY), 2);
 });

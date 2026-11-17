@@ -5,6 +5,8 @@
 // claim(anchorId, actorId): anchorId is a slot id, or an object id (or 'world') = its first free slot in
 // stand, work, sit, vend order.
 // slot = { id, tx, ty, sub: 0..3, kind: 'stand'|'work'|'sit'|'vend' }
+import { nearIndex } from '../core/near-index.js';
+
 const KINDS = ['stand', 'work', 'sit', 'vend'];
 
 export function createSlots(world) {
@@ -41,15 +43,55 @@ export function createSlots(world) {
   }
   if (world?.objects) for (const o of world.objects.values()) ingest(o.id, o.anchors);
 
+  // Spill slots (no cap, every agent drawn): when a yard has no free stand slot nearby, an actor takes a sub-slot on a
+  // free walkable tile beside it. Eligible: in bounds, cost <= 2, no occupancy or cover, not within one tile of any door
+  // (never blocking a door), not a tile that carries a regular slot. Order is by distance then (ty, tx): deterministic.
+  // Ids are `spill:tx,ty:sub`, so a rebuilt registry can recreate a held spill slot from its id alone.
+  const SPILL_SUBS = [0, 1], SPILL_RADIUS = 24;
+  let barred = null;
+  const isBarred = (tx, ty) => {
+    if (!barred) {
+      barred = new Set();
+      for (const sl of slots.values()) if (!sl.spill) barred.add(`${sl.tx},${sl.ty}`);
+      for (const o of world?.objects?.values?.() ?? []) {
+        const d = o?.door;
+        if (!d || !Number.isFinite(d.tx)) continue;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) barred.add(`${d.tx + dx},${d.ty + dy}`);
+      }
+    }
+    return barred.has(`${tx},${ty}`);
+  };
+  const spillTile = (tx, ty) => !!grid && typeof grid.get === 'function' && (!grid.inBounds || grid.inBounds(tx, ty))
+    && grid.get('cost', tx, ty) <= 2 && grid.get('occ', tx, ty) === 0 && !(grid.get('cover', tx, ty) > 0) && !isBarred(tx, ty);
+  const spillSlot = (tx, ty, sub) => {
+    const id = `spill:${tx},${ty}:${sub}`;
+    let sl = slots.get(id);
+    if (!sl) { sl = { id, tx, ty, sub, kind: 'spill', spill: true }; slots.set(id, sl); }
+    return sl;
+  };
+  const parseSpill = id => {
+    const m = /^spill:(-?\d+),(-?\d+):(\d)$/.exec(id);
+    return m && spillTile(+m[1], +m[2]) ? spillSlot(+m[1], +m[2], +m[3]) : null;
+  };
+
   const resolve = (ref, actorId) => {
     const key = typeof ref === 'string' ? ref : ref && ref.id;
     if (key == null) return null;
     if (slots.has(key)) return slots.get(key);
+    if (typeof key === 'string' && key.startsWith('spill:')) return parseSpill(key);
     const list = byObj.get(key);
     if (!list) return null;
     const mine = held.get(actorId);
     return list.find(s => s.id === mine) ?? list.find(s => !owner.has(s.id)) ?? null;   // keep own slot (idempotent)
   };
+
+  let near = null;
+  const byKind = () => {
+    const m = new Map();
+    for (const sl of slots.values()) { if (sl.spill) continue; if (!m.has(sl.kind)) m.set(sl.kind, []); m.get(sl.kind).push(sl); }
+    return new Map([...m].map(([k, list]) => [k, nearIndex(list)]));
+  };
+  const free = sl => !owner.has(sl.id), idFirst = (a, b) => a.id < b.id;
 
   return {
     claim(anchorId, actorId) {
@@ -70,6 +112,12 @@ export function createSlots(world) {
       if (owner.get(id) === actorId) owner.delete(id);
     },
     nearestFree(x, y, kind) {
+      // anchor kinds: a per-kind nearest-point index over the regular slots (fixed once built; spill slots are kind
+      // 'spill'), same answer as the scan below: least distance, then least id
+      if (kind && kind !== 'spill' && Number.isFinite(x) && Number.isFinite(y)) {
+        near ||= byKind();
+        return near.get(kind)?.nearest(x, y, free, idFirst) ?? null;
+      }
       let best = null, bd = Infinity;
       for (const s of slots.values()) {
         if ((kind && s.kind !== kind) || owner.has(s.id)) continue;
@@ -78,9 +126,24 @@ export function createSlots(world) {
       }
       return best;
     },
+    /** The nearest free spill sub-slot to tile (x, y), claimed for actorId; null when none within the search radius. */
+    claimSpill(x, y, actorId) {
+      const cx = Math.floor(x), cy = Math.floor(y), cand = [];
+      for (let dy = -SPILL_RADIUS; dy <= SPILL_RADIUS; dy++) for (let dx = -SPILL_RADIUS; dx <= SPILL_RADIUS; dx++) {
+        if (spillTile(cx + dx, cy + dy)) cand.push([dx * dx + dy * dy, cy + dy, cx + dx]);
+      }
+      cand.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+      for (const [, ty, tx] of cand) for (const sub of SPILL_SUBS) {
+        const sl = spillSlot(tx, ty, sub);
+        if (!owner.has(sl.id)) return this.claim(sl.id, actorId);
+      }
+      return null;
+    },
     // helpers beyond the seam
     all: () => [...slots.values()],
-    get: id => slots.get(id) || null,
+    /** an object's own slots, in registry order (the ones all() lists with ids `${objId}:...`) */
+    ofObject: objId => byObj.get(objId) ?? [],
+    get: id => slots.get(id) || (typeof id === 'string' && id.startsWith('spill:') ? parseSpill(id) : null),
     heldBy: actorId => (held.has(actorId) ? slots.get(held.get(actorId)) : null),
     ownerOf: id => owner.get(id) ?? null,
   };

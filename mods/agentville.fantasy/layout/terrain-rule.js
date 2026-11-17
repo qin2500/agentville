@@ -10,6 +10,7 @@ const N8F = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1
 
 /** Land → grass, or shore where it touches water (8-way) and is no path; water → sea within 5.5 (seaDist + noise)
  *  of land, else deep sea. */
+// parity: world.shore-and-sea
 export function terrainAt(r, x, y) {
   let ter;
   if (r.isLand(x, y)) {

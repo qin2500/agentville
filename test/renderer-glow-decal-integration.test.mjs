@@ -115,7 +115,7 @@ test('busy fixture: resting homes glow at night in the real pipeline, working ho
   const h0 = homes.get([...restingHomes][0]);
   const fr = { cam: { x: h0.tx, y: h0.ty, z: 1 }, view: { cssW: 1600, cssH: 1200, dpr: 1 }, actors, t: 0, night: 1, mode: 'town' };
   for (let i = 0; i < 8; i++) { await new Promise(r => setTimeout(r, 5)); r.draw(fr); }
-  const win = lights.filter(l => l.kind === 'window');
+  const win = lights.filter(l => l.kind === 'window' && l.warm > 0);   // warm = a resting home's glow; dim warm-0 windows light every building after dark
   console.log('window lights:', win.length, 'resting homes:', restingHomes.size);
   assert.ok(win.length > 0, 'window lights in the real pipeline');
   const lit = new Set(win.map(l => l.id.split('#')[0]));

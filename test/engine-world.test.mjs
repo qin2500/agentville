@@ -83,7 +83,7 @@ each('inv2: every building door forecourt is walkable', w => {
   }
 });
 
-// TODO(M2, lead 2026-11-13): at the 32x16 projection the M1 prism estimate (footprint + a per-look height guess) covers
+// TODO(M2): at the 32x16 projection the M1 prism estimate (footprint + a per-look height guess) covers
 // ~14% of doors (busy: 92/678), mostly by a taller neighbour one or two depth steps in front. Kept as a tracked todo
 // until M2 measures true sprite bounds; whatever still fails then is a city-plan spacing fix (design §2.4, §7.5),
 // reported by world.lint 'covered-forecourt'.

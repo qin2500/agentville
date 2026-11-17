@@ -27,12 +27,19 @@ export function dockShore(G) {
   G.bounds = [Math.min(b[0], D.x0 - 4), b[1], Math.max(b[2], D.x1 + 5), Math.max(b[3], D.sea + 28)];
 }
 
-/** The harbour as a VenueSite (api.js): its rect is the clearing's box (where harbour objects may go), its anchor the
- *  footpath's foot. `data` is the classic dock record. */
+/** How far south of the first water row the harbour site reaches: the biggest harbour's breakwater (sea + 15), its
+ *  anchorage (sea + 19), the outer channel buoys (sea + 21) and the offing (sea + 23) fit, inside the bounds dockShore
+ *  grows to (sea + 28). */
+export const DOCK_REACH = 24;
+
+// parity: har.cove-reserved-tier4
+/** The harbour as a VenueSite (api.js): its rect is the cove (where harbour objects may go: the clearing's width, from
+ *  the clearing's top down to DOCK_REACH rows into the water), its anchor the footpath's foot. `data` is the classic dock
+ *  record. */
 export function dockVenue(D) {
   return {
     kind: 'harbour',
-    rect: { x: D.x0 - 2, y: D.foot - 3, w: D.x1 - D.x0 + 5, h: D.sea + 12 - (D.foot - 3) + 1 },
+    rect: { x: D.x0 - 2, y: D.foot - 3, w: D.x1 - D.x0 + 5, h: D.sea + DOCK_REACH - (D.foot - 3) + 1 },
     anchor: { tx: D.cx, ty: D.foot },
     data: { ...D },
   };

@@ -31,6 +31,10 @@ const botAt = (s, x) => (x <= s.bm ? lerp(s.x0, s.b0, s.bm, s.bmy, x) : lerp(s.b
 const yMin = s => Math.min(s.t0, s.tmy, s.t1);
 const yMax = s => Math.max(s.b0, s.bmy, s.b1);
 
+// Silhouettes packed 10 numbers each, in prism()/rectSil() field order (the arithmetic below repeats topAt/botAt/lerp
+// exactly, so the results are bit-identical).
+const X0 = 0, X1 = 1, T0 = 2, TM = 3, TMY = 4, T1 = 5, B0 = 6, BM = 7, BMY = 8, B1 = 9, SF = 10;
+
 /** Fill grid.cover. objects: an ObjectStore / Map of WorldObjects, or any iterable of them.
  *  opts.boundsOf(obj) -> { x0, y0, x1, y1 } | null (1x screen px) overrides the prism estimate.
  *  @returns {number} the number of covered tiles */
@@ -38,18 +42,22 @@ export function computeCover(grid, objects, { boundsOf } = {}) {
   const cover = grid.cover;
   cover.fill(0);
   const list = objects instanceof Map ? objects.values() : objects;
-  const sils = [], depths = [], foots = [];
-  // Per-tile linked lists of occluder indices.
+  let S = new Float64Array(SF * 256), ns = 0;
+  // Per-tile linked lists of occluder indices; tiles: every tile with a list (each once).
   const head = new Int32Array(cover.length).fill(-1);
   let next = new Int32Array(1024), who = new Int32Array(1024), n = 0;
+  let tiles = new Int32Array(1024), nt = 0;
   for (const o of list) {
     if (!o || o.kind !== 'building') continue;
     const b = boundsOf ? boundsOf(o) : null;
     const s = b ? rectSil(b) : prism(o);
     if (!(s.x1 > s.x0)) continue;
-    const k = sils.length;
+    const k = ns++;
+    if (ns * SF > S.length) { const s2 = new Float64Array(S.length * 2); s2.set(S); S = s2; }
+    const q = k * SF;
+    S[q + X0] = s.x0; S[q + X1] = s.x1; S[q + T0] = s.t0; S[q + TM] = s.tm; S[q + TMY] = s.tmy; S[q + T1] = s.t1;
+    S[q + B0] = s.b0; S[q + BM] = s.bm; S[q + BMY] = s.bmy; S[q + B1] = s.b1;
     const depth = o.tx + o.w - 1 + o.ty + o.h - 1;
-    sils.push(s); depths.push(depth); foots.push(o);
     const y0 = yMin(s), y1 = yMax(s);
     // Tiles whose box overlaps the silhouette's rect: column c = a - b, diagonal d = a + b (same parity).
     // box x [16c - 8, 16c + 8] overlaps (x0, x1) strictly: 16c + 8 > x0 and 16c - 8 < x1
@@ -57,13 +65,15 @@ export function computeCover(grid, objects, { boundsOf } = {}) {
     // box y [8(d+1) - 24, 8(d+1)] overlaps (y0, y1) strictly: 8(d+1) > y0 and 8(d+1) - 24 < y1
     const dLo = Math.floor(y0 / 8), dHi = Math.min(depth - 1, Math.ceil((y1 + 24) / 8) - 2);
     for (let d = dLo; d <= dHi; d++) {
+      if (8 * (d + 1) <= y0 || 8 * (d + 1) - 24 >= y1) continue;
       for (let c = cLo + (((cLo + d) % 2 + 2) % 2); c <= cHi; c += 2) {
-        if (16 * c + 8 <= s.x0 || 16 * c - 8 >= s.x1 || 8 * (d + 1) <= y0 || 8 * (d + 1) - 24 >= y1) continue;
+        if (16 * c + 8 <= s.x0 || 16 * c - 8 >= s.x1) continue;
         const a = (c + d) / 2, bb = (d - c) / 2;
         const i = grid.idx(a, bb);
         if (i < 0) continue;
         if (a >= o.tx && a < o.tx + o.w && bb >= o.ty && bb < o.ty + o.h) continue;
         if (n === next.length) { const g = next.length * 2; const nn = new Int32Array(g); nn.set(next); next = nn; const nw = new Int32Array(g); nw.set(who); who = nw; }
+        if (head[i] < 0) { if (nt === tiles.length) { const t2 = new Int32Array(nt * 2); t2.set(tiles); tiles = t2; } tiles[nt++] = i; }
         who[n] = k; next[n] = head[i]; head[i] = n; n++;
       }
     }
@@ -71,31 +81,51 @@ export function computeCover(grid, objects, { boundsOf } = {}) {
   const W = grid.w, ox = grid.ox, oy = grid.oy;
   let los = new Float64Array(16), his = new Float64Array(16);
   let covered = 0;
-  for (let i = 0; i < head.length; i++) {
-    if (head[i] < 0) continue;
+  for (let ti = 0; ti < nt; ti++) {
+    const i = tiles[ti];
     const a = (i % W) + ox, b = ((i / W) | 0) + oy;
     const fx = (a - b) * 16, fy = (a + b + 1) * 8, top = fy - BOX_H;
     let sum = 0;
-    for (let px = 0; px < BOX_W; px++) {
-      const x = fx - 8 + px + 0.5;
-      let m = 0;
-      for (let e = head[i]; e >= 0; e = next[e]) {
-        const s = sils[who[e]];
-        if (x <= s.x0 || x >= s.x1) continue;
-        const lo = Math.max(top, topAt(s, x)), hi = Math.min(fy, botAt(s, x));
+    const h0 = head[i];
+    if (next[h0] < 0) {   // one occluder: its interval per column is the union
+      const q = who[h0] * SF;
+      const x0 = S[q + X0], x1 = S[q + X1], t0 = S[q + T0], tm = S[q + TM], tmy = S[q + TMY], t1 = S[q + T1];
+      const b0 = S[q + B0], bm = S[q + BM], bmy = S[q + BMY], b1 = S[q + B1];
+      for (let px = 0; px < BOX_W; px++) {
+        const x = fx - 8 + px + 0.5;
+        if (x <= x0 || x >= x1) continue;
+        const tA = x <= tm ? (tm === x0 ? Math.min(t0, tmy) : t0 + (tmy - t0) * (x - x0) / (tm - x0)) : (x1 === tm ? Math.min(tmy, t1) : tmy + (t1 - tmy) * (x - tm) / (x1 - tm));
+        const bA = x <= bm ? (bm === x0 ? Math.min(b0, bmy) : b0 + (bmy - b0) * (x - x0) / (bm - x0)) : (x1 === bm ? Math.min(bmy, b1) : bmy + (b1 - bmy) * (x - bm) / (x1 - bm));
+        const lo = Math.max(top, tA), hi = Math.min(fy, bA);
         if (!(hi > lo)) continue;
-        if (m === los.length) { const l2 = new Float64Array(m * 2); l2.set(los); los = l2; const h2 = new Float64Array(m * 2); h2.set(his); his = h2; }
-        // insertion sort by lo (few occluders per tile)
-        let j = m++;
-        while (j > 0 && los[j - 1] > lo) { los[j] = los[j - 1]; his[j] = his[j - 1]; j--; }
-        los[j] = lo; his[j] = hi;
+        sum += hi - lo;
       }
-      if (m === 0) continue;
-      let cl = los[0], ch = his[0];
-      for (let j = 1; j < m; j++) {
-        if (los[j] > ch) { sum += ch - cl; cl = los[j]; ch = his[j]; } else if (his[j] > ch) ch = his[j];
+    } else {
+      for (let px = 0; px < BOX_W; px++) {
+        const x = fx - 8 + px + 0.5;
+        let m = 0;
+        for (let e = h0; e >= 0; e = next[e]) {
+          const q = who[e] * SF;
+          const x0 = S[q + X0], x1 = S[q + X1];
+          if (x <= x0 || x >= x1) continue;
+          const tm = S[q + TM], tmy = S[q + TMY], bm = S[q + BM], bmy = S[q + BMY];
+          const tA = x <= tm ? (tm === x0 ? Math.min(S[q + T0], tmy) : S[q + T0] + (tmy - S[q + T0]) * (x - x0) / (tm - x0)) : (x1 === tm ? Math.min(tmy, S[q + T1]) : tmy + (S[q + T1] - tmy) * (x - tm) / (x1 - tm));
+          const bA = x <= bm ? (bm === x0 ? Math.min(S[q + B0], bmy) : S[q + B0] + (bmy - S[q + B0]) * (x - x0) / (bm - x0)) : (x1 === bm ? Math.min(bmy, S[q + B1]) : bmy + (S[q + B1] - bmy) * (x - bm) / (x1 - bm));
+          const lo = Math.max(top, tA), hi = Math.min(fy, bA);
+          if (!(hi > lo)) continue;
+          if (m === los.length) { const l2 = new Float64Array(m * 2); l2.set(los); los = l2; const h2 = new Float64Array(m * 2); h2.set(his); his = h2; }
+          // insertion sort by lo (few occluders per tile)
+          let j = m++;
+          while (j > 0 && los[j - 1] > lo) { los[j] = los[j - 1]; his[j] = his[j - 1]; j--; }
+          los[j] = lo; his[j] = hi;
+        }
+        if (m === 0) continue;
+        let cl = los[0], ch = his[0];
+        for (let j = 1; j < m; j++) {
+          if (los[j] > ch) { sum += ch - cl; cl = los[j]; ch = his[j]; } else if (his[j] > ch) ch = his[j];
+        }
+        sum += ch - cl;
       }
-      sum += ch - cl;
     }
     const pct = Math.round(100 * sum / (BOX_W * BOX_H));
     if (pct >= COVER_MIN) { cover[i] = Math.min(100, pct); covered++; }

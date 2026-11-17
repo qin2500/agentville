@@ -4,8 +4,7 @@
   "files": {
     "web/src/engine/art/props/pine.js": 1,
     "web/src/engine/nav/roadgraph.js": 1,
-    "web/src/engine/render/actor-art.js": 8,
-    "web/src/engine/render/renderer.js": 4,
+    "web/src/engine/render/renderer.js": 3,
     "web/src/engine/snapshot.js": 9
   }
 }

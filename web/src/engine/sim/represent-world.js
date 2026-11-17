@@ -55,8 +55,20 @@ export function cleanPrTitle(raw) {
 }
 
 const REVIEW = new Set(['approved', 'changes', 'pending']);
+// PERF M7 (poll path): a deep-frozen WorldInput PR record (mod/input.js) never changes, so its view and, when the mod's
+// represent.pr did not read its ctx, its PrSpec are kept per record (unchanged PRs come back as the same frozen objects
+// on every poll). A record that is not frozen all the way down is always derived afresh.
+const frozenPr = pr => !!pr && typeof pr === 'object' && Object.isFrozen(pr)
+  && [own(pr, 'checks'), own(pr, 'size')].every(v => v == null || typeof v !== 'object' || Object.isFrozen(v));
+const VIEWS = new WeakMap();
 /** Frozen allow-listed PR view (from a WorldInput prs[] entry). Built field by field: nothing is copied wholesale. */
 export function prView(pr) {
+  if (!frozenPr(pr)) return makePrView(pr);
+  let v = VIEWS.get(pr);
+  if (!v) { v = makePrView(pr); VIEWS.set(pr, v); }
+  return v;
+}
+function makePrView(pr) {
   const c = own(pr, 'checks'), z = own(pr, 'size'), state = own(pr, 'state'), review = own(pr, 'review');
   return Object.freeze({
     id: str(own(pr, 'id')), project: str(own(pr, 'project')), number: num(own(pr, 'number')),
@@ -111,12 +123,34 @@ function cleanPr(v, mod, ctx, where) {
  * @returns {Readonly<{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string }>}
  */
 export function representPr(pr, mod, ctx = {}) {
-  const view = prView(pr);
   const rep = own(mod, 'represent'), spec = rep && typeof rep === 'object' ? own(rep, 'pr') : undefined;
+  // kept per (mod, frozen record): the spec and the lint it pushed, replayed into this call's ctx.lint
+  const memo = frozenPr(pr) && mod && typeof mod === 'object' ? specMemoOf(mod) : null;
+  const hit = memo?.get(pr);
+  if (hit && hit.spec === spec) { for (const e of hit.lint) pushLint(ctx, e); return hit.out; }
+  const lint = [], local = { ...(ctx && typeof ctx === 'object' ? ctx : {}), lint };
+  let read = false;
+  const out = derivePr(pr, mod, spec, local, () => { read = true; });
+  for (const e of lint) pushLint(ctx, e);
+  if (memo && !read) memo.set(pr, { spec, out, lint });
+  return out;
+}
+const SPECS = new WeakMap();
+/** True when representPr(pr, mod) is answered from its per-record memo (the mod's function did not read its ctx). */
+export const representPrKept = (pr, mod) => !!(mod && typeof mod === 'object' && pr && typeof pr === 'object' && SPECS.get(mod)?.has(pr));
+const specMemoOf = mod => { let m = SPECS.get(mod); if (!m) { m = new WeakMap(); SPECS.set(mod, m); } return m; };
+/** The ModCtx a represent.pr function receives, with every own key a getter that reports the read (onRead). */
+function trackedCtx(ctx, onRead) {
+  const base = hookCtx(ctx), out = {};
+  for (const k of Object.keys(base)) Object.defineProperty(out, k, { enumerable: true, get() { onRead(); return base[k]; } });
+  return out;
+}
+function derivePr(pr, mod, spec, ctx, onRead) {
+  const view = prView(pr);
   let out = null;
   if (typeof spec === 'function') {
     let r;
-    try { r = spec(view, hookCtx(ctx)); } catch { pushLint(ctx, { kind: 'represent-pr', where: 'represent.pr()', reason: 'represent.pr threw; engine default used' }); r = null; }
+    try { r = spec(view, trackedCtx(ctx, onRead)); } catch { pushLint(ctx, { kind: 'represent-pr', where: 'represent.pr()', reason: 'represent.pr threw; engine default used' }); r = null; }
     out = cleanPr(r, mod, ctx, 'represent.pr()');
   } else if (spec != null) {
     if (!plainObj(spec)) pushLint(ctx, { kind: 'represent-pr', where: 'represent.pr', reason: 'must be a plain object keyed by PR state, or a function' });

@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.mjs'
-import { HOME, IDS, claudeId, row, clearOverrides, openMenu, prepareHome, startServer, nextPort, tmpDir, teamView } from './helpers.mjs'
+import { clearStorage, HOME, IDS, claudeId, row, clearOverrides, openMenu, prepareHome, startServer, nextPort, tmpDir, teamView } from './helpers.mjs'
 
 const ID = claudeId('leadBlocked') // "DB Lead", a background job → `claude attach <short>`
 const OTHER = claudeId('leadCi') // "CI Lead", also a job
@@ -18,7 +18,7 @@ const running = async (page) => (await (await page.request.get('/api/agents')).j
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/?debug')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto('/?debug')
   await expect(page.locator('#conn')).toHaveText(/Live/)
 })

@@ -2,7 +2,7 @@
 // Ghostty-style drop zones, nested splits, divider resize, focus, close, and the layout coming back.
 // The PTYs run the fake CLI (test/fixtures/bin/claude); nothing real is ever run or opened.
 import { test, expect } from './fixtures.mjs'
-import { claudeId, row, openMenu, clearOverrides } from './helpers.mjs'
+import { clearStorage, claudeId, row, openMenu, clearOverrides } from './helpers.mjs'
 
 const DB = claudeId('leadBlocked') // "DB Lead", a background job → `claude attach`
 const CI = claudeId('leadCi') // "CI Lead", also a job
@@ -14,7 +14,7 @@ const paneScreen = (page, id) => pane(page, id).locator('.xterm-rows')
 test.beforeEach(async ({ page, request }) => {
   await clearOverrides(request)
   await page.goto('/?debug')
-  await page.evaluate(() => localStorage.clear())
+  await clearStorage(page)
   await page.goto('/?debug')
   await expect(page.locator('#conn')).toHaveText(/Live/)
 })

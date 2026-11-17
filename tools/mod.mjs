@@ -110,7 +110,7 @@ async function loadMod(id) {
 }
 
 function fixtureNames() {
-  return fs.readdirSync(FIXTURES).filter(f => f.endsWith('.json')).map(f => f.slice(0, -5)).sort();
+  return fs.readdirSync(FIXTURES).filter(f => f.endsWith('.json') && !f.endsWith('.layout.json')).map(f => f.slice(0, -5)).sort();
 }
 
 const lintErrors = lint => lint.filter(l => l && (l.level === 'error' || l.severity === 'error'));
@@ -137,7 +137,7 @@ export async function checkMod(id, { fixtures = fixtureNames() } = {}) {
         let fx = JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf8'));
         if (fx.frames) fx = { ...fx, ...fx.frames[0] };
         const run = () => {
-          const { input, serverId } = toWorldInput(viewFromFixture(fx), { seed: SEED, salt: String(SEED), env: { reduceMotion: false, zoom: 1 } });
+          const { input, serverId } = toWorldInput(viewFromFixture(fx), { seed: SEED, salt: String(SEED), env: { reduceMotion: false, zoom: 1 }, features: mod.features });
           const P = { v: 1, seed: SEED, blocks: {}, lots: {} };
           let w;
           for (let pass = 0; pass < 2; pass++) {
