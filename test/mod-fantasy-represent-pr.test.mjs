@@ -34,8 +34,8 @@ test('PRs: building is a lot, loading is a ship at the harbour by size, merged a
   const mod = fantasy(), lint = [];
   const size = (additions, deletions, files) => ({ size: { additions, deletions, files } });
   assert.deepEqual({ ...representPr(pr(1, 'building'), mod, { lint }) }, { as: 'lot' });
-  assert.deepEqual({ ...representPr(pr(2, 'loading'), mod, { lint }) }, { as: 'venue', venue: 'harbour', model: 'dinghy', flag: '#f4efe4', load: 0 },
-    'no checks yet: a cream pennant, nothing stowed (the pennant and cargo: test/engine-harbour-ui.test.mjs)');
+  assert.deepEqual({ ...representPr(pr(2, 'loading'), mod, { lint }) }, { as: 'venue', venue: 'harbour', model: 'cutter', flag: '#f4efe4', load: 0 },
+    'no size yet: a cutter (classic: no size -> sloop); no checks yet: a cream pennant, nothing stowed (the pennant and cargo: test/engine-harbour-ui.test.mjs)');
   assert.equal(representPr(pr(2, 'loading', size(25, 24, 1)), mod).model, 'dinghy', '< 50 lines: a dinghy');
   assert.equal(representPr(pr(2, 'loading', size(25, 25, 1)), mod).model, 'cutter', '50 lines: a cutter');
   assert.equal(representPr(pr(2, 'loading', size(300, 200, 20)), mod).model, 'cutter', '500 lines, 20 files: still a cutter');
@@ -157,7 +157,7 @@ test('harbour berths: the loading PR gets a berth, kept across polls; merged PRs
   assert.deepEqual(Object.keys(a1.venues.dock), ['alpha#1'], 'merged PRs no longer compete for berths');
   const b1 = a1.venues.dock['alpha#1'];
   assert.ok(b1, 'the loading PR has a berth');
-  assert.equal(a1.prs['alpha#1'].model, 'dinghy');
+  assert.equal(a1.prs['alpha#1'].model, 'cutter');   // no size yet: classic's middle class
   input = inputOf([pr(2, 'loading'), ...merged, pr(1, 'loading')]);
   const a2 = venueAssignments(w, input, mod, persisted);
   assert.equal(a2.venues.dock['alpha#1'], b1, 'stable across polls');

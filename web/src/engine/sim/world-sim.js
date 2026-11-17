@@ -16,6 +16,7 @@
 //
 // Behaviour ctx: { world, nav, slots, mod, seed, dt, tick, now, motion, reduceMotion, night, dayPhase, FLAGS, actors,
 //   faceFrom, rand(...keys), emit(type, payload), onScreen(x, y), homeOf(agentId) -> WorldObject|null,
+//   houseOf(agentId) -> WorldObject|null (own home, else the nearest ancestor's: where it goes when indoors),
 //   place(place, a) -> resolvePlace(place, a, world, { slots, homeOf }), serverId,
 //   shouldWalk(lenTiles, speed, onScreen, status) (the D4 rule, for behaviours that move non-agent stand-ins),
 //   berths: itemId -> berth record of the last snapshot (opts.berths), tokens: { get(itemId), list() } (sim/tokens.js) }.
@@ -210,6 +211,7 @@ export function createSim({ world, nav = null, seed = 0, mod = null, deps = {}, 
     emit: (type, payload = {}) => events.emit(type, { tick: tickN, ...payload }),
     onScreen: (x, y) => !!onScreen(x, y),
     homeOf: agentId => homeOf(agentId),
+    houseOf: agentId => houseOf(agentId),
     place: (place, a) => (D.resolvePlace ? D.resolvePlace(place, a, world, { slots: ctx.slots, homeOf }) : null),
     serverId, shouldWalk, berths: {}, tokens: null,
   };
@@ -224,6 +226,19 @@ export function createSim({ world, nav = null, seed = 0, mod = null, deps = {}, 
     }
     const sid = serverId(agentId) ?? agentId;
     return homes.get(String(sid)) ?? null;
+  }
+
+  // parity: vil.resting-indoors
+  /** The house an agent goes into when it is indoors (classic placeAgents homeOf): its own home, else the home of its
+   *  nearest ancestor (parent, grandparent, ...) that has one; null when none has (classic: not drawn). */
+  let inputById = new Map();           // id -> WorldInput agent of the snapshot being applied (ancestors may come later in it)
+  function houseOf(agentId) {
+    for (let id = agentId, g = 0; id != null && g < 50; g++) {
+      const h = homeOf(id);
+      if (h) return h;
+      id = (inputById.get(id) ?? agentIn.get(id))?.parent ?? null;
+    }
+    return null;
   }
 
   const sorted = () => (order ||= [...actors.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
@@ -356,6 +371,8 @@ export function createSim({ world, nav = null, seed = 0, mod = null, deps = {}, 
     }
     motion = !input.env?.reduceMotion;
     envNight = Number(input.env?.night) || 0;
+    inputById = new Map();
+    for (const ag of input.agents || []) if (ag && ag.id != null && !inputById.has(ag.id)) inputById.set(ag.id, ag);
     const seen = new Set();
     let k = 0;
     for (const ag of inputOrder(input.agents || [])) {

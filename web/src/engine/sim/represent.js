@@ -250,9 +250,13 @@ export function representAgent(agent, mod, ctx = {}) {
   const { entry } = lookup(table, key);
   let spec = { ...ENGINE_BEHAVIOUR[key], ...(entry || {}) };
 
+  // parity: vil.resting-indoors (classic placeAgents: `folds(a)` sends ANY resting, un-pinned agent indoors, a sub-agent
+  // included; it goes into the house of its nearest ancestor that has one, and is not drawn when none has)
+  const indoors = key === 'resting';
   if (f.sub) {   // sub-agent: the parent's yard (sub entry), pose and idles of its own bucket
     const s = table.sub || ENGINE_BEHAVIOUR.sub;
-    spec = { ...spec, place: s.place, walk: spec.walk && s.walk !== false, ...(s.look ? { look: s.look } : {}), ...(s.model ? { model: s.model } : {}) };
+    // a resting sub keeps the resting place (its home's forecourt, which resolves to the parent's house): it goes indoors there
+    spec = { ...spec, ...(indoors ? {} : { place: s.place }), walk: spec.walk && s.walk !== false, ...(s.look ? { look: s.look } : {}), ...(s.model ? { model: s.model } : {}) };
   }
 
   // appearance: represent.agent / boss / sub data
@@ -299,7 +303,7 @@ export function representAgent(agent, mod, ctx = {}) {
   return {
     key: out.key ?? key, place: out.place, pose: out.pose, idle: out.idle, idleEvery: out.idleEvery, walk: out.walk,
     fixed, face: fixed ? 0 : null,
-    indoors: key === 'resting' && !f.sub, ghost: key === 'resting:doorstep', sub: f.sub,
+    indoors, ghost: key === 'resting:doorstep', sub: f.sub,
     model: out.model, look: out.look ?? null, hat: out.hat ?? null, tint: out.tint ?? null,
     agentId: typeof agent?.id === 'string' ? agent.id : null, parent: typeof agent?.parent === 'string' ? agent.parent : null,
     prs: f.livePrs.length ? f.livePrs : f.loadingPrs,

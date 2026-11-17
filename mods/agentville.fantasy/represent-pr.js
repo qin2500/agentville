@@ -9,10 +9,14 @@ export const SHIP_CLASSES = Object.freeze(['dinghy', 'cutter', 'brig']);
 export const SMALL_LINES = 50, BIG_LINES = 500, BIG_FILES = 20;
 
 // parity: har.ship-class-by-pr-size
-/** A PR's ship by its size: < 50 lines changed a dinghy, > 500 lines or > 20 files a brig, otherwise a cutter. */
+/** A PR's ship by its size: < 50 lines changed a dinghy, > 500 lines or > 20 files a brig, otherwise a cutter.
+ *  An unknown size is a cutter (classic dock-art shipClass: no size -> 'sloop', the middle class). The server sends a size
+ *  only once its live PR poll has seen the PR, and WorldInput fills a missing one with zeros (mod/input.js, dock-input.js),
+ *  so all zeros reads as unknown: a real PR changes at least one file. */
 export function shipClass(size) {
   const n = v => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   const lines = n(size?.additions) + n(size?.deletions), files = n(size?.files);
+  if (lines === 0 && files === 0) return 'cutter';
   return lines > BIG_LINES || files > BIG_FILES ? 'brig' : lines < SMALL_LINES ? 'dinghy' : 'cutter';
 }
 

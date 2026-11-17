@@ -42,11 +42,13 @@ export function importantStars({ actors } = {}) {
 export function selectionMarks({ world, actors, selected, crowd } = {}) {
   const a = (actors || []).find(x => (selected != null ? x.id === selected : isSel(x)));
   if (!a) return {};
-  const home = a.home != null ? world?.objects?.get?.(a.home) ?? world?.objects?.get?.(String(a.home)) : null;
+  // the house it is in: its own home, else the one it went into (a resting sub-agent: its parent's house)
+  const hid = a.home ?? a._target?.homeId ?? null;
+  const home = hid != null ? world?.objects?.get?.(hid) ?? world?.objects?.get?.(String(hid)) : null;
   const indoors = isIn(a), folded = inCrowd(crowd, a.id);
   const out = {};
   if (indoors) out.ghost = { id: a.id, actor: a, home: home || null, tx: home?.tx, ty: home?.ty };
-  if ((indoors || folded) && home && Number.isFinite(home.tx)) out.outline = { id: home.id ?? a.home, tx: home.tx, ty: home.ty, w: home.w || 1, h: home.h || 1 };
+  if ((indoors || folded) && home && Number.isFinite(home.tx)) out.outline = { id: home.id ?? hid, tx: home.tx, ty: home.ty, w: home.w || 1, h: home.h || 1 };
   if (!indoors && !folded && Number.isFinite(a.x)) out.marker = { id: a.id, x: a.x, y: a.y };
   return out;
 }

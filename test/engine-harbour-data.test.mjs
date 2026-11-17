@@ -51,7 +51,7 @@ test('dockPrs: loading -> loading PRs with checks/review/size, sailed -> merged;
   assert.deepEqual(a, { id: 'amber#7', project: 'amber', number: 7, title: '', state: 'loading', checks: { passed: 3, failed: 1, pending: 2 },
     review: 'approved', size: { additions: 10, deletions: 2, files: 1 } });
   assert.equal(r.prs[1].review, null, 'an unknown review is null');
-  assert.deepEqual(r.prs[1].size, { additions: 0, deletions: 0, files: 0 }, 'no size: zeros (the represent rule makes it a dinghy)');
+  assert.deepEqual(r.prs[1].size, { additions: 0, deletions: 0, files: 0 }, 'no size: zeros (the represent rule reads all zeros as unknown: a cutter)');
 });
 
 test('dockPrs: no href, URL, agent id or name, or time ever passes on', () => {
@@ -91,7 +91,7 @@ test('dockPrs: PR number from id or href, project from the agent, else the repo;
 
 test('ship class: < 50 lines dinghy, > 500 lines or > 20 files brig, else cutter (the vessel prop classes)', () => {
   const c = (a, d, f) => shipClass({ additions: a, deletions: d, files: f });
-  assert.deepEqual([c(10, 39, 1), c(25, 25, 1), c(300, 200, 20), c(300, 201, 1), c(1, 1, 21), c(0, 0, 0)], ['dinghy', 'cutter', 'cutter', 'brig', 'brig', 'dinghy']);
+  assert.deepEqual([c(10, 39, 1), c(25, 25, 1), c(300, 200, 20), c(300, 201, 1), c(1, 1, 21), c(0, 0, 0), c(0, 0, 1)], ['dinghy', 'cutter', 'cutter', 'brig', 'brig', 'cutter', 'dinghy']);
 });
 
 // ---------------------------------------------------------------- level: lifetime floor + rank, engine shrink hold
@@ -242,7 +242,7 @@ test('venueAssignments: merged PRs take no berth; a loading PR gets its class as
   buildVenues(w, { venues: { dock: SITE } }, input, mod, persisted, ctxAt(0), { seed: 1 });
   const a = venueAssignments(w, input, mod, persisted, ctxAt(0));
   assert.deepEqual(Object.keys(a.prs).sort(), ['p#2', 'p#3']);
-  assert.equal(a.prs['p#2'].model, 'brig'); assert.equal(a.prs['p#3'].model, 'dinghy');
+  assert.equal(a.prs['p#2'].model, 'brig'); assert.equal(a.prs['p#3'].model, 'cutter');
   assert.ok(PIER_ID.test(a.prs['p#2'].berth));
 });
 

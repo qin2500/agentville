@@ -80,8 +80,17 @@ function resolveTarget(a, key, spec, ctx) {
     else if (home) p = { tx: home.tx, ty: home.ty, slotKind: 'stand' };
   }
   let indoors = indoorsOf(key, spec);
+  // parity: vil.resting-indoors
+  if (indoors && !p) {
+    // classic placeAgents: an agent indoors goes into its own home or its nearest ancestor's (sub of a sub); when none of
+    // them has a house (the resting-home cap left it without one) classic does not draw it at all: it stays indoors,
+    // nowhere, where it is (hidden), instead of standing about outdoors
+    const h = ctx.houseOf?.(a.agentId ?? a.id);
+    if (h) p = { tx: h.door?.tx ?? h.tx, ty: h.door?.ty ?? h.ty, slotKind: 'stand', objId: h.id };
+    else return { x: a.x, y: a.y, tx: Math.floor(a.x), ty: Math.floor(a.y), slotId: null, indoors: true, face: a.face ?? 0, homeId: null, nowhere: true };
+  }
   if (!p) {
-    // no place and no home (e.g. a resting agent the layout gave no house): a legal stand spot near its village
+    // no place and no home (an awake agent whose chain has no house): a legal stand spot near its village
     // centre, outdoors (agents stay visible), never the raw centre tile, which may be built over
     const v = (ctx.world?.villages || []).find(w => w.name === a.project);
     const c = v && Number.isFinite(v.cx) ? { x: v.cx, y: v.cy } : v?.origin ? { x: v.origin.x, y: v.origin.y } : { x: a.x, y: a.y };
@@ -125,6 +134,8 @@ export function targetOk(a, ctx) {
   const t = a._target;
   if (!t) return a.state === 'indoors' || tileLegal(ctx.world?.grid, a.x, a.y);
   if (t.indoors) {
+    // indoors nowhere (no house of its own or an ancestor's): still right while none has one
+    if (t.nowhere) return !ctx.houseOf?.(a.agentId ?? a.id);
     if (t.homeId != null && typeof ctx.world?.objects?.get === 'function') return !!ctx.world.objects.get(t.homeId);
     return !!ctx.homeOf?.(a.agentId ?? a.id);
   }
@@ -155,8 +166,11 @@ function transition(a, ctx, instant) {
   if (!t) { a.state = 'hold'; return; }
   let from = { x: a.x, y: a.y };
   if ((a.flags & INDOORS) !== 0) {                 // leaving the house: appear at the door (the reverse of entering)
-    const home = ctx.homeOf?.(a.agentId ?? a.id);
+    const home = ctx.homeOf?.(a.agentId ?? a.id) ?? ctx.houseOf?.(a.agentId ?? a.id);   // a sub leaves its parent's house
     if (home?.door) { from = feetOf(home.door.tx, home.door.ty); a.warp = from; }
+    // indoors nowhere (no house in its chain, never drawn) has no door to leave by: it appears at its new spot, never
+    // where it was hidden (that tile may be built over since)
+    else { from = { x: t.x, y: t.y }; a.warp = from; }
     a.flags = (a.flags & ~INDOORS) | VISIBLE;
     a.alpha = 1;
   }
