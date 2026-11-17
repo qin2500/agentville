@@ -8,6 +8,7 @@ import { store, icon } from '../ui.js';
 import { cityDemo, isDemoId } from '../city-demo.js';
 import { toView, makeView, viewFromFixture } from './snapshot.js';
 import { loadWorld, saveWorld, loadSalt } from './world/persist.js';
+import { cityCapOf } from './world/prune.js';
 import { createBuildCache } from './world/cache.js';
 import { createRulesMemo } from './world/rules-memo.js';
 import { worldSteps } from './world/world-steps.js';
@@ -185,7 +186,9 @@ export function createEngine(app) {
       // Per project, skipped when nothing its hooks read changed (world/rules-memo.js: its project record, agents and PRs,
       // persisted block + held lots, mod, seed, forced tier/style; plus `now` when a hook read the clock last time), so a
       // status flip re-runs only the projects whose agents flipped.
-      const opts = { now: view.now, seed, forcedTier, forcedStyle, serverId, ctxFor };
+      // city cap (Settings -> Advanced, world/prune.js): homes per city; past it long-idle homes retire. Read every poll.
+      const cityCap = cityCapOf(store);
+      const opts = { now: view.now, seed, forcedTier, forcedStyle, serverId, ctxFor, cityCap };
       const { rules, pv, ran } = rulesMemo.run({ input, persisted, mod, opts, cache: buildCache });
       if (!ran.length) reuse.rules++;
       if (!world) yield 'rules';
@@ -201,7 +204,7 @@ export function createEngine(app) {
       // build, nav, sim and the first snapshot (world/world-steps.js). `world` is set only once all of them are done, so a
       // frame drawn between slices of the cold build never sees a world without its sim.
       const out = yield* worldSteps({
-        input, persisted, mod, build: { now: view.now, seed, forcedTier, forcedStyle, serverId, rules, cache: buildCache },
+        input, persisted, mod, build: { now: view.now, seed, forcedTier, forcedStyle, serverId, rules, cache: buildCache, cityCap },
         nav, navMemo, sim, berthCtx: ctxFor(''),
         createNav, createSim: (w, n) => createSim({ world: w, nav: n, seed, mod, serverId, clock: simT != null ? () => (simT / 480) % 1 : undefined }),
         onWorld: (w, ms) => {
@@ -218,6 +221,7 @@ export function createEngine(app) {
       });
       ({ world, nav, sim, berths } = out); navMemo = out.navMemo;
       if (out.navReused) reuse.nav++;
+      for (const r of world.retired || []) sim?.events?.emit?.('retire', { project: r.project, lot: r.lot });   // city cap cue
       pumpEvents();   // P4: the sim read opts.berths in worldSteps' first snapshot
       if (simT != null && !simPinned) {   // ?t pins the clock
         simPinned = true;

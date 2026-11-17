@@ -13,6 +13,7 @@
 import { hash, streamFor } from '../core/rng.js';
 import { validateLots } from '../mod/validate.js';
 import { growthRoom, anchoredRect, nearRect } from './room.js';
+import { retire, retiredOf, capOf } from './prune.js';
 
 const DAY = 864e5;
 const RANK_KEYS = ['L', 'M', 'S'];
@@ -117,7 +118,7 @@ const itemOf = r => (r.owner === 'home' ? `home:${r.agent}` : `pr:${r.pr ?? Stri
  *   serverId?: (opaque: string) => string, ctxFor?: (projectKey: string) => object }} opts
  * @returns {RulesResult}
  */
-export function runRules(input, persisted, mod, { now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, ctxFor = null } = {}) {
+export function runRules(input, persisted, mod, { now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, ctxFor = null, cityCap = null, retireOpts = null } = {}) {
   now ??= input?.now;
   seed ??= input?.seed ?? persisted?.seed ?? 0;
   const H = mod.hooks, holdMs = mod.rules?.holdMs ?? DAY / 2;
@@ -126,7 +127,7 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
   const ctxOf = ctxFactory(mod, { seed, now, forcedTier, forcedStyle, ctxFor });
   const projects = {}, lint = [];   // plain object: the result must structuredClone deep-equal (sandbox)
   const layout = mod.rules?.layout || {}, thin = !!layout.square && Number.isFinite(layout.gap);
-  const grownTo = new Map();
+  const grownTo = new Map(), CAP = capOf(cityCap);
   for (const name of projectNames(input)) {
     const here = agents.filter(a => (a.project || '—') === name);
     const prsHere = prs.filter(p => p.project === name);
@@ -141,15 +142,34 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
     for (const l of v.lint || []) lint.push({ project: name, ...l });
     const ok = v.requests || [];
     // homes first, then PRs (classic order), each as the mod listed them; the engine builds `item`
-    const lots = [...ok.filter(r => r.owner === 'home'), ...ok.filter(r => r.owner !== 'home')].map(r => ({ ...r, item: itemOf(r) }));
+    let lots = [...ok.filter(r => r.owner === 'home'), ...ok.filter(r => r.owner !== 'home')].map(r => ({ ...r, item: itemOf(r) }));
     // classic: an item gone within HOLD_MS still needs its lot (same tier only). Persisted items are in server ids.
-    const L = LOTS[name], ids = new Set(lots.map(r => (r.owner === 'home' ? `home:${serverId(r.agent) ?? r.agent}` : r.item)));
+    const L = LOTS[name], sidOf = r => serverId(r.agent) ?? r.agent;
+    const ids = new Set(lots.map(r => (r.owner === 'home' ? `home:${sidOf(r)}` : r.item)));
     // parity: world.vanished-hold-12h
-    let held = 0;
-    if (L && L.tier === tier) for (const id of Object.keys(L.a || {})) if (!ids.has(id) && now - (L.h?.[id] ?? now) <= holdMs) held++;
+    let held = 0, heldHomes = 0;
+    if (L && L.tier === tier) for (const id of Object.keys(L.a || {})) if (!ids.has(id) && now - (L.h?.[id] ?? now) <= holdMs) { held++; if (id.startsWith('home:')) heldHomes++; }
+    // City cap (prune.js): retired agents ask for no home; past the cap the oldest untouched homes retire, a few at a time.
+    // The decision is plain data here (prune) and is written to persisted.retired by build.js (commitRetire).
+    let prune = null;
+    {
+      const C = retiredOf(persisted, name), wants = new Set(lots.filter(r => r.owner === 'home').map(sidOf));
+      if (CAP != null || Object.keys(C.a).length) {
+        const cands = here.map(a => ({ id: serverId(a.id) ?? a.id, lastActive: a.lastActive, status: a.status, needs: a.needs, important: a.important,
+          crown: a.crown, role: a.role, prs: a.prs, home: wants.has(serverId(a.id) ?? a.id) }));
+        const d = retire(cands, { held: heldHomes, retired: C.a, lastAt: C.lastAt }, now, CAP, retireOpts || {});
+        // the cap switched off (0): everyone retired here comes back
+        if (CAP == null) d.back = cands.filter(a => Object.prototype.hasOwnProperty.call(C.a, a.id)).map(a => a.id).sort();
+        const back = new Set(d.back), gone = new Set([...Object.keys(C.a).filter(id => !back.has(id)), ...d.retire]);
+        if (gone.size) lots = lots.filter(r => r.owner !== 'home' || !gone.has(sidOf(r)));
+        const last = new Map(cands.map(a => [a.id, a.lastActive]));
+        prune = { add: d.retire.map(id => ({ id, last: Number(last.get(id)) || 0 })), back: d.back, over: d.over, retired: gone.size };
+      }
+    }
     const need = lots.length + held;
     // parity: world.capacity-buckets
-    let cap = H.capacity(tier, need, ctx);
+    // City cap: the planner is never asked for more lots than the cap (a standing plan never shrinks: see below).
+    let cap = H.capacity(tier, CAP != null ? Math.min(need, CAP) : need, ctx);
     if (b && b.tier === tier && b.cap > cap) cap = b.cap; // classic: capacity only grows within a tier
     const crowns = H.crowns ? H.crowns(project, here, ctx) : 1;
     const style = H.style ? H.style(name, { ...ctx, tier }, project.preset) : { key: '' };
@@ -173,7 +193,7 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
       const r = anchoredRect(b, plan);
       if (!obs.some(o => nearRect(r, o, layout.gap))) grownTo.set(name, r);   // it will stand there (else it moves: unknown)
     }
-    projects[name] = { growth, gt, tier, need, cap, crowns, style, lots, ranks, plan };
+    projects[name] = { growth, gt, tier, need, cap, crowns, style, lots, ranks, plan, ...(prune ? { prune } : {}) };
   }
   return { projects, lint };
 }

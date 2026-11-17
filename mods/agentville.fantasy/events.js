@@ -3,7 +3,9 @@
 //   merge  -> confetti over the village plaza, in the village's accent colour
 //   found  -> the new village's banner is raised (scaffolds for 3 s) and a ring of dust rolls out of the plaza
 //   tierUp -> scaffolds on what the village grew for 8 s, and its agents cheer
-const DUST = '#d8c8a8', GOLD = '#ffd23f', CREAM = '#f4efe4';
+//   retire -> (city cap) a long-idle agent's home is retired: a puff of petals and a ring of dust where it stood, then a green
+const DUST = '#d8c8a8', GOLD = '#ffd23f', CREAM = '#f4efe4', PETALS = ['#f6a5c0', '#fff3b0', '#ffffff', '#b5e48c'];
+export const RETIRE_SECONDS = 2.2;
 export const SITE_SECONDS = 8, BANNER_SECONDS = 3, CHEER_SECONDS = 4, MAX_SITES = 12, MAX_CHEERS = 12;
 
 const sitesOf = (ctx, project, pred) => (ctx?.newObjects || []).filter(o => o.project === project && pred(o)).map(o => o.id).sort();
@@ -18,6 +20,9 @@ export function events(diff, ctx) {
     } else if (e.type === 'found') {
       for (const id of sitesOf(ctx, e.project, o => o.model === 'banner').slice(0, 4)) out.push({ kind: 'found', at: `plaza:${e.project}`, effect: `site:${id}`, seconds: BANNER_SECONDS });
       out.push({ kind: 'found', at: `plaza:${e.project}`, effect: 'ring', seconds: 1.8, colors: [DUST] });
+    } else if (e.type === 'retire' && typeof e.lot === 'string') {
+      out.push({ kind: 'retire', at: `obj:${e.lot}`, effect: 'ring', seconds: 1.6, colors: [DUST] });
+      out.push({ kind: 'retire', at: `obj:${e.lot}`, effect: 'burst', seconds: RETIRE_SECONDS, colors: PETALS });
     } else if (e.type === 'tierUp') {
       for (const id of sitesOf(ctx, e.project, o => o.kind === 'building').slice(0, MAX_SITES)) out.push({ kind: 'tierUp', at: `plaza:${e.project}`, effect: `site:${id}`, seconds: SITE_SECONDS });
       for (const id of [...(ctx?.actorsOf?.(e.project) || [])].sort().slice(0, MAX_CHEERS)) out.push({ kind: 'tierUp', at: `actor:${id}`, effect: 'anim:cheer', seconds: CHEER_SECONDS });

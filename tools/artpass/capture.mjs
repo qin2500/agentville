@@ -9,7 +9,7 @@
 //        [--frames N --every ms]   (with --anim: N shots of the region's centre, a time-lapse)
 //   Engine v2 (adds engine=2; classic behaviour is unchanged without --engine):
 //   node tools/artpass/capture.mjs --engine 2 --fixture busy [--t sec] [--seed n] [--grid ground|walk|cover|lot]
-//        [--zoom 0.25|0.5|1|2|3|4] [--only <village name>] [--tag busy] [--out /tmp/artpass] [--night]
+//        [--zoom 0.25|0.5|1|2|3|4] [--only <village name>] [--tag busy] [--out /tmp/artpass] [--night] [--storage kv.json]
 //     Output <out>/<tag>/: overview.png (grid centre, largest z<=1 that fits), <village-slug>-z<zoom>.png per
 //     settlement (block centre), index.json (files, cameras, villageDebug summary).
 //   node tools/artpass/capture.mjs --sheet [--night]        the sprite sheet page (?artsheet)
@@ -67,6 +67,9 @@ if (engine) {
   if (opt('q')) eq.push(opt('q'));
   const q = eq.join('&'), slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'village';
   await page.addInitScript(bubbles => { try { if (!bubbles) localStorage.setItem('va.bubbles', '0'); } catch { /* fine */ } }, flag('bubbles'));
+  // --storage <file.json>: { key: value } seeded into localStorage (JSON-encoded, as the app's store writes them) before load,
+  // e.g. a standing layout under va.engine2.world.demo (what a fixture page reads) or a setting such as va.cityCap
+  if (opt('storage')) await page.addInitScript(kv => { for (const [k, v] of Object.entries(kv)) try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* fine */ } }, JSON.parse(fs.readFileSync(opt('storage'), 'utf8')));
   // village-only before the first frame: the engine draws only while the village is on screen, and the default panel may hide it
   await page.addInitScript(() => document.addEventListener('DOMContentLoaded', () => document.body.classList.add('village-only')));
   await page.goto(`${BASE}?${q}`);

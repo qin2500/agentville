@@ -1,5 +1,5 @@
 // World events (S4): a tiny queue plus a pure diff of two WorldInputs. Payloads hold only opaque ids and project keys.
-export const EVENT_TYPES = Object.freeze(['merge', 'found', 'tierUp', 'arrive', 'leave']);
+export const EVENT_TYPES = Object.freeze(['merge', 'found', 'tierUp', 'arrive', 'leave', 'retire']);
 const KNOWN = new Set(EVENT_TYPES);
 
 export function createEvents() {

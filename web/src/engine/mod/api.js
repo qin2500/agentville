@@ -156,6 +156,7 @@ export const FEATURES = Object.freeze(['layout', 'terrain.classes', 'scatter.at'
  *  scatter?: (tile: ScatterTile, draw: (k: number) => number, ctx: ModCtx) => ScatterPick|null,
  *  styleNeighbours?: (styles: Map<string, object>, blocks: Array<{ name: string, x: number, y: number, w: number, h: number }>,
  *    distinctPicks: (blocks, options: (name: string) => any[], near?: number) => Map<string, any>) => Map<string, object>,   // additive: after layout, vary adjacent blocks' styles
+ *  freeLot?: (lot: { id: string, w: number, h: number, rank: string|null, look: string|null }, ctx: ModCtx) => { kind?: string, ground: number, props?: Array<{ kind: string, x: number, y: number, v?: number }> },   // additive (city cap): a free lot drawn as a green (lot-local tiles); without it the house stays
  * }} ModHooks
  *
  * @typedef {{
@@ -213,11 +214,12 @@ export const DOLL_SIZE = Object.freeze({ w: 16, h: 24 });
 // ---------------- M6 world events (additive to v1: an optional top-level `events` function on the mod) ----------------
 // BEGIN M6-EVENTS (M6 events). Engine side: render/event-fx.js (runEvents, createEventFx, drawEventFx).
 
-/** @typedef {{ type: 'merge'|'found'|'tierUp'|'arrive'|'leave', project?: string, pr?: string, id?: string, from?: number, to?: number, tick: number }} SimEvent
+/** @typedef {{ type: 'merge'|'found'|'tierUp'|'arrive'|'leave'|'retire', project?: string, lot?: string, pr?: string, id?: string, from?: number, to?: number, tick: number }} SimEvent
  *  What the sim saw change at a poll: merge { pr, project }, found { project }, tierUp { project, from, to },
- *  arrive / leave { id (actor), project }. Frozen plain data.
+ *  arrive / leave { id (actor), project }, retire { project, lot (the freed lot's object id) } (city cap). Frozen plain data.
  * @typedef {{ kind: string, at: string, effect: string, seconds: number, colors?: string[] }} EventSpec
- *  at: 'plaza:<projectKey>' (that village's plaza), 'actor:<actorId>' (follows the actor), 'pr:<prId>' (its berth).
+ *  at: 'plaza:<projectKey>' (that village's plaza), 'actor:<actorId>' (follows the actor), 'pr:<prId>' (its berth),
+ *  'obj:<objectId>' (the centre of a world object's footprint, or of a lot drawn as a green).
  *  effect: 'burst' (confetti), 'ring' (expanding ring), 'site:<objId>' (scaffolds over that object), 'anim:<name>'
  *  (an actor pose: idle walk hammer sit carry wave cheer sleep enter; needs an actor: at).
  *  seconds: (0, 30]. colors: up to 6 CSS hex colours. Unknown shapes are dropped, never thrown on.

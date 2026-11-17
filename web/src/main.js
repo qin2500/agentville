@@ -18,7 +18,7 @@ import { createZen } from './zen.js';
 import { createBubbles } from './bubbles.js';
 import { transitions } from './notify.js';
 import { viewsFrom, nextView } from './views.js';
-import { worldSlotHtml, applyWorld, engineActive, classicToggleHtml, applyEngine } from './worlds.js';
+import { worldSlotHtml, applyWorld, engineActive, classicToggleHtml, applyEngine, applyCityCap } from './worlds.js';
 import { dockDemo, demoDock } from './dock-art.js';
 import { hydratePlan, installPlanMirror, planConflicts, useOtherPlan, keepThisPlan, planSyncEnabled, planSyncToggleHtml, PLAN_SYNC_KEY } from './plan-sync.js';
 
@@ -792,6 +792,8 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset.set === 'engine') {
     applyEngine(t.checked ? 1 : 2, store);
+  } else if (t.dataset.set === 'citycap') {
+    applyCityCap(t.value, store);   // the engine reads it on its next poll
   } else if (t.dataset.set === 'plansync') {
     store.set(PLAN_SYNC_KEY, t.checked);
   } else if (t.dataset.set === 'world') {

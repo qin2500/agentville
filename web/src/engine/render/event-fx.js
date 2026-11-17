@@ -11,7 +11,7 @@ import { ANIMS } from '../sim/actor.js';
 
 export const LIMITS = Object.freeze({ active: 32, perDrain: 32, seconds: 30, colors: 6, deadlineMs: 10, particles: 28, ringPoints: 28 });
 export const EFFECT_TYPES = Object.freeze(['burst', 'ring', 'site', 'anim']);
-const AT_TYPES = new Set(['plaza', 'actor', 'pr']);
+const AT_TYPES = new Set(['plaza', 'actor', 'pr', 'obj']);
 const ANIM_SET = new Set(ANIMS);
 const DEFAULT_COLORS = Object.freeze(['#ffd23f', '#e8504a', '#4cc9f0', '#80ed99', '#f4efe4']);
 
@@ -20,7 +20,7 @@ const unit = (h, k) => (hash(`${h}:${k}`) % 10007) / 10007;   // deterministic [
 const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
 const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
 
-/** 'plaza:<p>' | 'actor:<id>' | 'pr:<id>' -> { type, id } or null. */
+/** 'plaza:<p>' | 'actor:<id>' | 'pr:<id>' | 'obj:<objectId>' -> { type, id } or null. */
 export function parseAt(at) {
   if (typeof at !== 'string') return null;
   const i = at.indexOf(':');
@@ -114,6 +114,10 @@ export function resolveAt(ref, { world, actors, berths } = {}) {
   if (ref.type === 'plaza') {
     const v = (world?.villages || []).find(x => x.name === ref.id);
     return v ? { x: v.cx + 0.5, y: v.cy + 0.5 } : null;
+  }
+  if (ref.type === 'obj') {   // city cap: a world object, or a lot drawn as a green (world.greens)
+    const o = world?.objects?.get?.(ref.id) ?? world?.greens?.get?.(ref.id);
+    return o && Number.isFinite(o.tx) ? { x: o.tx + (o.w || 1) / 2, y: o.ty + (o.h || 1) / 2 } : null;
   }
   if (ref.type === 'actor') {
     const a = (actors || []).find(x => String(x.id) === ref.id);
