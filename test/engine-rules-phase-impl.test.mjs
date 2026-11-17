@@ -70,10 +70,13 @@ function twoPass(name, mod, withRules) {
 // to the digests measured at c1b443a, the commit before the countryside.
 // Re-pinned for city-variety (mod hook lotVariants: no two neighbouring houses draw the same variant): only lot buildings'
 // `variant` changed (objects digests); every id, tile, footprint, sig, lint, grid layer and the persisted state are unchanged.
+// Re-pinned for harbour-depth (world/venue.js keeps a plan object's deck: true on the engine object, so the renderer sorts
+// pier planks and the quay as ground): only the venue decks gained `deck: true` (objects digests, both tests); every id,
+// tile, footprint, sig, lint, grid layer and the persisted state are unchanged.
 const GOLDEN = {
-  citydemo: { sig: '1052876b2985324b', objects: '289cf3609f8cea12', lint: '402568c1d9c59f5d', grid: { cost: '69737320d7fe4fa1', cover: 'ee5e0790ce9afa21',
+  citydemo: { sig: '1052876b2985324b', objects: '9ee8f44eacf96edc', lint: '402568c1d9c59f5d', grid: { cost: '69737320d7fe4fa1', cover: 'ee5e0790ce9afa21',
     edges: '2f7697d7505ce49a', ground: '8da74ec6b027bf0a', lot: 'd2a184597bb41229', occ: '38bf66d8f827c699', road: '95cad267ffbedcac', slots: '599aac33df4b3572', terrain: 'cf81a3ac75513600' } },
-  busy: { sig: 'd236d5bbe28b2e4f', objects: '10c31b23ee433b03', lint: '6cc0e0250ce0a055', grid: { cost: '1f2e4cbd5b009830', cover: '28ff20eb0ac20b74',
+  busy: { sig: 'd236d5bbe28b2e4f', objects: '569ac6b4b434f6dd', lint: '6cc0e0250ce0a055', grid: { cost: '1f2e4cbd5b009830', cover: '28ff20eb0ac20b74',
     edges: '656731783cd6f486', ground: 'cc07bc977dd6d64b', lot: 'aed12d6ba4bf5e27', occ: '9f97ab8cf3448ce7', road: 'd71626545f202e89', slots: '26acd9d92d3d54c8', terrain: '57a9a3118b1a7d61' } },
 };
 
@@ -85,7 +88,7 @@ for (const name of ['citydemo', 'busy']) {
   });
 }
 
-const PERSISTED_PINS = { citydemo: { objects: '69f69ff87afe106e', persisted: 'd5a13b90f022706f' }, busy: { objects: '7c6448b7b57fab63', persisted: '1dcd97cbe460a83d' } };
+const PERSISTED_PINS = { citydemo: { objects: 'cf0545adaf9e8f96', persisted: 'd5a13b90f022706f' }, busy: { objects: 'ba106817fbf51368', persisted: '1dcd97cbe460a83d' } };
 for (const name of ['citydemo', 'busy']) {
   test(`countryside leaves every non-wild object and the persisted state as at c1b443a (fantasy, ${name})`, () => {
     const mod = resolveMod('agentville.fantasy'), { input, serverId, now } = inputFor(name), P = fresh();

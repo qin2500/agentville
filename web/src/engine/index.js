@@ -439,14 +439,23 @@ export function createEngine(app) {
       return { name: v.name, accent: renderer?.accents?.().get(v.name) ?? v.accent, x: p.x, y: p.y, ...(counts ? { counts: counts.get(v.name) } : {}) };
     });
     const prs = [];
-    // tags on the hulls at zoom 3 (the PR number of the item a token carries), at the top of its sprite
-    if (z >= 3) for (const hh of hits) {
-      if (!PANEL_HIT_KINDS.has(hh.kind)) continue;
-      const a = sim?.actors.get(hh.id), n = a?.kind === 'token' ? prNumber(a.item) : null;
-      if (n == null) continue;
-      const x = (hh.rect[0] + hh.rect[2]) / 2, y = hh.rect[1];
-      if (x < -60 || y < -60 || x > w + 60 || y > h + 60) continue;
-      prs.push({ id: hh.id, pr: n, x, y });
+    // tags on the hulls at zoom 3 (the PR number of the item a token carries), at the top of its sprite: a hull drawn in
+    // strips (renderer sliceHull) has a hit per strip, so its tag sits over the union of them, one tag per hull
+    if (z >= 3) {
+      const hulls = new Map();
+      for (const hh of hits) {
+        if (!PANEL_HIT_KINDS.has(hh.kind)) continue;
+        const r = hulls.get(hh.id);
+        if (r) { r[0] = Math.min(r[0], hh.rect[0]); r[1] = Math.min(r[1], hh.rect[1]); r[2] = Math.max(r[2], hh.rect[2]); }
+        else hulls.set(hh.id, [hh.rect[0], hh.rect[1], hh.rect[2]]);
+      }
+      for (const [id, r] of hulls) {
+        const a = sim?.actors.get(id), n = a?.kind === 'token' ? prNumber(a.item) : null;
+        if (n == null) continue;
+        const x = (r[0] + r[2]) / 2, y = r[1];
+        if (x < -60 || y < -60 || x > w + 60 || y > h + 60) continue;
+        prs.push({ id, pr: n, x, y });
+      }
     }
     if (z >= 3) for (const o of world.objects.values()) {
       if (o.kind !== 'building' || o.data?.owner !== 'pr') continue;

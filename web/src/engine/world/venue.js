@@ -269,7 +269,7 @@ export function buildVenues(world, sites, input, mod, persisted, ctx = {}, { see
 
     for (const s of plan.objects) {
       const o = { id: `venue:${id}:${s.local}`, kind: s.kind, model: s.model, tx: s.tx, ty: s.ty, w: s.w, h: s.h, z: s.z, walk: s.walk,
-        ...(s.run ? { run: { ...s.run } } : {}), styleKey: `venue:${kind}`, variant: s.variant, data: { venue: id } };
+        ...(s.run ? { run: { ...s.run } } : {}), ...(s.deck ? { deck: true } : {}), styleKey: `venue:${kind}`, variant: s.variant, data: { venue: id } };
       if (!inRect(rect, o.tx, o.ty) || !inRect(rect, o.tx + o.w - 1, o.ty + o.h - 1)) { lint.push({ kind: 'venue-object', venue: id, reason: 'an object lies outside the venue site rect; dropped' }); continue; }
       if (!grid || !objects) continue;
       if (objects.has(o.id)) { lint.push({ kind: 'venue-object', venue: id, reason: 'an object id is already taken; dropped' }); continue; }

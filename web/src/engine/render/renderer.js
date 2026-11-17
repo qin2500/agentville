@@ -32,11 +32,12 @@ import { styleKeyFor } from '../art/style-key.js';
 import * as CRAFT from './craft-art.js';
 import { venueOutlines } from './venue-outline.js';
 import { anchors as lampAnchors } from '../art/props/lighthouse.js';
+import { DECK as PLANK_TOP } from '../art/props/pier.js';
 import { hash } from '../core/rng.js';
 import { CARRIER_KIND } from '../../engine-host.js';
 const DEFAULTS = {
   sortKey: DEPTH.sortKey, LAYER: DEPTH.LAYER, mergeSorted: DEPTH.mergeSorted, feetKey: DEPTH.feetKey, chunkOf: DEPTH.chunkOf,
-  sliceSprite: SLICE.sliceSprite, SpriteCache: SPRITES.SpriteCache, spriteKey: SPRITES.spriteKey, placeholder: SPRITES.placeholder,
+  sliceSprite: SLICE.sliceSprite, sliceHull: SLICE.sliceHull, SpriteCache: SPRITES.SpriteCache, spriteKey: SPRITES.spriteKey, placeholder: SPRITES.placeholder,
   createGround: GROUND.createGround, createGroundCache: GROUNDCACHE.createGroundCache, createLighting: LIGHT.createLighting, createXray: XRAY.createXray,
   rasterize: RASTER.rasterize, loadClassicArt: RASTER.loadClassicArt, createGfx: GFX.createGfx, artView: ARTVIEW.artView, FLAGS: ACTOR.FLAGS,
   createActorArt: ACTORART.createActorArt, styleKeyFor, buildHits: HITS.buildHits,
@@ -78,6 +79,8 @@ const MAP_ZOOM = 0.25;
 // Working out tile signatures (a world rebuild, dusk) is spread over frames: at most this long per frame.
 const MAP_SIG_MS = 2;
 // Waterside actors (craft-art.js) and the carrier: drawn only while flagged VISIBLE (a carrier off the map is not).
+// The sort depth of what flies over everything (gulls): past any world's depth (depth.js keys stay exact to ~2^31).
+const AIR_DEPTH = 1 << 24;
 const WATERSIDE = new Set([...CRAFT.CRAFT_KINDS, CARRIER_KIND]);
 const SWEEP_FROM = 0.4;   // night amount from which a lighthouse sweeps
 const ck = (cx, cy) => cx + ',' + cy;
@@ -247,7 +250,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   }
   // Everything sliceSprite (and the item fields below) reads from an object, plus its look (model/variant/style: also in the
   // sprite key, so the entry check catches them; kept here so the key stands on its own).
-  const sliceAt = o => `${o.tx},${o.ty},${o.w},${o.h},${o.z ?? ''},${o.kind},${o.walk ?? ''},${o.run ? `${o.run.dir},${o.run.len},${o.run.side ?? ''}` : ''},`
+  const sliceAt = o => `${o.tx},${o.ty},${o.w},${o.h},${o.z ?? ''},${o.kind},${o.walk ?? ''}${o.deck ? ',deck' : ''},${o.run ? `${o.run.dir},${o.run.len},${o.run.side ?? ''}` : ''},`
     + `${o.dir ?? ''},${o.len ?? ''},${o.side ?? ''},${o.model},${o.variant ?? ''},${o.styleKey ?? ''}`;
   function slicesOf(obj, entry, ready) {
     if (entry.empty) return [];
@@ -320,6 +323,8 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     let key;
     if (D.feetKey) key = D.feetKey(x, y, LAYER.ACTOR);
     else { const s = x + y - 1, depth = Math.floor(s), sub = Math.min(3, Math.floor((s - depth) * 4)); key = D.sortKey(depth, sub, LAYER.ACTOR, Math.round(x - y)); }
+    // a gull is in the air, wheeling over the masts: drawn over the whole world layer (the classic art draws them last)
+    if (a.kind === 'gull') key = D.sortKey(AIR_DEPTH, 0, LAYER.EFFECT, 0);
     return { key, actor: a, x, y, oid: a.id, hit: a.kind === 'agent' ? 'agent' : a.kind === 'token' ? HIT_KIND.token : null, z: 0 };
   }
   // a carrier wears the look of the agent it works for, else a townsperson look by its own seed (kept per carrier: the
@@ -416,6 +421,15 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       it.img = e.img; it.w = w; it.h = h; it.pivot = { x: e.pivot?.x ?? w / 2, y: e.pivot?.y ?? h };
       if (e.head) it.head = e.head;
       if (e.placeholder) it.ph = true;
+      // a hull longer than a tile: one piece per 16-px strip, each at the depth of its own stretch of keel (slice.js
+      // sliceHull), so the pier planks, the people on them and the next hull sort against each part of it
+      if (e.len > 1 && D.sliceHull && !e.placeholder) {
+        const x0 = Math.round(p.sx - it.pivot.x), parts = D.sliceHull({ x: it.x, y: it.y, face: a.face, len: e.len }, x0, x0 + w);
+        if (parts.length > 1) {
+          parts.forEach((q, i) => items.push({ ...it, key: q.key, clip: [q.L, q.R], lead: i === 0 }));
+          continue;
+        }
+      }
       items.push(it);
     }
     return items.sort((a, b) => a.key - b.key);
@@ -437,7 +451,12 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     const sl = it.slot;
     // Map zoom: the frame pre-scaled in the actor atlas, copied 1:1 at the whole device px nearest its 1x spot
     if (sl) g.image(sl.img, sl.sx, sl.sy, sl.sw, sl.sh, Math.round(at.x * slotScale) / slotScale, Math.round(at.y * slotScale) / slotScale, sl.sw / slotScale, sl.sh / slotScale, al);
-    else g.image(it.img, 0, 0, it.w, it.h, at.x, at.y, it.w, it.h, al);
+    else if (it.clip) {
+      // one strip of a sliced hull; the rest of the actor's bookkeeping is its lead strip's
+      const [L, R] = it.clip;
+      g.image(it.img, L - at.x, 0, R - L, it.h, L, at.y, R - L, it.h, al);
+      if (!it.lead) return;
+    } else g.image(it.img, 0, 0, it.w, it.h, at.x, at.y, it.w, it.h, al);
     if (debug && it.ph) { draws.placeholder++; draws.actorPlaceholder++; }
     if (a.kind === CARRIER_KIND && a.carry) carried(p);
     if (a.fx && a.fx.includes?.('lantern')) lantern(p);   // night walkers carry one (mods ambient); lighting.js adds its pool
@@ -446,6 +465,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   /** The rect an actor item can touch (its sprite, plus the shadow, crate and lantern round its feet), 1 px margin. */
   function actorBox(it) {
     const at = it.at, sx = Math.round(it.p.sx), sy = Math.round(it.p.sy);
+    if (it.clip) return [it.clip[0] - 1, Math.min(at.y, sy) - 1, it.clip[1] + 1, Math.max(at.y + it.h, sy + 3) + 1];   // a hull strip
     return [Math.min(at.x, sx - 6) - 1, Math.min(at.y, sy - 18) - 1, Math.max(at.x + it.w, sx + 10) + 1, Math.max(at.y + it.h, sy + 3) + 1];
   }
   // column buckets (16 px) of every slice of the kept static list, for the slices under an actor's rect
@@ -478,11 +498,15 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   function redrawActors(items, frame, drawn, drawnItems) {
     if (!items.length) return;
     const t = frame.t ?? 0, rects = [];
-    for (const it of items) { it.at = actorAt(it, t); rects.push(actorBox(it)); }
+    for (const it of items) {
+      if (it.paint) { rects.push(it.box); continue; }
+      it.at = actorAt(it, t); rects.push(actorBox(it));
+    }
     g.clipRects(rects);
     g.drawLayer('ground');
     for (const it of D.mergeSorted([slicesIn(rects), items])) {
       if (it.actor) drawActor(it, frame, drawn, drawnItems);
+      else if (it.paint) paintItem(it);
       else g.image(it.img, it.sx, it.sy, it.sw, it.sh, it.dx, it.dy, it.sw, it.sh);
     }
     g.unclip();
@@ -579,8 +603,12 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     stat.lists = lists; stat.visObjs = visObjs;
     lap('stat');
 
-    // actors: cull by screen rect, sort once per frame
-    const items = actorItems(frame, rect);
+    // actors: cull by screen rect, sort once per frame; with the hover outline of a venue (a pier) in among them
+    let items = actorItems(frame, rect);
+    if (frame.hoverPanel && hoveredToken(frame.hoverPanel) == null) {
+      const ol = outlineItems(venueOutlines(visObjs), '#ffe9a8');
+      if (ol.length) items = D.mergeSorted([items, ol]);
+    }
 
     // building fade (selected actor behind/inside): per-object alpha, computed only when someone is selected
     const selected = (frame.actors || []).filter(a => hasFlag(a, 'SELECTED') || a.selected);
@@ -620,6 +648,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       hits = D.buildHits(merged, toCss);
       for (const it of merged) {
         if (it.actor) drawActor(it, frame, drawn, drawnItems);
+        else if (it.paint) paintItem(it);
         else g.image(it.img, it.sx, it.sy, it.sw, it.sh, it.dx, it.dy, it.sw, it.sh, fade.get(it.oid));
       }
       if (debug) countMarks(stat.list);
@@ -684,9 +713,9 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       }
       D.drawMarks(g, marks, { entryOf: doorOf, frameOf: a => actorArt?.frame?.(a, { selected: true }) ?? null, headOf, now: (frame.t ?? 0) * 1000 });
     }
-    // host panel hover: a hull under the pointer is drawn with its own highlight outline (above) and nothing else lights
-    // up; the venue itself (a pier) outlines its walkable decks, one outline per pier rather than one per plank section
-    if (frame.hoverPanel && hoveredToken(frame.hoverPanel) == null) for (const r of venueOutlines(visObjs)) outline(r, '#ffe9a8');
+    // host panel hover: a hull under the pointer is drawn with its own highlight outline (actorItems) and nothing else
+    // lights up; the venue itself (a pier) outlines its walkable decks, one outline per pier rather than one per plank
+    // section, in the world layer at the pier's depth (outlineItems): a hull or a person in front of the pier covers it
     // screen-space badges are drawn by the engine after g.end() (overlay/badges.js, device px); this hook stays for mods/tests
     D.badges?.draw?.(g, cam, gview, drawn, toCss);
     g.end();
@@ -1054,10 +1083,35 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     const k = String(hp), i = k.indexOf(':');
     return i > 0 && !k.startsWith('link:') ? k.slice(i + 1) : null;
   }
-  function outline(o, color) {
-    const P = [toScreen(o.tx, o.ty), toScreen(o.tx + (o.w || 1), o.ty), toScreen(o.tx + (o.w || 1), o.ty + (o.h || 1)), toScreen(o.tx, o.ty + (o.h || 1))];
-    for (let i = 0; i < 4; i++) line(P[i], P[(i + 1) % 4], color);
+  /**
+   * The ground outline of each footprint rect as world-layer items, one per 16-px strip at the footprint's own strip
+   * depth (slice.js blockStripDepth, the ground-prop layer), so they sort like the footprint's slices: drawn over its own
+   * slice (equal keys: the static list merges first) and over what is behind it, under whatever stands in front. A deck's
+   * outline (a pier's) sinks with the deck (slice.js DECK_SINK): under the hulls moored at it and the people on it.
+   * Item: { key, paint: [[p, q], ...] segments, color, box } (renderer paintItem; no hit).
+   */
+  function outlineItems(rects, color) {
+    const out = [];
+    for (const o of rects) {
+      // a deck is outlined round its plank top (the pier art's deck height), where it shows between the hulls moored at it
+      const up = o.deck ? PLANK_TOP : 0, at0 = (x, y) => { const q = toScreen(x, y); return { sx: q.sx, sy: q.sy - up }; };
+      const P = [at0(o.tx, o.ty), at0(o.tx + (o.w || 1), o.ty), at0(o.tx + (o.w || 1), o.ty + (o.h || 1)), at0(o.tx, o.ty + (o.h || 1))];
+      const xs = P.map(p => p.sx), ys = P.map(p => p.sy), y0 = Math.min(...ys) - 1, y1 = Math.max(...ys) + 2;
+      for (let k = Math.floor(Math.min(...xs) / 16); k * 16 < Math.max(...xs); k++) {
+        const L = k * 16, R = L + 16, segs = [];
+        for (let i = 0; i < 4; i++) {
+          const p = P[i], q = P[(i + 1) % 4], a = Math.max(L, Math.min(p.sx, q.sx)), b = Math.min(R, Math.max(p.sx, q.sx));
+          if (!(b > a) || p.sx === q.sx) continue;
+          const at = x => ({ sx: x, sy: p.sy + (q.sy - p.sy) * (x - p.sx) / (q.sx - p.sx) });
+          segs.push([at(a), at(b)]);
+        }
+        const depth = SLICE.blockStripDepth(o, k) - (o.deck ? SLICE.DECK_SINK : 0);
+        if (segs.length) out.push({ key: D.sortKey(depth, 0, LAYER.GROUND_PROP, k), paint: segs, color, box: [L - 1, y0, R + 1, y1] });
+      }
+    }
+    return out.sort((p, q) => p.key - q.key);
   }
+  function paintItem(it) { for (const [p, q] of it.paint) line(p, q, it.color); }
   // A lighthouse at night sweeps a beam round its lantern: two thin wedges of warm light, flattened to the iso ground.
   // parity: har.lighthouse-sweep
   function sweeps(objs, t, night) {

@@ -1,5 +1,5 @@
 // artView: the only object shape art/represent hooks ever see (M1e). Allow-list copy, frozen, no server ids.
-const ALLOWED = ['id', 'kind', 'model', 'tx', 'ty', 'w', 'h', 'z', 'walk', 'project', 'styleKey', 'variant', 'door', 'rank', 'lot', 'crown', 'anchors', 'dir', 'len'];
+const ALLOWED = ['id', 'kind', 'model', 'tx', 'ty', 'w', 'h', 'z', 'walk', 'project', 'styleKey', 'variant', 'door', 'rank', 'lot', 'crown', 'anchors', 'dir', 'len', 'deck'];
 const DENIED = new Set(['data', 'agentId', 'item', 'serverId']);
 
 function cloneFrozen(v, depth = 0) {
