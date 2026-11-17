@@ -14,6 +14,7 @@
 //   city-plan WALKABLE (the plan ground routes treat as path)          → RULES.layout.paths (MOD0 extension)
 import { tierFor, capacityFor, planSettlement, WALKABLE } from '../../web/src/city-plan.js';
 import { projectStyle, applyNeighbourRule } from './style.js';
+import { lotVariants } from './variety.js';
 
 const DAY = 864e5;
 // classic constants (world.js), unchanged
@@ -40,7 +41,7 @@ export const RULES = {
   },
   // parity: world.vanished-hold-12h
   holdMs: DAY / 2,                          // a building that vanished holds its ground this long
-  styleReads: ['family', 'wall', 'roof', 'trim', 'window', 'door', 'accent', 'shutter'],   // style fields the building art draws: they key the sprite cache
+  styleReads: ['family', 'wall', 'roof', 'trim', 'window', 'door', 'accent', 'shutter', 'houses', 'tier'],   // style fields the building art draws: they key the sprite cache
   // parity: style.crown-palaces
   crownModel: 'palace',                     // city4: a crowned agent's L lot is drawn as the palace
 };
@@ -122,4 +123,7 @@ export const HOOKS = {
   style(projectKey, ctx, preset) { return projectStyle(projectKey, ctx, preset); },
   /** Adjacent blocks differ in roof colour and paving pattern (style.js applyNeighbourRule); the engine injects distinctPicks. */
   styleNeighbours(styles, blocks, distinctPicks) { return applyNeighbourRule(styles, blocks, distinctPicks); },
+  /** Which of the 16 building variants each plan lot draws (variety.js): no two neighbours alike, a taller core. Art only:
+   *  the engine stamps the same lots either way. */
+  lotVariants(lots, key, opts) { return lotVariants(lots, key, opts); },
 };

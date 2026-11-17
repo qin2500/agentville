@@ -70,6 +70,7 @@ const PLASTER = ['#efe3c6', '#ecca8e', '#e9b6a3', '#bdd2a9', '#b7cbdc', '#f2dc9e
 const BEAMS = ['#6b4429', '#583423', '#7a3b2a', '#4d4a5e'].map(rgb);
 const FARM = ['#c9a06a', '#9fb39a', '#d9c49b', '#b98a6a'].map(rgb);
 const EARTHS = ['#6a3d2c', '#8a4a30', '#5a4a44'].map(rgb);
+const MAGE = rgb('#4b4f8c');
 const SAND = rgb('#d3c4a4'), GREY = rgb('#b6afa4'), LIME = rgb('#f1ebdd'), REDBARN = rgb('#a5473a'), OLDWOOD = rgb('#8a6446');
 const SLATE = rgb('#5a6680'), LEAD = rgb('#8893a3'), TERRA = rgb('#b9603f'), THATCH = rgb('#d2aa5e'), SHAKE = rgb('#7d5d48');
 const NOFIT = [];
@@ -93,18 +94,34 @@ const SMALLCIVIC = new Set(['barn', 'windmill', 'granary', 'chapel', 'smithy', '
 const famOf = it => { const s = it.style; if (!(KIT.has(it.look) || it.look === 'cottage')) return 0; const f = s && typeof s === 'object' ? s.family : s; return (((f | 0) % 6) + 6) % 6; };
 const palOf = it => (it.style && typeof it.style === 'object' && (KIT.has(it.look) || (it.look === 'cottage' && famOf(it))) ? it.style : null);
 /** The style part of the cache key: the pool style's key, or the family number ('' = today's look). */
-const styleKey = it => { const p = palOf(it); return p ? `k${p.key}` : famOf(it) ? `f${famOf(it)}` : ''; };
+const styleKey = it => { const p = palOf(it); return p ? `k${p.key}|${p.roof?.base ?? ''}|t${p.tier ?? ''}${housesKey(p)}` : famOf(it) ? `f${famOf(it)}` : ''; };
 const hx = c => (typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c) ? rgb(c) : null);
+
+/** A house's roof and walls from the district palette (style.houses = { roofs: [{base, ridge}], walls: [{base, alt}] }),
+ * picked by variant: archetype (variant % 4) and height class (variant >> 2) both move the pick, so neighbours (which the
+ * mod keeps apart in archetype) differ in colour too. null: no palette, a civic building, or no variant. */
+function houseHues(it, P, civic) {
+  const H = P?.houses, v = it.variant;
+  if (civic || !H || v == null || !Array.isArray(H.roofs) || !H.roofs.length) return null;
+  const a = v & 3, c = (v >> 2) & 3, nr = H.roofs.length, nw = Array.isArray(H.walls) ? H.walls.length : 0;
+  return { roof: H.roofs[((a + 3 * c) % 6) % nr], wall: nw ? H.walls[((3 * a + c) % 4) % nw] : null };   // the slots mods/agentville.fantasy/variety.js keeps neighbours off
+}
+const housesKey = P => { const H = P?.houses; return H ? `|h${(H.roofs || []).map(r => r.base).join('')}${(H.walls || []).map(w => w.base + w.alt).join('')}`.replace(/#/g, '') : ''; };
 
 /** Restyle a kit look's materials for family st.sty (> 0), or recolour (any family) from a pool palette. */
 function styleKit(st, it, look) {
   const S = SYS[st.sty], h = st.h, P = st.pal, pick = (a, n) => rgb(a[(h >>> n) % a.length]), acc = rgb(it.village?.accent ?? '#8a7a6a');
   const big = st.civic && !SMALLCIVIC.has(look);
   // Pool colours override the family's defaults; a palette swap only changes ramps, never shapes.
-  const walls = P && hx(P.wall?.base) ? [hx(P.wall.base), hx(P.wall.alt) ?? hx(P.wall.base), mix(hx(P.wall.base), hx(P.wall.alt) ?? hx(P.wall.base), 0.5)] : null;
+  // city-variety: a house picks its roof and walls from the district palette (style.houses) by variant, so a street of one
+  // family mixes its colours; civic buildings and the palace keep the project's own roof and walls.
+  const hp = houseHues(it, P, st.civic || look === 'palace');
+  const wall0 = hp?.wall ?? P?.wall;
+  const walls = P && hx(wall0?.base) ? [hx(wall0.base), hx(wall0.alt) ?? hx(wall0.base), mix(hx(wall0.base), hx(wall0.alt) ?? hx(wall0.base), 0.5)] : null;
   const wallPick = n => walls ? jit(walls[(h >>> n) % 3], (((h >>> 20) % 3) - 1) * 0.03) : pick(S.walls, n);
-  const roofPick = n => P && hx(P.roof?.base) ? jit(hx(P.roof.base), (((h >>> n) % 3) - 1) * 0.04) : pick(S.roofs, n);
-  if (P) { st.ridgeC = hx(P.roof?.ridge); st.win = P.window; }
+  const roof0 = hp?.roof ?? P?.roof;
+  const roofPick = n => P && hx(roof0?.base) ? jit(hx(roof0.base), (((h >>> n) % 3) - 1) * 0.04) : pick(S.roofs, n);
+  if (P) { st.ridgeC = hx(roof0?.ridge); st.win = P.window; }
   if (!S) { // the timber family from the pool: today's shapes, the pool's colours on houses
     if (P && !st.civic) {
       if (walls) st.paint = wallPick(3);
@@ -147,7 +164,10 @@ function styleKit(st, it, look) {
 // hanging sign, and a step of tone in its walls and roof, so no two neighbours in a row come out the same.
 const GLYPHS = ['mug', 'wheat', 'fish', 'boot', 'loaf', 'key', 'moon'];
 function whimsy(st, it, look) {
-  const g = h2(st.h, 0x5eed, 0xc17e5), b = (n, m) => (g >>> n) % m, f = st.sty, V = FAMS[f].v5, W = it.w * 16, D = it.h * 16;
+  // the variant's detail bits (variant >> 4, city-variety) re-roll only the details (climbers, sign, chimney: bits
+  // 8..25); the tone and the silhouette (archetype, pitch, gables, turret) stay the low four bits' own
+  const g = h2(st.h, 0x5eed, 0xc17e5), det = it.variant != null ? (it.variant >> 4) & 3 : 0, gd = det ? h2(g, det, 0xde7a11) : g;
+  const b = (n, m) => ((n >= 8 && n <= 25 ? gd : g) >>> n) % m, f = st.sty, V = FAMS[f].v5, W = it.w * 16, D = it.h * 16;
   const mass = look === 'farmhouse' || look === 'cottage' || look === 'timber' || look === 'townhouse';
   Object.assign(st, { wh: true, g, V, lead: V.lead, cross: V.cross, crownW: V.crown, heavy: V.heavy });
   // weathered and warmer, a step of tone per house
@@ -164,20 +184,32 @@ function whimsy(st, it, look) {
   // one big feature per house: the massing archetype comes from variant % 4 (variety.js keeps neighbours apart
   // in it), the details and tone from the rest of the variant and the hash
   const arch = it.variant != null ? ((it.variant % 4) + 4) % 4 : b(27, 4);
-  let feat = look === 'townhouse' ? ['turret', 'oriel', 'gable', 'none'][arch]
+  // city-variety: the height class (variant >> 2, 0 low .. 3 tall; the mod puts the tall ones in the core)
+  const cls = it.variant != null ? (it.variant >> 2) & 3 : 1 + b(23, 2);   // (variant >> 4: free detail bits, hashed with the rest)
+  st.cls = cls;
+  const top3 = cls >= 2 && !V.ridgeTurret ? 'ridge' : 'none';   // (a ridge-turret family already puts one on archetype 0)
+  let feat = look === 'townhouse' ? ['turret', 'oriel', 'gable', top3][arch]
     : look === 'farmhouse' ? ['none', 'turret', 'none', 'none'][arch]
-    : ['wing', 'turret', 'oriel', 'none'][arch];
-  if (look === 'townhouse') { // storeys by archetype (never above the city2 cap of three)
-    const n = arch === 3 ? 2 : arch === 1 ? 3 : 2 + (b(23, 2));
+    : ['wing', 'turret', 'oriel', look === 'timber' ? top3 : 'none'][arch];
+  if (look === 'townhouse') { // storeys by height class: two at the edge, four only in the core
+    const n = [2, 2, 3, 4][cls];
     if (n !== st.n) { st.H -= (st.n - n) * 14; st.top -= (st.n - n) * 14; st.n = n; }
   }
+  if (look === 'timber' && cls === 3) { st.tall = true; st.H += 14; st.top += 14; } // a third storey
+  if (look === 'timber' && cls === 0) { st.low = true; st.H -= 5; } // a squat upper floor under the eaves
+  if (look === 'cottage') { const dh = [-3, 0, 1, 3][cls]; st.H += dh; st.top += dh; }
   if (look === 'cottage' && feat === 'oriel') feat = 'bay';
   if (V.loggia && (feat === 'oriel' || feat === 'gable')) feat = look === 'cottage' ? 'none' : 'loggia';
-  if (V.ridgeTurret && feat === 'turret') feat = 'ridge'; // a little bell turret astride the ridge
+  // a feature the house cannot draw falls back to one it can: a gable-fronted house has no eaves for a street gable, so
+  // it gets a corner turret (keeping neighbours' silhouettes apart when a family fixes the gable direction)
+  if (feat === 'wing' && (W < 60 || st.front)) feat = st.front ? 'bay' : 'gable';   // too narrow for a cross wing
+  if (feat === 'gable' && st.front) feat = 'turret';
+  else if (V.ridgeTurret && feat === 'turret') feat = 'ridge'; // a little bell turret astride the ridge
   st.feat = feat;
   // the roof: a family push plus a per-house pitch; townhouses never grow (the city2 height cap), only lean
-  let pf = V.steep * [1.04, 1.12, 0.94, 1.22][arch] * (1 + (b(29, 3) - 1) * 0.04);
-  if (look === 'townhouse') pf = Math.min(pf, st.n === 2 ? 1.25 : Math.max(1, V.steep * 0.92));
+  let pf = V.steep * [1.04, 1.12, 0.94, 1.22][arch] * [0.9, 1, 1.07, 1.14][cls] * (1 + (b(29, 3) - 1) * 0.04);
+  // townhouses: the pitch by height class (a low gable, a steep one, then three and four storeys under calmer roofs)
+  if (look === 'townhouse') pf = [0.82, 1.3, Math.max(1, V.steep * 0.92), 0.95][cls] * (1 + (b(29, 3) - 1) * 0.03);
   const rk = st.SY ? st.SY.rk : 1, R0 = st.R;
   st.R = Math.round(st.R * pf);
   st.top += Math.max(0, Math.ceil((st.R - R0) * rk * 1.2));
@@ -192,7 +224,9 @@ function whimsy(st, it, look) {
     const tw = look === 'townhouse', r = tw ? 5 : look === 'cottage' || look === 'farmhouse' ? 5.5 : 6.5, camp = V.turret === 'campanile';
     const zt = tw ? H + (camp ? 10 : 6) : H + (look === 'timber' ? 10 : 9) + (camp ? 6 : 0);
     const cone = camp ? r * 1.25 : r * (V.turret === 'round' ? 2.5 : 2.9);
-    st.tur = { r, z0: tw && !camp ? 16 : 0, zt, cone };
+    // city-variety: the tallest core houses of the spired families wear a copper onion instead of the witch hat
+    const kind = cls === 3 && !camp && V.turret !== 'round' && h2(g, 8, 1) % 3 !== 0 ? 'onion' : undefined;
+    st.tur = { r, z0: tw && !camp ? 16 : 0, zt, cone, ...(kind ? { kind } : {}) };
     st.top = Math.max(st.top, Math.ceil(zt + 2.5 + cone + 14));
   }
   if (feat === 'ridge') st.top = Math.max(st.top, Math.ceil(H + Math.min(st.R * rk, Math.max(W, D) * 0.95) + 30));
@@ -213,7 +247,7 @@ function kitStyle(it, look, h, T) {
       if (st.lower !== 'clap') st.trim = rgb('#6a4630');
       break;
     case 'timber': Object.assign(st, { front: Wp <= 48 && b(11, 3) === 0, H: 33, R: 27 }); st.top = st.H + st.R + 30; break;
-    case 'townhouse': { const n = 3, front = b(12, 4) !== 0; Object.assign(st, { n, front, H: 16 + 14 * (n - 1), R: front ? Math.round(Wp * 0.9) : Math.round(Dp * 0.62), e: front ? 1.5 : 2.5 }); st.top = st.H + st.R + 24; break; }
+    case 'townhouse': { const n = 3, front = it.variant != null ? [false, true, false, true][it.variant & 3] : b(12, 4) !== 0; Object.assign(st, { n, front, H: 16 + 14 * (n - 1), R: front ? Math.round(Wp * 0.9) : Math.round(Dp * 0.62), e: front ? 1.5 : 2.5 }); st.top = st.H + st.R + 24; break; }
     case 'cottage': Object.assign(st, { H: 21, R: 15, e: 3, roof: ['shingle', 'tile', 'shingle'][b(10, 3)] }); break;
     case 'palace': Object.assign(st, { H: 51, R: 24, roof: b(15, 2) ? 'slate' : 'tile', trim: rgb('#f3e7cd'), crown: !!it.crown }); st.top = 51 + 24 + 64; break;
     case 'manor': { const three = b(11, 3) === 0; Object.assign(st, { three, H: three ? 48 : 34, R: 26, roof: b(15, 2) ? 'slate' : 'tile', trim: rgb('#f3e7cd') }); st.top = st.H + st.R + 32; break; }
@@ -224,7 +258,12 @@ function kitStyle(it, look, h, T) {
     case 'smithy': Object.assign(st, stone, { H: 20, R: 16, roof: 'slate', roofC: SLATE, paint: GREY }); st.top = 20 + 16 + 40; break;
     case 'inn': Object.assign(st, { H: 31, R: 24, roof: b(11, 2) ? 'tile' : 'slate', roofC: b(11, 2) ? TERRA : SLATE }); st.top = 31 + 24 + 32; break;
     case 'guildhall': Object.assign(st, stone, { H: 51, R: 26, roof: 'slate', roofC: SLATE, paint: PLASTER[[0, 1, 5, 9][b(3, 4)]] }); st.top = 51 + 26 + 50; break;
-    case 'clocktower': Object.assign(st, stone, { H: 97, R: 36, roof: 'slate', roofC: b(11, 2) ? SLATE : LEAD, paint: b(12, 2) ? SAND : GREY }); st.top = 97 + 36 + 20; break;
+    case 'clocktower': {
+      // city-variety: a city's clock tower is its mage tower: a tall indigo spire banded in gold, a starry orb on top
+      const mage = !!(it.style && typeof it.style === 'object' && it.style.tier === 3);
+      Object.assign(st, stone, { mage, H: 97, R: mage ? 74 : 36, roof: 'slate', roofC: mage ? MAGE : b(11, 2) ? SLATE : LEAD, paint: b(12, 2) ? SAND : GREY });
+      st.top = 97 + st.R + (mage ? 30 : 20); break;
+    }
     case 'markethall': Object.assign(st, { H: 36, R: 20, roof: 'tile', roofC: TERRA, trim: rgb('#efe6d4') }); st.top = 36 + 20 + 40; break;
     case 'cathedral': Object.assign(st, stone, { twin: b(11, 2) === 0, H: 60, R: 30, roof: 'slate', roofC: b(12, 2) ? SLATE : LEAD, paint: b(13, 2) ? SAND : rgb('#cfc8bb') }); st.top = st.twin ? 180 : 205; break;
     case 'wall': Object.assign(st, stone, { H: 30, R: 6, paint: b(11, 2) ? SAND : GREY }); st.top = 48; break;
@@ -240,7 +279,7 @@ function kitStyle(it, look, h, T) {
 
 /** What a building looks like, decided once from its id (so it never changes between visits). */
 function styleOf(it, T = 16) {
-  const look = it.look || 'houseH', h = it.variant != null ? h2(hash(look), it.variant + 1, 0x51ed) : hash(it.id), pr = it.kind === 'pr', cot = look === 'cottage';
+  const look = it.look || 'houseH', h = it.variant != null ? h2(hash(look), (it.variant & 15) + 1, 0x51ed) : hash(it.id), pr = it.kind === 'pr', cot = look === 'cottage';
   if (KIT.has(look) || (cot && famOf(it))) return kitStyle(it, look, h, T); // a styled cottage is built from the kit
   const arch = look === 'hall' ? 'lodge' : look.startsWith('tower') ? 'tower' : pr && !cot ? 'workshop'
     : LEADS.includes(look) ? (h % 5 < 3 ? 'twostorey' : 'cottage') : (h % 3 === 0 ? 'hut' : 'cottage');
@@ -1500,7 +1539,8 @@ function make(it, T, lit, site, S = 1) {
   function timberHouse() {
     const front = st.front, u = dU(), fr = st.frame, low = ['plaster', 'stone', 'plaster', 'ashlar'][vb(16, 4)];
     groundShadow();
-    const floors = [{ h: 16, tex: low, paint: low === 'ashlar' ? SAND : st.paint, frame: low === 'plaster' ? fr : -1, corner: low === 'ashlar' ? 'quoin' : null }, { h: 17, tex: 'plaster', frame: fr, jet: 2 }];
+    const floors = [{ h: 16, tex: low, paint: low === 'ashlar' ? SAND : st.paint, frame: low === 'plaster' ? fr : -1, corner: low === 'ashlar' ? 'quoin' : null }, { h: st.low ? 12 : 17, tex: 'plaster', frame: fr, jet: 2 }];
+    if (st.tall) floors.push({ h: 14, tex: 'plaster', frame: fr, jet: 0 });
     const S = storeys({ x0: 0, x1: W - 2, y0: 0, y1: D - 2, floors, jetE: true, eaveS: !front, eaveE: front });
     const [f0, f1] = S.fl;
     const gap = frontDoor(f0.nS, D - 2, u, { dh: 13, mat: true, lamp: vb(14, 2) === 1, board: st.pr ? 'key' : null });
@@ -1508,6 +1548,7 @@ function make(it, T, lit, site, S = 1) {
     winRow(f1.nS, f1.z + 4, { flowers: true, shutters: vb(17, 2) === 1 });
     winRow(f0.nE, 6, { max: 3 });
     winRow(f1.nE, f1.z + 4, { flowers: vb(18, 2) === 1, max: 3 });
+    for (const F of S.fl.slice(2)) { winRow(F.nS, F.z + 3, { flowers: false, shutters: false, ht: 7 }); winRow(F.nE, F.z + 3, { max: 3, ht: 7 }); }
     if (FS?.balconies) balcony(S.x0, S.x1, finfo[f1.nS].Y, f1.z + 1, 4);
     const I = roof2({ x0: 0, x1: S.x1, y0: 0, y1: S.y1, zb: S.z, R, e: 3, ridge: front ? 'NS' : 'EW', gable: plasterGable(fr, S.z), jerk: st.jerk });
     const gc = finfo.G.cols >> 1;
@@ -1927,8 +1968,20 @@ function make(it, T, lit, site, S = 1) {
     fittings.push({ face: 'BS', kind: 'belfry', c0: c - 4, c1: c + 4, z0: zb + 1, z1: zt - 2, round: true }, { face: 'BE', kind: 'belfry', c0: c - 4, c1: c + 4, z0: zb + 1, z1: zt - 2, round: true });
     box(x0 - o, x1 + o, y0 - o, y1 + o, zt, zt + 3, stoneM(lt(paint, 0.1), 0), stoneM(lt(paint, 0.1), 0.3), capM(paint)); // the cornice
     const ap = [u, (y0 + y1) / 2, zt + 3 + R];
-    prism('SP', u, (y0 + y1) / 2, (x1 - x0) / 2 * 1.38, 0, zt + 3, ap[2], 4, coneMat(RB, st.roofC === LEAD ? 'lead' : 'slate', zt + 3), Math.PI / 4);
-    for (const [px, py] of [[x0, y1], [x1, y1], [x1, y0]]) prism('PN', px, py, 2, 0, zt + 3, zt + 12, 4, coneMat(lt(paint, 0.05), 'slate', zt + 3), Math.PI / 4); // corner pinnacles
+    if (st.mage) { // an eight-sided witch hat, flared at the eaves, gold bands, a gilded star-orb
+      const cy = (y0 + y1) / 2, rb = (x1 - x0) / 2 * 1.12, z0 = zt + 3, mat = coneMat(RB, 'slate', z0);
+      const band = (nm, za, zb2) => prism(nm, u, cy, rb * (1 - (za - z0) / R) + 0.4, rb * (1 - (zb2 - z0) / R) + 0.4, za, zb2, 8, (n, N) => q => [byLight(ramp(GOLD), N, 0.1), 0], Math.PI / 8);
+      prism('SPf', u, cy, rb + 2, rb * 0.92, z0, z0 + 3, 8, mat, Math.PI / 8);
+      prism('SP', u, cy, rb * 0.92, 0, z0 + 3, ap[2], 8, mat, Math.PI / 8);
+      band('SPb1', z0 + R * 0.3, z0 + R * 0.3 + 1.6); band('SPb2', z0 + R * 0.62, z0 + R * 0.62 + 1.4);
+      ball(u, cy, ap[2] + 3, 3, q => [byLight(lit ? LIT : ramp(rgb('#9fd8ff')), q.N, 0.15), 0]);
+      for (const [px, py] of [[x0, y1], [x1, y1], [x1, y0]]) prism('PN', px, py, 2, 0, zt + 3, zt + 14, 8, coneMat(RB, 'slate', zt + 3), Math.PI / 8);
+      out.glow = Q(u, cy, ap[2] + 3);
+      ap[2] += 6;
+    } else {
+      prism('SP', u, (y0 + y1) / 2, (x1 - x0) / 2 * 1.38, 0, zt + 3, ap[2], 4, coneMat(RB, st.roofC === LEAD ? 'lead' : 'slate', zt + 3), Math.PI / 4);
+      for (const [px, py] of [[x0, y1], [x1, y1], [x1, y0]]) prism('PN', px, py, 2, 0, zt + 3, zt + 12, 4, coneMat(lt(paint, 0.05), 'slate', zt + 3), Math.PI / 4); // corner pinnacles
+    }
     out.finial = Q(...ap);
     out.ridge = Q(...ap);
   }

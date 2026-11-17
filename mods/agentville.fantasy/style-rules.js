@@ -6,6 +6,7 @@
 export const AXIS_SALT = Object.freeze({
   paving: 0x9e3779b1, pattern: 0x85ebca6b, kerb: 0xc2b2ae35, hedge: 0x27d4eb2f, lamp: 0x165667b1, tree: 0xd3a2646c,
   skin: 0xfd7046c5, apron: 0xb55a4f09, headwear: 0x1b873593, bannerShape: 0xcc9e2d51, bannerMotif: 0xe6546b64,
+  accentRoof: 0x2545f491,
 });
 
 export const PAVINGS = Object.freeze(['earth', 'gravel', 'cobble', 'flagstone', 'brick', 'sett']);

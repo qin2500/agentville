@@ -83,7 +83,37 @@ export function projectStyle(key, ctx, preset) {
     folk: { ...base.folk, clothes: base.folk.palettes.map(p => p[0]), skin, apron, headwear: hw },
     banner: { shape: weighted(axisRng(key, 'bannerShape'), R.banner.shape), motif: weighted(axisRng(key, 'bannerMotif'), R.banner.motif) },
   };
+  out.houses = housePalette(key, base.family, out.roof, base.wall);
   return deepFreeze(out);
+}
+
+// ---- district palette (city-variety): the houses of one project share its family, not one colour ----
+/** A storybook accent roof a few houses of each family wear (verdigris copper, blue slate, plum shingle), muted below the
+ *  badge-hue cap like every roof. */
+export const ACCENT_ROOFS = Object.freeze([
+  Object.freeze({ base: '#4f8f74', ridge: '#386a55' }), Object.freeze({ base: '#4a6a96', ridge: '#344c6e' }), Object.freeze({ base: '#86496a', ridge: '#62344e' }),
+]);
+const wallMemo = new Map();
+/** The wall pairs a family offers (derived from styles-pool, like roofChoices). */
+export function wallChoices(family) {
+  let r = wallMemo.get(family);
+  if (!r) {
+    const seen = new Map();
+    for (let i = 0; i < 96; i++) { const s = styleFor(`probe${i}`, { family }); seen.set(s.wall.base + s.wall.alt, s.wall); }
+    r = [...seen.values()]; wallMemo.set(family, r);
+  }
+  return r;
+}
+/** style.houses: the roofs and walls a project's HOUSES pick from by variant (iso.js), own colours first. Civic buildings and
+ *  the palace keep style.roof / style.wall. Pure in (key, family, roof). */
+export function housePalette(key, family, roof, wall) {
+  const own = roofChoices(family), first = own.find(r => r.base === roof.base) || roof;
+  // two of the three storybook accents (a third of the houses), the rest the family's own roofs
+  const skip = Math.floor(axisRng(key, 'accentRoof')() * ACCENT_ROOFS.length), accents = ACCENT_ROOFS.filter((_, i) => i !== skip).map(muteRoof);
+  const rest = own.filter(r => r.base !== first.base);
+  const roofs = [first, accents[0], ...rest.slice(0, 2), accents[1], ...rest.slice(2)];
+  const ws = wallChoices(family), w0 = ws.find(w => w.base === wall.base && w.alt === wall.alt) || wall;
+  return { roofs: roofs.map(r => ({ base: r.base, ridge: r.ridge })), walls: [w0, ...ws.filter(w => w !== w0)].map(w => ({ base: w.base, alt: w.alt })) };
 }
 
 // ---- neighbour rule ----
@@ -119,7 +149,8 @@ export function applyNeighbourRule(styles, blocks, distinctPicks, near = 6) {
     const k = String(b.project ?? b.name), s = get(k), rb = roofs.get(k), pt = pats.get(k);
     if (rb === s.roof.base && pt === s.street.pattern) { out.set(k, s); continue; }
     const ridge = roofChoices(s.family).find(r => r.base === rb)?.ridge ?? s.roof.ridge;
-    out.set(k, deepFreeze({ ...s, roof: { base: rb, ridge }, street: { ...s.street, pattern: pt } }));
+    const roof = { base: rb, ridge };
+    out.set(k, deepFreeze({ ...s, roof, street: { ...s.street, pattern: pt }, houses: housePalette(k, s.family, roof, s.wall) }));
   }
   return out;
 }

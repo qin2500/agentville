@@ -102,7 +102,11 @@ test('engine: after the hydrate, loads and polls keep every building and prop ti
   // countryside dressing redraws it once. It is excluded here; everything that IS persisted is still pinned: every building, lot,
   // venue, civic block and persisted prop (`prop:*`, incl. its trees and decals), plus the stored keys byte-for-byte below.
   const isWild = id => id.startsWith('tree:');
-  const expectedObjects = fx.engine.objects.filter(o => !isWild(o[0]));
+  // A lot building's `variant` (index 5) is only how it is drawn (city-variety: mods/agentville.fantasy/variety.js picks
+  // it so neighbours differ); it is not persisted and never moves a tile, so the capture's variants are not pinned. Every id,
+  // kind, project, lot, model and tile still is, and the variants must be the same on every build (checked below).
+  const noVar = rows => rows.map(r => [...r.slice(0, 5), null, ...r.slice(6)]);
+  const expectedObjects = noVar(fx.engine.objects.filter(o => !isWild(o[0])));
   assert.ok(expectedObjects.length > 400, 'the persisted part of the capture is still large');
   const objectsAt = now => {
     const { input, serverId } = toWorldInput(makeView(src, { now }), { seed: SEED, salt: 'nest' });
@@ -113,9 +117,14 @@ test('engine: after the hydrate, loads and polls keep every building and prop ti
   };
   // `seen` is a last-seen clock that every build refreshes, so byte identity is checked at the capture's own clock;
   // a build a minute later must keep every tile and everything in the key but `seen`.
-  for (let i = 0; i < 3; i++) assert.deepEqual(objectsAt(fx.engine.lastNow), expectedObjects, `build ${i}: every building and prop tile unchanged`);
+  const first = objectsAt(fx.engine.lastNow);
+  for (let i = 0; i < 3; i++) {
+    const got = i ? objectsAt(fx.engine.lastNow) : first;
+    assert.deepEqual(noVar(got), expectedObjects, `build ${i}: every building and prop tile unchanged`);
+    assert.deepEqual(got, first, `build ${i}: every variant the same as the first build's`);
+  }
   assert.equal(ls.getItem(fx.engine.storeKey), fx.engine.stored, 'va.engine2.world byte-identical');
-  for (let i = 0; i < 3; i++) assert.deepEqual(objectsAt(fx.engine.lastNow + 60_000 + i * 3000), expectedObjects, `a minute later, build ${i}: tiles unchanged`);
+  for (let i = 0; i < 3; i++) assert.deepEqual(objectsAt(fx.engine.lastNow + 60_000 + i * 3000), first, `a minute later, build ${i}: tiles and variants unchanged`);
   assert.equal(noSeen(ls.getItem(fx.engine.storeKey)), noSeen(fx.engine.stored), 'va.engine2.world unchanged but for `seen`');
   assert.equal(ls.getItem(fx.engine.seedKey), fx.engine.seed, 'va.engine2.seed byte-identical');
 });
