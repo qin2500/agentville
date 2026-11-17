@@ -120,12 +120,14 @@ test('x-ray gets only occluded actors; building fade only when someone is select
   assert.ok(calls.fade > 0);
 });
 
-test('Map LOD: no sprite slices, actors become dots', () => {
+test('Map zoom is the same village, smaller: no footprint diamonds, no dots, the actor drawn as its sprite', () => {
   const { r, calls, ready } = mk({ objects: [bld('b', 0, 0)] });
   ready.add('cottage|s|0');
-  r.draw(frame({ cam: { x: 0, y: 0, z: 0.25 }, actors: [actor('a', 0, 0)] }));
-  assert.equal(drawnImages(calls).length, 0);
-  assert.ok(calls.ops.includes('rect') && calls.ops.includes('poly'));
+  const f = frame({ cam: { x: 0, y: 0, z: 0.25 }, actors: [actor('a', 0, 0)] });
+  r.draw(f); for (let i = 0; i < 200 && r.stats().groundPending; i++) { r.rasterIdle(50); r.draw(f); }   // idle slices are budgeted: run until settled
+  assert.ok(!calls.ops.includes('poly'), 'no footprint diamonds');
+  assert.ok(drawnImages(calls).length >= 1, 'the actor is a sprite, not a dot');
+  assert.ok(calls.sliced.b >= 1, 'the building is sliced at its real sprite for the Map tile');
 });
 
 test('draw before setWorld returns no hits', () => {

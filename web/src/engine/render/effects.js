@@ -65,10 +65,9 @@ export function createEffects({ world, mod, entryOf = null, accents = null, flag
   let last = { puffs: 0, birds: false };   // what the last draw put on screen (stats())
   function draw(g, cam, gview, frame = {}) {
     last = { puffs: 0, birds: false };
-    const t = Number.isFinite(frame.t) ? frame.t : 0, r = gview?.rect, z = gview?.zoom ?? cam?.z ?? 1;
-    const map = gview?.mode === 'map' || z <= 0.25;
+    const t = Number.isFinite(frame.t) ? frame.t : 0, r = gview?.rect;
+    // Map zoom draws them all as well: the same village, smaller (every effect is capped, CAPS)
     if (wantEdges) drawAccentEdges(g, edges, gview);
-    if (map) return;
     // wave glints: a short pale dash that wanders along the swell and twinkles
     let n = 0;
     for (const w of waves) {

@@ -240,7 +240,7 @@ Measured-style budgets (MacBook-class, Chromium/Electron, 1440×900 village pane
 |---|---|---|---|
 | 2×, 40 projects, 400 agents, ~120 actors on screen | ≤ 4 ms | ≤ 3% at 10 fps (relaxed from 2.5%) | sprite cache ≤ 48 MB |
 | 2×, 1,000 agents, ~300 actors on screen | ≤ 8 ms | ≤ 5% | ≤ 64 MB (LRU by bytes) |
-| Map zoom, whole world | ≤ 3 ms (LOD map tiles) | ≤ 3.5% (relaxed from 2%) | |
+| Map zoom, whole world | ≤ 3 ms (cached Map tiles, §3.5) | ≤ 3.5% (relaxed from 2%) | |
 | Pan or zoom gesture | ≤ 8 ms at 60 fps for the duration | | |
 | Cold world build (40 projects / 1,000 agents) | ≤ 375 ms total (was 300; the cost of slicing), ≤ 50 ms per task (yield between settlements) | | |
 | Per poll (status change only) | ≤ 3 ms | | |
@@ -299,9 +299,37 @@ Measured-style budgets (MacBook-class, Chromium/Electron, 1440×900 village pane
   ring. Open sea is never baked. A chunk is invalidated by world version and block id.
 - **Culling** is per chunk (screen rect), then per actor. Off-screen chunks skip the slice merge entirely.
 - **Zoom levels.** Integer close-up zooms are 1×, 2×, 3× and 4×, at one canvas px per world px × zoom (as
-  today). **Map** is a separate LOD: one pre-rendered "map tile" per chunk at ¼ scale. Buildings are drawn
-  from a `mapSprite` (a simplified roof-colour silhouette), actors become 2×2 status dots, and settlements
-  show their plate (§6.3). This is far cheaper than drawing full detail at ⅛.
+  today). **Map** zooms (¼, ⅛) show the **same village, just smaller** (no simplified
+  version when zoomed far out). The static town is drawn from cached **Map tiles** (`render/map-tiles.js`):
+  screen-space squares of 256×256 world px, each the street view's own draw of its rect (ground, plot accent
+  edges, every building, tree, prop and decal slice, back to front) at 1×, box-filtered down by halving to
+  the device scale (z × dpr) and stored in a slot of a 1024 px atlas page, one page class per tile size,
+  48 MB of pages, LRU, the visible tiles pinned. Pages and the bake canvas are CPU-backed like every sprite
+  raster (hundreds of separate GPU canvases lose their content in Chromium). Open-sea tiles (no ground tile,
+  no sprite) hold no slot: the clear colour is the tile. Actors are drawn per frame as their real sprites,
+  with the ambient and event effects, windmill sails, the night light and the selection marks over them,
+  as in the street view; settlements still show their plate (§6.3). Each actor frame is drawn from the **actor atlas**
+  (`render/actor-atlas.js`): one CPU-backed page per device scale holding every frame once, pre-scaled with the same
+  nearest sample the camera transform makes and found by its frame key (actor-art `frameKey`, no doll composed for a key
+  it has), copied 1:1 at a whole device px. A full page starts over and the frame's slots are found again before any is
+  drawn. Important stars and the marks are drawn only for actors in the view. A tile is keyed by a signature of what
+  it is drawn from (the objects that reach it and their sprite keys, its ground chunks' content keys, the
+  accent edges), so a rebuilt world re-bakes only changed tiles and dusk re-bakes with lit windows. Baking
+  runs only between frames (`rasterIdle`), nearest tile first; a frame never bakes. A step out to ⅛ halves
+  the fresh ¼ bakes instead of drawing the tiles again. Until a tile is baked its stale bake, another
+  scale's bake or the cached ground stands in, and the layer is not kept. On a huge world the first visit
+  to Map zoom fills in over seconds. A bake is never one long task: its sprites are queued and built by the idle pump
+  (a Map frame rasters no sprite), its ground art is built first in deadline-bounded steps (`ground.prepRect`), and
+  every source it draws is CPU-backed (a GPU-backed source, such as the mod's ground tiles once were, costs a GPU
+  readback per draw: that was 75% of the fill). The view's tiles bake first, then a ring of 2 tiles round it in idle
+  time (`prefetchIdle`). Baked tiles are kept across sessions (`render/map-tile-store.js`, IndexedDB): PNG, keyed by
+  build fingerprint, tile, device scale and signature, so a relaunch reads them back (no sprite rastered) and a changed
+  tile or a new build misses; a save drops the older tile at the same place, a new build's first open drops the old
+  build's tiles, and past 64 MB the least recently used go. Dev pages persist only with `?tilestore`. The camera translation is snapped to whole
+  device px at Map zoom, so tiles blit pixel for pixel. Map zoom keeps no slice list per chunk (slices are
+  made for the bake and dropped), so its sprite memory is the sprite cache's. Sim LOD (`sim/world-sim.js`)
+  is unchanged: zoomed out, behaviour runs less often but movement and animation run every step, so it is
+  invisible.
 - Zoom transitions cross-fade Map ↔ 1× over 150 ms. Integer zooms snap.
 
 ### 3.6 Occlusion handling

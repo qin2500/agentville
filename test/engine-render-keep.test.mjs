@@ -1,5 +1,5 @@
 // M7 perf: the kept street view, the sprite-free Map view, the sprite queue cancel and the hit merge.
-// Spec (M7 perf brief): a still view does no per-frame static work; Map zoom never looks a sprite up; the kept draw
+// Spec (M7 perf brief): a still view does no per-frame static work; Map zoom draws cached tiles (map-tiles.js); the kept draw
 // gives the same hits as the full one; nothing about the result depends on which way a frame was drawn.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -108,23 +108,17 @@ test('setKeep(false) always takes the full draw; a moving camera or pending spri
   assert.ok(!d.ops.some(o => o[0] === 'save'), 'a flat ground chunk is never kept');
 });
 
-test('Map zoom never looks a sprite up, drops queued sprite jobs, draws one dot batch and keeps its static layer', () => {
-  const { r, ops, gets } = mk({ objects: town() });
+test('Map zoom draws the static town from tiles (no footprint diamonds, no dots), actors as sprites, and keeps its layer', () => {
+  const { r, ops } = mk({ objects: town() });
   const f = frame({ cam: { x: 0, y: 0, z: 0.25 }, mode: 'map', actors: [actor('p', 1.5, 1.5), actor('q', 2.5, 2.5)] });
   const h1 = r.draw(f);
-  assert.equal(gets.n, 0, 'no sprite lookups at Map zoom');
-  assert.ok(gets.cancel >= 1, 'the queue is dropped');
   assert.deepEqual(h1.map(h => h.kind), ['agent', 'agent'], 'actor hits only');
-  assert.equal(ops.filter(o => o === 'poly').length, 5, 'one footprint per building');
-  assert.deepEqual(ops.find(o => o[0] === 'rects'), ['rects', 2, '#ffffff'], 'both dots in one batch');
-  assert.ok(ops.some(o => o[0] === 'save'), 'the static layer is kept');
+  assert.ok(!ops.includes('poly'), 'no footprint diamonds');
+  assert.ok(!ops.some(o => o[0] === 'rects'), 'no dot batch');
+  assert.equal(images(ops).filter(t => t === 'actor').length, 2, 'both actors drawn as their sprite');
   ops.length = 0;
   const h2 = r.draw(f);
-  assert.ok(ops.some(o => o[0] === 'layer') && !ops.includes('ground') && !ops.includes('poly'), 'the kept layer, no ground or footprints');
   assert.deepEqual(strip(h2), strip(h1));
-  ops.length = 0;
-  r.draw({ ...f, cam: { x: 1, y: 0, z: 0.25 } });
-  assert.ok(ops.includes('ground'), 'a moved camera draws the ground again');
 });
 
 test('SpriteCache.cancel drops the queue; the next get queues the job again', () => {

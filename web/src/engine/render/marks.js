@@ -13,6 +13,13 @@ const MARKER_COL = { o: '#140f1c', y: '#eaf2ff' };
 // The "Important" star (classic world.js glyph): a gold star at the left of the head of an agent flagged important.
 const STAR = ['...o...', '..oyo..', 'ooyyyoo', '.oyyyo.', 'oyo.oyo', 'oo...oo'];
 const STAR_COL = { o: '#140f1c', y: '#ffd23f' };
+// the star's pixels as runs per colour: [x, y, w, 1, ...] (a run of one colour in a row is one rect)
+const STAR_INKS = Object.keys(STAR_COL);
+const STAR_RUNS = Object.fromEntries(STAR_INKS.map(ch => {
+  const out = [];
+  STAR.forEach((row, y) => { for (let x = 0; x < row.length;) { if (row[x] !== ch) { x++; continue; } let e = x; while (row[e] === ch) e++; out.push(x, y, e - x, 1); x = e; } });
+  return [ch, out];
+}));
 
 /**
  * importantStars({ actors }) -> [{ id, x, y }] (tile coords of the feet): every outdoor agent carrying input.important
@@ -69,7 +76,9 @@ export function drawMarks(g, marks, { entryOf, frameOf, headOf, now = 0 } = {}) 
   const { ghost, outline, marker, stars } = marks;
   for (const st of stars || []) {
     const p = toScreen(st.x, st.y), x0 = Math.round(p.sx) - 9, y0 = Math.round(p.sy) - top(st.id) - 4;
-    STAR.forEach((row, y) => [...row].forEach((ch, x) => { if (STAR_COL[ch]) g.rect(x0 + x, y0 + y, 1, 1, STAR_COL[ch]); }));
+    if (g.rects) {   // one fill per colour per star (its pixels never overlap), not one per pixel
+      for (const ch of STAR_INKS) { const r = STAR_RUNS[ch], out = new Array(r.length); for (let i = 0; i < r.length; i += 4) { out[i] = x0 + r[i]; out[i + 1] = y0 + r[i + 1]; out[i + 2] = r[i + 2]; out[i + 3] = 1; } g.rects(out, STAR_COL[ch]); }
+    } else STAR.forEach((row, y) => [...row].forEach((ch, x) => { if (STAR_COL[ch]) g.rect(x0 + x, y0 + y, 1, 1, STAR_COL[ch]); }));
   }
   if (outline) {
     const { tx, ty, w, h } = outline;

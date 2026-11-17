@@ -616,6 +616,8 @@ export function createEngine(app) {
       trace(on = true) { const t = trace; trace = on ? [] : null; return t; },
       // keep(false): the renderer always draws the whole view (no kept layers), for A/B checks; keep(true) restores
       keep(on = true) { renderer?.setKeep?.(on); invalidate(); },
+      // atlas(false): Map zoom draws each actor from its own frame (no actor atlas), for A/B checks; atlas(true) restores
+      atlas(on = true) { renderer?.setAtlas?.(on); invalidate(); },
       poll(flip = 0) {
         const list = fixture?.agents ?? [];
         for (let i = 0, k = 0; i < list.length && k < flip; i++) {

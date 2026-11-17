@@ -6,12 +6,14 @@ import { alphaOf } from '../art/alpha.js';
 
 /**
  * Device-pixel transform for a camera: device = world1x * scale + (tx, ty).
- * view = { cssW, cssH, dpr }. At integer zooms the translation is snapped to whole device px (crisp pixel art).
+ * view = { cssW, cssH, dpr }. At integer zooms the translation is snapped to whole device px (crisp pixel art), and at
+ * Map zooms (z <= 1/4) too: the Map tiles (map-tiles.js) are baked at the device scale, so a whole-px translation blits
+ * them pixel for pixel with no seam between tiles.
  */
 export function worldToDevice(cam, view) {
   const dpr = view.dpr || 1, s = dpr * cam.z, c = toScreen(cam.x, cam.y);
   let tx = (view.cssW / 2 - c.sx * cam.z) * dpr, ty = (view.cssH / 2 - c.sy * cam.z) * dpr;
-  if (Number.isInteger(cam.z)) { tx = Math.round(tx); ty = Math.round(ty); }
+  if (Number.isInteger(cam.z) || cam.z <= 0.25) { tx = Math.round(tx); ty = Math.round(ty); }
   return { scale: s, tx, ty };
 }
 
