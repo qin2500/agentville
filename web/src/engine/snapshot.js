@@ -16,7 +16,7 @@ import { visibleProjects } from '../quiet.js';
 // Server shape audited (A8): prompt is an enum key (permission|question|plan|dialog), severity error|attention|null,
 // prs ids are digit strings; stoppedNote/folds/pinned are computed client-side (important.js) from reason/live/important/hidden.
 export const AGENT_FIELDS = ['id', 'name', 'shortName', 'project', 'bucket', 'severity', 'prompt', 'role', 'parentId', 'childIds', 'prs', 'live', 'hidden',
-  'important', 'since', 'lastActivityAt', 'reason', 'color', 'harness', 'kind', 'ask', 'resume', 'reopened', 'neverStarted'];
+  'important', 'since', 'lastActivityAt', 'reason', 'color', 'harness', 'kind', 'ask', 'resume', 'reopened', 'neverStarted', 'notice'];
 const EMPTY_DOCK = { loading: [], sailed: [], total: 0, level: 1 };
 
 // PERF M7 (poll path): the field copy written out (named reads are much faster than a keyed loop over AGENT_FIELDS); the
@@ -47,6 +47,7 @@ export function copyAgentFields(a) {
   if (a.resume !== undefined) o.resume = a.resume;
   if (a.reopened !== undefined) o.reopened = a.reopened;
   if (a.neverStarted !== undefined) o.neverStarted = a.neverStarted;
+  if (a.notice !== undefined) o.notice = a.notice;
   return o;
 }
 const pickAgent = a => {

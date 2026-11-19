@@ -283,8 +283,9 @@ B.stall = (S, p) => {
     const [vx, vy] = S.P((a + b) / 2, front + 3, 23);
     S.ell(vx, vy, 1.7, 1.4, (x, y, u, w) => (w < 0 ? null : c[1]));
   }
-  const [rx, ry] = S.P(0, back - 1, 35); S.rect(rx - 11, ry - 1, 22, 1, A[3]);
-  
+  // the awning's back edge: a light hem along the iso x axis (it was a screen-horizontal bar that poked out past the
+  // awning's right side)
+  const [ax, ay] = S.P(-13, back - 1, 35), [bx, by] = S.P(13, back - 1, 35); S.line(ax, ay - 1, bx, by - 1, A[3]);
 };
 
 B.fence = (S, p) => {

@@ -32,7 +32,7 @@ export function createMenu(app, deps) {
     if (!t?.closest) return null;
     const r = t.closest('#list .row[data-id], #list .trow[data-id], #list .tnode[data-id], #list .menubtn[data-menu]');
     if (r) return r.dataset.id || r.dataset.menu;
-    if (t.closest('#stage .termhead .tname, #stage .termhead .tglyph')) return S.term;
+    if (t.closest('#stage .termhead .tname, #stage .termhead .tglyph')) return S.byId.has(S.term) ? S.term : null;
     return null;
   }
 
@@ -49,7 +49,6 @@ export function createMenu(app, deps) {
       out.push({ act: 'open', label: `Open in ${deps.termName()}`, why: deps.openBlock(a) });
     }
     out.push({ act: 'showvillage', label: 'Show in village' });
-    if (!a.parentId && S.taskRows?.open?.some(r => r.agentId === a.id)) out.push({ act: 'taskdone', label: 'Check off task' });
     if (a.resume) out.push({ act: 'copy', label: /^claude attach /.test(a.resume) ? 'Copy attach command' : 'Copy resume command', title: a.resume });
     if (a.harness === 'claude-code' && !sub && !a.neverStarted) out.push({ act: 'fork', label: 'Fork…', popup: true });
     if (!sub && typeof a.permissionMode === 'string' && a.permissionMode !== 'bypassPermissions') out.push({ act: 'bypass', label: 'Switch to bypass permissions…', popup: true });
@@ -190,7 +189,6 @@ export function createMenu(app, deps) {
       case 'important':
         try { await app.patch(a.id, { important: a.important ? null : true }); app.say(a.important ? `${a.name} is no longer marked important` : `${a.name} marked important`); } catch (e) { app.toast(saveError(e)); }
         return;
-      case 'taskdone': return app.taskDoneFor(a.id);
       case 'hide': return deps.hide(a, true);
       case 'unhide': return deps.hide(a, false);
     }

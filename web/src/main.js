@@ -1,6 +1,5 @@
-import { BUCKETS, icon, esc, clock, h, reducedMotionQuery, isPrompt, PROMPT_NAME, onStoreSet } from './ui.js';
+import { BUCKETS, icon, esc, clock, h, reducedMotionQuery, isPrompt, hasNotice, clearNotice, PROMPT_NAME, onStoreSet } from './ui.js';
 import { createPanel } from './panel.js';
-import { taskRows } from './tasks-model.js';
 import { createVillage } from './village.js';
 import { createFleet } from './fleet.js';
 import { createAccount } from './account.js';
@@ -8,6 +7,7 @@ import { createUsagePause } from './usage-pause.js';
 import { createSpend } from './spend.js';
 import { observe } from './order.js';
 import { createTermView } from './term.js';
+import { createPlainTerm } from './plain-term.js';
 import { loadModels } from './models.js';
 import { createUpdate } from './update.js';
 import { createLaunch } from './launch.js';
@@ -42,7 +42,6 @@ const S = {
   data: null,            // last good payload
   agents: [],            // visible agents (hidden removed unless showHidden)
   byId: new Map(),
-  loops: {}, tasks: [], taskRows: { open: [], done: [] }, unseen: new Set(), // Tasks (see tasks-model.js); unseen = agent ids with an unseen open task
   kids: new Map(),       // id -> visible children (from parentId)
   status: 'loading',     // loading | ok | offline
   failures: 0,
@@ -64,6 +63,8 @@ const S = {
   query: '',
   filters: { projects: new Set(), harness: new Set(), roles: new Set(), bucket: null, showHidden: false },
   selected: null,
+  heldNotice: new Map(), // id -> the notice just read (shown in full on its row while selected)
+  noticeGone: new Map(),  // id -> `at` of a notice cleared here, hidden until the server confirms (polls can race the POST)
   term: null,            // agent id shown in the terminal view, or null
   get view() { return this.views[this.panel === 'full' ? 'full' : 'docked']; },
   get reduceMotion() { return this.reduceSetting || reducedMotionQuery.matches; },
@@ -77,9 +78,10 @@ const app = {
   render,
   // Below 900px the docked panel covers the village; "Show in village" collapses the panel and pans there.
   narrow: () => narrowQuery.matches,
-  select(id, { pan = true, fromVillage = false, reveal = fromVillage } = {}) {
+  select(id, { pan = true, fromVillage = false, reveal = fromVillage, open = true } = {}) {
     S.selected = id && S.byId.has(id) ? id : null;
-    if (S.selected) app.markSeen(S.selected);
+    if (S.selected && open) app.clearNotice(S.selected);
+    for (const k of S.heldNotice.keys()) if (k !== S.selected) S.heldNotice.delete(k); // a read notice stays only while its agent is open
     writeHash();
     if (reveal && S.selected) {
       if (fromVillage && S.panel === 'collapsed' && !app.narrow()) setPanel('docked');
@@ -178,18 +180,20 @@ const bubbles = createBubbles(village); // status bubbles on/off (bubbles.js)
 // ---------- terminal view ----------
 // Terminal takes the centre; the village (or the full-screen list) compresses to a column on the
 // left. Entering saves the view; leaving puts back exactly that view. The PTY outlives both.
+const plainTerm = createPlainTerm(app);
 const termView = createTermView(app, {
   termName: () => panel.termName(), terminal: () => S.data?.open?.terminal || null, onClose: () => app.closeTerminal(),
   // Splits: the focused pane is the terminal's agent (selected, in the header); a drop is refused for the same reasons as Open.
   onFocus: id => {
-    if (!S.term || (S.term === id && S.selected === id)) return;
+    if (!S.term || (S.term === id && (S.selected === id || (plainTerm.isPlain(id) && S.selected === (plainTerm.agentOf(id)?.id || null))))) return;
     S.term = id;
-    S.selected = S.byId.has(id) ? id : S.selected;
+    S.selected = S.byId.has(id) ? id : plainTerm.isPlain(id) ? plainTerm.agentOf(id)?.id || null : S.selected;
     writeHash();
     village.setSelected(S.selected, { pan: false });
     render();
   },
   termBlock: id => panel.termBlock(id),
+  plain: plainTerm,
 });
 // The layout moves in 150 ms (styles.css); the terminal is fitted once it has settled, never to a
 // column caught mid-transition.
@@ -201,9 +205,13 @@ function animateLayout() {
   clearTimeout(tvTimer);
   tvTimer = setTimeout(() => { tvAnim = false; $('main').classList.remove('tv-anim'); termView.fit(); }, 170);
 }
+app.openPlain = (kind, cwd) => plainTerm.open(kind, cwd); // the new-agent sheet's "Terminal here" / "Claude here"
 app.openTerminal = id => {
-  const a = S.byId.get(id);
+  // An agent that runs inside a plain terminal opens that pane (never a second terminal for it).
+  id = plainTerm.paneOf(id) || id;
+  const a = S.byId.get(id) || plainTerm.stub(id);
   if (!a) return;
+  const aid = plainTerm.isPlain(id) ? plainTerm.agentOf(id)?.id || null : id;
   closePops();
   if (!S.term) {
     // Where the keyboard was, to give it back exactly there on close.
@@ -216,10 +224,10 @@ app.openTerminal = id => {
     animateLayout();
   }
   S.term = id;
-  S.selected = id;
-  app.markSeen(id);
+  S.selected = aid;
+  app.clearNotice(aid);
   writeHash();
-  village.setSelected(id, { pan: false });
+  village.setSelected(aid, { pan: false });
   render();
   termView.attach(a);
   village.setActive();
@@ -269,76 +277,14 @@ function focusKey(f) {
 // ?debug exposes the world layout for e2e checks (positions, bounds, zoom).
 if (new URLSearchParams(location.search).has('debug')) { window.villageDebug = village.debug; window.villageSetCamera = village.setCamera; } // setCamera: the art capture harness (tools/artpass)
 
-// ---------- tasks ----------
-// S.tasks mirrors the snapshot's `tasks`; S.taskRows / S.unseen are derived from it (with S.loops'
-// seenAt) and rerun on every ingest and every optimistic change.
-const SEEN_GAP = 5000, seenSent = new Map();
-function recomputeLoops() {
-  const now = S.data?.serverTime || Date.now();
-  try { S.taskRows = taskRows(S.tasks || [], S.agents || [], S.loops || {}, now); } catch { S.taskRows = { open: [], done: [] }; }
-  S.unseen = new Set(S.taskRows.open.filter(r => r.unseen && r.agentId).map(r => r.agentId));
-}
-async function loopPost(id, body) {
-  try {
-    const res = await fetch(`/api/loops/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json().catch(() => null);
-  } catch { return null; }
-}
-/** Marks an agent seen: optimistic, then the POST; the next poll brings the server's copy. */
-app.loopAct = async (id, body) => {
-  (S.loops ||= {})[id] = { ...(S.loops[id] || {}), seenAt: Date.now() };
-  recomputeLoops();
-  render();
-  const res = await loopPost(id, body);
-  if (res && typeof res === 'object') { S.loops[id] = res; recomputeLoops(); render(); }
-};
-async function taskPost(path, body) {
-  try {
-    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json().catch(() => ({}));
-  } catch { return null; }
-}
-/** Done / reopen / rename / delete a task: optimistic, then the POST; a failure re-fetches the real list. */
-app.taskAct = async (id, body) => {
-  const t = (S.tasks ||= []).find(x => x.id === id);
-  if (!t) return;
-  if (body.done) t.doneAt = Date.now();
-  if (body.reopen) delete t.doneAt;
-  if ('rename' in body) { if (body.rename) t.rename = body.rename; else delete t.rename; }
-  if (body.delete) S.tasks = S.tasks.filter(x => x.id !== id);
-  recomputeLoops();
-  render();
-  const res = await taskPost(`/api/tasks/${encodeURIComponent(id)}`, body);
-  if (!res) { app.toast("Couldn't update that task."); poll(); return; }
-  if (res.id && !body.delete) { const i = S.tasks.findIndex(x => x.id === id); if (i >= 0) S.tasks[i] = { ...S.tasks[i], ...res }; recomputeLoops(); render(); }
-};
-/** Done for the open task of an agent (right-click menu). */
-app.taskDoneFor = agentId => {
-  const r = S.taskRows?.open?.find(x => x.agentId === agentId);
-  return r && app.taskAct(r.id, { done: true });
-};
-app.taskAdd = async text => {
-  text = String(text || '').trim();
-  if (!text) return;
-  const tmp = `tmp-${Date.now()}`;
-  (S.tasks ||= []).push({ id: tmp, kind: 'idea', text, addedAt: Date.now() });
-  recomputeLoops();
-  render();
-  const res = await taskPost('/api/tasks', { text });
-  if (!res || !res.id) { app.toast("Couldn't add that idea."); S.tasks = S.tasks.filter(x => x.id !== tmp); recomputeLoops(); render(); poll(); return; }
-  const i = S.tasks.findIndex(x => x.id === tmp);
-  if (i >= 0) S.tasks[i] = res;
-  recomputeLoops();
-  render();
-};
-app.markSeen = id => {
-  if (!id || !S.unseen?.has(id)) return;
-  const now = Date.now();
-  if (now - (seenSent.get(id) || 0) < SEEN_GAP) return;
-  seenSent.set(id, now);
-  app.loopAct(id, { seen: true });
+/** Opening an agent (select, or its terminal) shows its notice in full and clears it: optimistically here, then on the server. Idempotent. */
+app.clearNotice = id => {  // eslint: ui.js clearNotice(id) is the POST
+  const a = S.byId.get(id), n = a?.notice;
+  if (!n) return;
+  S.heldNotice.set(id, n);
+  S.noticeGone.set(id, n.at);
+  a.notice = null;
+  clearNotice(id);
 };
 
 // ---------- data ----------
@@ -348,12 +294,12 @@ function ingest(data) {
   S.dock = data.dock || null;
   dock.update();
   observe(data.agents || []);
+  for (const a of data.agents || []) { // a notice cleared here stays hidden until the server stops sending that one (a newer `at` shows)
+    if (!a.notice) S.noticeGone.delete(a.id);
+    else if (S.noticeGone.get(a.id) === a.notice.at) a.notice = null;
+  }
   S.agents = (data.agents || []).filter(a => S.filters.showHidden || !a.hidden);
   S.byId = new Map(S.agents.map(a => [a.id, a]));
-  S.loops = data.loops && typeof data.loops === 'object' ? data.loops : {};
-  S.tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  recomputeLoops();
-  if (S.term) app.markSeen(S.term);
   S.kids = new Map();
   for (const a of S.agents) if (a.parentId && S.byId.has(a.parentId)) {
     if (!S.kids.has(a.parentId)) S.kids.set(a.parentId, []);
@@ -463,12 +409,14 @@ ${!loading && errs ? `<button class="counter errors" data-bucket="error" aria-pr
   }
   banner.dataset.on = off ? '1' : '';
 
-  document.title = clicks ? `(${clicks} to click) Agentville` : st > 0 ? `(${st}) Agentville` : 'Agentville';
+  const notes = S.agents.filter(a => hasNotice(a) && !a.hidden).length;
+  document.title = notes ? `(\u2709 ${notes}) Agentville` : clicks ? `(${clicks} to click) Agentville` : st > 0 ? `(${st}) Agentville` : 'Agentville';
   setFavicon(clicks ? 'prompt' : errs ? 'error' : st > 0 ? 'stalled' : '');
   $('view-team').setAttribute('aria-pressed', String(S.view === 'team'));
   $('view-tree').setAttribute('aria-pressed', String(S.view === 'tree'));
   $('view-models').setAttribute('aria-pressed', String(S.view === 'models'));
   $('btn-new').hidden = S.view !== 'team';
+  plainTerm.update();
   const full = S.panel === 'full' && !S.term; // beside the terminal, Expand still means the whole window
   $('btn-full').textContent = full ? '⤡ Dock' : '⤢ Expand';
   $('btn-full').title = full ? 'Dock the panel beside the village (F or Esc)' : 'Expand to full screen (F)';
@@ -717,7 +665,7 @@ function fillPop(name) {
       ${planConflictHtml()}
       ${worldSlotHtml(store, esc)}
       <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
-      <p class="helper">Uses a small Haiku model, through your Claude login, for background jobs such as naming your tasks. Off by default.</p>
+      <p class="helper">Uses a small Haiku model, through your Claude login, for small background jobs. Off by default.</p>
       <p class="helper" id="helper-status" role="status"></p>
       ${classicToggleHtml(store)}</div>${update.menuHTML()}`;
     loadHelper();
@@ -904,6 +852,8 @@ document.addEventListener('click', e => {
   if (t.closest('#btn-spend')) return togglePop('spend');
   if (t.closest('#btn-hidden')) return togglePop('hidden');
   if (t.closest('#btn-new')) return launch.open();
+  if (t.closest('#btn-term')) return plainTerm.open('shell');
+  if (t.closest('#btn-claude')) return plainTerm.open('claude');
   if (t.closest('[data-update="open"]')) { closePops(); return update.open(popBtn.settings); }
   const un = t.closest('[data-unhide]');
   if (un) return unhide(un.dataset.unhide === '*' ? hiddenAgents().map(a => a.id) : [un.dataset.unhide], un);
@@ -997,4 +947,4 @@ function escape(e, inField) {
 S.selected = readHash();
 render();
 village.setActive();
-poll().then(() => { if (S.selected) app.select(S.selected, { reveal: true }); update.start(); });
+poll().then(() => { if (S.selected) app.select(S.selected, { reveal: true, open: false }); update.start(); });

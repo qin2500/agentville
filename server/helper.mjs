@@ -1,5 +1,5 @@
 /**
- * The Helper: a Haiku model Agentville can call for small jobs (first: naming tasks).
+ * The Helper: a Haiku model Agentville can call for small jobs (no jobs use it since the Tasks list was removed).
  * Off by default. Settings live in `helper.json`. Spawns the claude binary directly (never a shell),
  * with no tools, no MCP, no user/project settings (so no hooks), in an empty directory.
  * Prompts and outputs are never logged.

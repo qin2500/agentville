@@ -29,6 +29,10 @@ export function venueDebug({ world, actors = [] } = {}) {
     cx: v.tx, foot: v.ty, berths: v.berths.map(b => ({ id: b.id, tx: b.tx, ty: b.ty })),
     sails: list.filter(a => a.kind === 'token' && here(a)).map(a => ({ id: a.id, item: a.item, berth: a.berth ?? null, state: a.state ?? null })),
     walkers: list.filter(a => a.kind === 'porter' && here(a) && ((a.flags | 0) & 1)).map(a => ({ id: a.id, state: a.state ?? null, carry: !!a.carry })),
+    // the same porters with where they are (tiles), whether they are fading and where their trip starts (captures, e2e)
+    porters: list.filter(a => a.kind === 'porter' && here(a) && ((a.flags | 0) & 1)).map(a => ({ id: a.id, state: a.state ?? null,
+      x: Number.isFinite(a.x) ? a.x : null, y: Number.isFinite(a.y) ? a.y : null, fade: !!a.fade, alpha: a.alpha ?? 1,
+      origin: a.origin ? { x: a.origin.x, y: a.origin.y } : null })),
     lights,
   } };
 }

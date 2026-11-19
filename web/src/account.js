@@ -53,7 +53,8 @@ export function createAccount(app, { open: openAgent, termName }) {
     if (b && b.reason !== 'too_big') {
       const at = Number(b.until);
       const when = at > 0 ? ` · resumes ~${new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
-      return { text: `Auto-switch can't move: ${String(b.why || 'no account to switch to').replace(/[.\s]+$/, '')}${when}`, blocked: true };
+      const noPool = b.why === 'all accounts low' ? ' (the pool was not chosen; switch to it by hand from this menu if you want it)' : '';
+      return { text: `Auto-switch can't move: ${String(b.why || 'no account to switch to').replace(/[.\s]+$/, '')}${noPool}${when}`, blocked: true };
     }
     const u = A.usage.get(current());
     const hi = [['5-hour', u?.fiveHour], ['weekly', u?.weekly]].filter(([, w]) => w && !w.none && Math.round(w.used) >= 95);

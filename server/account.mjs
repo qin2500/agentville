@@ -31,10 +31,21 @@ import { createAccounts, writeAtomic } from './accounts.mjs'
 
 /** Settings env keys that make up the pool profile. */
 export const POOL_KEYS = [
-  'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', 'CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT',
 ]
+// Claude hot-reloads settings with Object.assign: deleting a key leaves its old value in
+// running sessions. Replace routing/auth explicitly, without choosing any session model.
+export const PERSONAL_ROUTING_ENV = Object.freeze({
+  ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+  ANTHROPIC_AUTH_TOKEN: '',
+  ANTHROPIC_API_KEY: '',
+})
+const hasPersonalRouting = (env) => Object.entries(PERSONAL_ROUTING_ENV).every(([k, v]) => env?.[k] === v)
+const isPoolEnv = (env) => Boolean(env && Object.hasOwn(env, 'ANTHROPIC_BASE_URL') &&
+  !(env.ANTHROPIC_BASE_URL === PERSONAL_ROUTING_ENV.ANTHROPIC_BASE_URL &&
+    !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY))
 const TERMINAL = ['done', 'stopped', 'failed']
 const HOME = os.homedir()
 const CLAUDE_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.claude', 'local'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
@@ -46,6 +57,7 @@ const pollMs = () => Number(process.env.AGENTVILLE_ACCOUNT_POLL_MS) || 3_000
 export const KEEP_BACKUPS = 10
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const fail = (status, message) => Object.assign(new Error(message), { status })
+const RESTARTING = 'Agents are still restarting from the last switch; try again in a few seconds'
 const testing = () => process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
 
 /** Why switching can't run here ('' = it can). Tests must name a fake home and a fake `claude`. */
@@ -116,6 +128,8 @@ export async function liveSince(home, short, state, since) {
 /** Registry statuses that mean the session is mid turn or sitting in a dialog (claude-code.mjs). */
 // 'shell': waiting on a background shell; the turn resumes when it finishes, so a respawn would cut it off.
 const NOT_IDLE = new Set(['busy', 'waiting', 'needs_user', 'blocked', 'needs_trust', 'shell'])
+/** Registry statuses that mean the session sits in a dialog: a respawn would throw the dialog away. */
+const IN_DIALOG = new Set(['needs_user', 'blocked', 'needs_trust'])
 
 /**
  * Is job `short` at a turn boundary? 'idle' | 'busy' | 'gone' (no live process, or no job file).
@@ -128,6 +142,10 @@ export async function jobActivity(home, short) {
   const ids = new Set([state?.sessionId, state?.resumeSessionId].filter(Boolean))
   let live = false
   let busy = state?.tempo === 'active'
+  // A job stopped on an error (an API error ends the turn: state 'failed') is at a turn boundary,
+  // even while its background shells (watch loops that never end) keep the registry on 'shell'.
+  // Only a dialog still counts as busy then.
+  const stopped = state?.state === 'failed' && !busy
   const dir = path.join(home, 'sessions')
   for (const f of await fsp.readdir(dir).catch(() => [])) {
     if (!f.endsWith('.json')) continue
@@ -136,7 +154,7 @@ export async function jobActivity(home, short) {
     if (!s?.pid || (s.jobId !== short && !ids.has(s.sessionId))) continue
     try { process.kill(s.pid, 0) } catch (e) { if (e.code !== 'EPERM') continue }
     live = true
-    if (NOT_IDLE.has(s.status)) busy = true
+    if (stopped ? IN_DIALOG.has(s.status) : NOT_IDLE.has(s.status)) busy = true
   }
   if (!live) return 'gone'
   return busy ? 'busy' : 'idle'
@@ -205,6 +223,7 @@ export function createAccount({
   /** Account edits share the switch's lock: never two credential changes at once. */
   async function exclusive(fn) {
     if (busy) throw fail(409, 'A switch is already running')
+    if (respawning) throw fail(409, RESTARTING)
     busy = true
     try { return await fn() } finally { busy = false }
   }
@@ -264,7 +283,7 @@ export function createAccount({
     return { jobs: live.filter((j) => !term.has(j.short)), sessions }
   }
 
-  const profileOf = (settings) => (settings.json?.env && Object.hasOwn(settings.json.env, 'ANTHROPIC_BASE_URL') ? 'pool' : 'personal')
+  const profileOf = (settings) => (isPoolEnv(settings.json?.env) ? 'pool' : 'personal')
 
   /**
    * Logged in to a personal (claude.ai) account? true | false | 'unknown'. Only `loggedIn` and
@@ -364,11 +383,11 @@ export function createAccount({
     return { dir, touch }
   }
 
-  /** Does backup set `name` hold pool gateway settings (its settings.json env has ANTHROPIC_BASE_URL)? */
+  /** Does backup set `name` hold pool gateway settings, not Personal routing neutralizers? */
   async function holdsPool(name) {
     try {
       const env = JSON.parse(await fsp.readFile(path.join(backupRoot, name, 'settings.json'), 'utf8'))?.env
-      return Boolean(env && typeof env === 'object' && Object.hasOwn(env, 'ANTHROPIC_BASE_URL'))
+      return isPoolEnv(env)
     } catch { return false }
   }
 
@@ -393,7 +412,8 @@ export function createAccount({
   /**
    * Put back what a backup set's switch changed (`meta.changed`; a set from before that was
    * recorded puts back everything it holds). Settings, stash and credential are restored as they
-   * were; a stash that didn't exist then is removed. A job file is never overwritten whole: Claude
+   * were, except old Personal settings receive explicit routing neutralizers. A stash that did not
+   * exist then is removed. A job file is never overwritten whole: Claude
    * rewrites it as the job runs, so only `respawnFlags` and `providerEnv` are put back into the
    * current file (read-modify-write).
    */
@@ -411,7 +431,13 @@ export function createAccount({
       const text = await fsp.readFile(path.join(dir, f), 'utf8')
       if (f === 'credential.json') { await accounts.restoreLive(text, meta.credentialAccount); continue }
       if (f === 'oauth-account.json') { await accounts.writeOauthAccount(JSON.parse(text)); continue }
-      if (f === 'settings.json') { await writeAtomic(settingsFile(), text); continue }
+      if (f === 'settings.json') {
+        const json = JSON.parse(text)
+        // Old Personal backups omit routing keys; absence cannot clear a live pool route.
+        const restored = isPoolEnv(json.env) ? text : serializeLike(text, { ...json, env: { ...json.env, ...PERSONAL_ROUTING_ENV } })
+        await writeAtomic(settingsFile(), restored)
+        continue
+      }
       if (f.startsWith('jobs/')) await restoreJobFields(path.join(jobsDir(), path.basename(f, '.json'), 'state.json'), JSON.parse(text))
     }
     return meta
@@ -422,12 +448,15 @@ export function createAccount({
    * of `respawnFlags` and the pool keys of `providerEnv`, from `saved`. Anything else changed since
    * (a later bypass-permissions switch, another env key) is kept.
    */
-  async function restoreJobFields(file, saved) {
+  async function restoreJobFields(file, saved, { preserveModelChoice = false } = {}) {
     const text = await fsp.readFile(file, 'utf8').catch(() => null)
     if (text === null) return // the job is gone: nothing to put back
     const state = JSON.parse(text)
-    if (Array.isArray(state.respawnFlags)) state.respawnFlags = withModel(state.respawnFlags, saved.respawnFlags)
-    else if (Array.isArray(saved.respawnFlags)) state.respawnFlags = saved.respawnFlags
+    const unchangedModel = modelOf(state.respawnFlags) === modelOf(stripPoolModel(saved.respawnFlags))
+    if (Array.isArray(state.respawnFlags)) {
+      if (!preserveModelChoice || unchangedModel) state.respawnFlags = withModel(state.respawnFlags, saved.respawnFlags)
+    }
+    else if (!preserveModelChoice && Array.isArray(saved.respawnFlags)) state.respawnFlags = saved.respawnFlags
     const was = saved.providerEnv && typeof saved.providerEnv === 'object' ? saved.providerEnv : {}
     const cur = state.providerEnv && typeof state.providerEnv === 'object' ? state.providerEnv : null
     if (cur || POOL_KEYS.some((k) => Object.hasOwn(was, k))) {
@@ -470,6 +499,7 @@ export function createAccount({
     const env = settings.json.env || {}
     const stash = { savedAt: Date.now(), envOrder: Object.keys(env), env: {}, jobs: {} }
     for (const k of POOL_KEYS) if (Object.hasOwn(env, k)) { stash.env[k] = env[k]; delete env[k] }
+    Object.assign(env, PERSONAL_ROUTING_ENV)
     for (const j of jobs) {
       const fresh = JSON.parse(await fsp.readFile(j.file, 'utf8'))
       stash.jobs[j.short] = { respawnFlags: fresh.respawnFlags, providerEnv: fresh.providerEnv }
@@ -510,6 +540,11 @@ export function createAccount({
    * going back to the pool restores them, then clean it like the rest. -> the jobs that changed.
    */
   async function catchUpToPersonal(jobs, touch) {
+    const settings = await readSettings()
+    if (!hasPersonalRouting(settings.json.env)) {
+      await touch('settings.json')
+      await writeAtomic(settingsFile(), serializeLike(settings.text, { ...settings.json, env: { ...settings.json.env, ...PERSONAL_ROUTING_ENV } }))
+    }
     const left = []
     for (const j of jobs) {
       const s = JSON.parse(await fsp.readFile(j.file, 'utf8'))
@@ -530,7 +565,9 @@ export function createAccount({
   async function applyToPool(jobs, touch) {
     const stash = JSON.parse(await fsp.readFile(stashFile, 'utf8'))
     const settings = await readSettings()
-    const current = settings.json.env || {}
+    const current = { ...settings.json.env }
+    // Do not carry our Personal-only neutralizers into the restored pool profile.
+    for (const [k, v] of Object.entries(PERSONAL_ROUTING_ENV)) if (current[k] === v) delete current[k]
     // Original key order first, then anything added while on the personal account.
     const env = {}
     for (const k of stash.envOrder || []) {
@@ -545,7 +582,7 @@ export function createAccount({
       const saved = stash.jobs?.[j.short]
       if (!saved) continue
       await touch(`jobs/${j.short}.json`)
-      await restoreJobFields(j.file, saved)
+      await restoreJobFields(j.file, saved, { preserveModelChoice: true })
     }
     await fsp.rm(stashFile, { force: true })
   }
@@ -588,10 +625,18 @@ export function createAccount({
   // Jobs given up on (still busy at the deadline): restart by hand. Cleared when restarted or switched again.
   let pendingRestarts = []
   let draining = null
+  // Bumped by every switch and Undo: a background pass that began before one stops, so it never
+  // restarts a job under settings it did not queue it for (the queue entries are new ones).
+  let generation = 0
+  // Respawns running right now. A switch, Undo or account edit is refused while one runs, so no
+  // process starts while the settings and the login are half written.
+  let respawning = 0
 
   /** Respawn one job now. -> a result `{ id, status, detail? }`; a failure never throws. */
   async function respawn(bin, short) {
-    const r = await runCmd(bin, ['respawn', short], RESPAWN_MS)
+    respawning++
+    let r
+    try { r = await runCmd(bin, ['respawn', short], RESPAWN_MS) } finally { respawning-- }
     if (r.code === 0) return { id: short, status: 'respawned' }
     if (/another terminal/i.test(`${r.stderr}\n${r.stdout}`)) return { id: short, status: 'skipped', detail: 'Open in a terminal: restart it there' }
     const line = stderrLine(r.stderr)
@@ -606,11 +651,17 @@ export function createAccount({
    */
   async function restartPass(bin, { inSwitch = false } = {}) {
     const out = []
+    const gen = generation
     for (const q of [...restartQueue.values()]) {
-      // From the background: stop at once if a switch or Undo started, or took this job off the queue.
-      if ((!inSwitch && busy) || !restartQueue.has(q.short)) continue
+      // From the background: stop at once if a switch or Undo started (or ran) since this pass began.
+      if (!inSwitch && (busy || gen !== generation)) break
+      // Taken off the queue, or queued again by a later switch: that switch decides it.
+      if (restartQueue.get(q.short) !== q) continue
       // A permission-mode switch is restarting this job itself: treat it as busy until that is done.
       const st = permBusyJob(q.short) ? 'busy' : await jobState(q.short)
+      // The check takes time: a switch may have begun, or this job been restarted or re-queued, meanwhile.
+      if (!inSwitch && (busy || gen !== generation)) break
+      if (restartQueue.get(q.short) !== q) continue
       if (st === 'busy') {
         if (clock() < q.deadline) continue
         restartQueue.delete(q.short)
@@ -729,11 +780,13 @@ export function createAccount({
     const target = saved.find((a) => a.id === body.to)
     if (target?.quarantine && (await network?.onWork())) throw fail(409, `${target.label} is a quarantine account, and quarantine accounts can't be used on the work Wi-Fi.`)
     if (busy) throw fail(409, 'A switch is already running')
+    if (respawning) throw fail(409, RESTARTING)
     if (permBusy()) throw fail(409, 'A permission-mode switch is running')
     const now = Date.now()
     while (switches.length && now - switches[0] > 60_000) switches.shift()
     if (switches.length >= 3) throw fail(429, 'Too many switches; wait a minute')
     busy = true
+    generation++
     const meta = { auto: auto === true, ...(plainWhy(why) && { why: plainWhy(why) }) }
     try {
       const settings = await readSettings()
@@ -753,7 +806,8 @@ export function createAccount({
       if (liveId) await noteDrift(liveId)
       // A saved account that isn't the stored login needs its credential written in.
       const toAccount = toProfile === 'personal' && body.to !== 'personal' && body.to !== liveId ? body.to : null
-      if (toProfile === from && !toAccount) throw fail(409, body.to === 'personal' || from === 'pool' ? `Already on the ${from === 'pool' ? 'pool' : 'personal account'}` : 'Already on that account')
+      const repairPersonal = body.to === 'personal' && from === 'personal' && !hasPersonalRouting(settings.json.env)
+      if (toProfile === from && !toAccount && !repairPersonal) throw fail(409, body.to === 'personal' || from === 'pool' ? `Already on the ${from === 'pool' ? 'pool' : 'personal account'}` : 'Already on that account')
       // Every non-finished job gets the new settings (so a later restart uses them), but only the
       // ones running now are restarted: a switch must never revive a dormant job.
       const liveIds = new Set(agents.filter((a) => a.jobId && a.live).map((a) => a.jobId))
@@ -805,8 +859,8 @@ export function createAccount({
         }
       }
 
-      // What needs a restart: a pool <-> personal change restarts every live job (the process read
-      // its env at start); an account -> account switch only the jobs whose settings changed.
+      // Routing hot-reloads, but remaining model/provider launch state may require an idle
+      // restart on a profile change. Account -> account restarts only jobs with changed settings.
       const restartIds = new Set(toProfile !== from ? jobs.map((j) => j.short) : jobs.filter((j) => changedJobs.includes(j.short)).map((j) => j.short))
       pendingRestarts = pendingRestarts.filter((p) => !restartIds.has(p.id))
       for (const id of restartIds) restartQueue.set(id, { short: id, deadline: clock() + idleMs() })
@@ -832,6 +886,7 @@ export function createAccount({
     const blocked = isBlocked()
     if (blocked) throw fail(501, blocked)
     if (busy) throw fail(409, 'A switch is already running')
+    if (respawning) throw fail(409, RESTARTING)
     if (permBusy()) throw fail(409, 'A permission-mode switch is running')
     const sets = (await fsp.readdir(backupRoot).catch(() => [])).sort()
     if (!sets.length) throw fail(409, 'Nothing to undo')
@@ -840,6 +895,7 @@ export function createAccount({
     const q = prev && (await accounts.load()).find((x) => x.id === prev && x.quarantine)
     if (q && (await network?.onWork())) throw fail(409, `Undo would switch back to ${q.label}, a quarantine account, and quarantine accounts can't be used on the work Wi-Fi.`)
     busy = true
+    generation++
     try {
       // The switch being undone no longer needs its restarts.
       restartQueue.clear()

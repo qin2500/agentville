@@ -21,10 +21,10 @@
  * with the most weekly room. When the active account is really out and no account has that much room, the
  * last resort is the best account that is not out itself (FALLBACK_MIN_ROOM % of the week and
  * FALLBACK_MIN_FIVE_ROOM % of the 5-hour window left), most weekly room first: a nearly-used account beats
- * a stalled fleet. A proactive switch (not yet out) never takes one. Then the pool. With nowhere at all to
- * go, `info().blocked` says so ({ why, until }) and the account log gets one line. It uses the normal switch (backups, canary,
+ * a stalled fleet. A proactive switch (not yet out) never takes one. The pool is NEVER chosen automatically
+ * (AUTO_POOL): with nowhere at all to go it stays put, and `info().blocked` says so ({ why, until }) and the account log gets one line. It uses the normal switch (backups, canary,
  * rollback, audit log, running jobs only). Guards: a persisted toggle (default on), one automatic
- * switch per COOLDOWN_MS, never during another switch, never from the pool back to an account.
+ * switch per COOLDOWN_MS, never during another switch, never from the pool back to an account. Switching to the pool is manual only (the Account menu).
  *
  * Quarantine accounts (network.mjs) can't be used on the work Wi-Fi; anywhere else they come
  * first. While a work network is marked, `enforce` checks every 10 s (cached usage only, so it
@@ -62,6 +62,14 @@ export const REBALANCE_CHECK_MS = 15 * 60e3 // how often the sampler re-reads th
 export const STALE_LOGIN_MS = 10 * 60e3 // a limit stop this soon after a switch, with room left, means the job is still on the old login
 export const MODEL_HOP_MS = 3600e3 // a model-specific limit ("hit your Opus limit") moves accounts at most once per hour
 export const HEADROOM_WARN = 300 // chars of Keychain room left below which the account menu shows it
+
+/**
+ * Hard rule, no setting: automatic switching (sampler, limit hits, rebalance, network
+ * rules, the suggested next account) never picks the pool, even when every saved account is out. The pool is
+ * unreliable right now; going to it is a manual choice in the Account menu.
+ */
+export const AUTO_POOL = false
+export const NO_TARGET_WHY = 'every account is out; the pool is never chosen automatically'
 
 const PLAIN_LIMIT_WORDS = new Set(['weekly', 'session', 'daily', 'hourly', 'monthly', '5-hour', 'five-hour', 'usage', 'rate', 'message'])
 /** The model a harness limit string names ("You've hit your Opus weekly limit" -> 'opus'), or '' for a plain limit. */
@@ -152,8 +160,8 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
       .sort((a, b) => rank(a) - rank(b) || room(b) - room(a) || at(a, 'weekly') - at(b, 'weekly'))[0]
     if (last) return { action: 'switch', to: last, why, fallback: true }
   }
-  if (poolAvailable) return { action: 'switch', to: 'pool', why }
-  return { action: 'none', why: 'nowhere to go' }
+  if (AUTO_POOL && poolAvailable) return { action: 'switch', to: 'pool', why } // never: AUTO_POOL is false
+  return { action: 'none', why: NO_TARGET_WHY }
 }
 
 /** Really out: either window at OUT_AT, or the harness said "You've hit your … limit". -> the reason, or ''. */
@@ -327,13 +335,14 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     const model = limitAgents.length && models.every(Boolean) ? models[0] : ''
     if (model && state.lastModelHopAt && at - state.lastModelHopAt < MODEL_HOP_MS) limitAgents = []
     const limitIds = limitAgents.map((a) => a.id)
-    const base = { enabled: state.enabled, active: u.id, saved, activeUsage: eff, limitHit: limitIds.length > 0, busy: account.isBusy(), lastAutoAt: state.lastAutoAt, poolAvailable: account.poolAvailable(), now: at,
+    const base = { enabled: state.enabled, active: u.id, saved, activeUsage: eff, limitHit: limitIds.length > 0, busy: account.isBusy(), lastAutoAt: state.lastAutoAt, poolAvailable: false, now: at,
       onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)), projectedMs, manual, retryAt: state.retryAt || 0 }
     const info = { active: { id: u.id, fiveHour: eff.fiveHour?.used ?? null, weekly: eff.weekly?.used ?? null, ageMs }, limitHit: limitIds, model }
     // Not out, or a guard says no: nothing else to check.
-    const pre = decide({ ...base, usage: new Map(), poolAvailable: true })
+    const pre = decide({ ...base, usage: new Map() })
     if (pre.waitUntil && state.waitUntil !== pre.waitUntil) { state.waitUntil = pre.waitUntil; state.waitSetAt = at; await save() }
-    if (pre.action === 'none') {
+    // With no usage known, an out account lands on NO_TARGET_WHY ("out, check the others"); any other "none" is a guard.
+    if (pre.action === 'none' && pre.why !== NO_TARGET_WHY) {
       if (pre.why !== 'not out' || list.length < 2 || at - (state.lastRebalanceCheck || 0) < REBALANCE_CHECK_MS) return pre
       // An account picked by hand stays until it runs out: only rebalance away from one auto-switch chose.
       if (manual) return pre
@@ -347,7 +356,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     const usage = new Map(all.accounts.map((x) => [x.id, fresh(x, at)]))
     const d = decide({ ...base, usage, busy: account.isBusy() })
     if (d.waitUntil && state.waitUntil !== d.waitUntil) { state.waitUntil = d.waitUntil; state.waitSetAt = at; await save() }
-    if (d.why === 'nowhere to go' && hardOut(eff, base.limitHit)) { // really out, and every other account is too: say so
+    if (d.why === NO_TARGET_WHY && hardOut(eff, base.limitHit)) { // really out, and every other account is too: say so
       return { ...d, blocked: { why: 'all accounts low', until: blockedUntil({ ...base, activeUsage: eff, usage }), account: u.id, accounts: saved.length } }
     }
     return d.action === 'switch' ? autoSwitch(d, u.id, at, info, all) : d
@@ -362,6 +371,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
    * `all`: the usage list the decision was made on (for the target's numbers).
    */
   async function autoSwitch(d, from, at, info = { active: { id: from }, limitHit: [] }, all = null) {
+    if (!AUTO_POOL && d.to === 'pool') return { action: 'none', why: NO_TARGET_WHY } // belt and braces: never automatic
     const labels = new Map((await account.accounts.load()).map((a) => [a.id, a.label]))
     const names = { fromLabel: labels.get(from) || '', toLabel: d.to === 'pool' ? 'Pool' : labels.get(d.to) || '' }
     const t = all?.accounts?.find((x) => x.id === d.to)
@@ -443,9 +453,9 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     const list = await account.accounts.load()
     const net = network ? (await network.status()).current : { work: false }
     const d = decide({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, manual: false, usage: new Map([...account.accounts.cachedUsage()].map(([id, x]) => [id, fresh(x, now())])),
-      limitHit: false, busy: false, lastAutoAt: null, poolAvailable: account.poolAvailable(), now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)) })
+      limitHit: false, busy: false, lastAutoAt: null, poolAvailable: false, now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)) })
     if (d.action !== 'switch') return null
-    return { to: d.to, label: d.to === 'pool' ? 'the pool' : list.find((a) => a.id === d.to)?.label || 'another saved account' }
+    return { to: d.to, label: list.find((a) => a.id === d.to)?.label || 'another saved account' }
   }
   async function info() {
     await load()

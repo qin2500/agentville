@@ -39,13 +39,16 @@ test('decide: the available account whose 5-hour window resets soonest (weeks re
   assert.equal(decide({ ...base, usage: errored }).to, 'B', 'an account whose usage is unknown is not a target')
   const left = new Map([...errored].filter(([k]) => k !== 'B'))
   assert.equal(decide({ ...base, usage: left }).to, 'D', 'last resort before the pool: D is not out (5% of its week left)')
-  assert.equal(decide({ ...base, usage: new Map([...left].filter(([k]) => k !== 'D')) }).to, 'pool')
+  assert.equal(decide({ ...base, usage: new Map([...left].filter(([k]) => k !== 'D')) }).action, 'none', 'no pool fallback')
 })
 
-test('decide: all exhausted goes to the pool, or nowhere without one', () => {
+test('decide: all exhausted never goes to the pool, with or without one available', () => {
   const out = new Map([...base.usage].map(([k, u]) => [k, { ...u, fiveHour: w(97) }]))
-  assert.deepEqual(decide({ ...base, usage: out }), { action: 'switch', to: 'pool', why: 'five_hour' })
-  assert.deepEqual(decide({ ...base, usage: out, poolAvailable: false }), { action: 'none', why: 'nowhere to go' })
+  const stay = { action: 'none', why: 'every account is out; the pool is never chosen automatically' }
+  assert.deepEqual(decide({ ...base, usage: out }), stay)
+  assert.deepEqual(decide({ ...base, usage: out, poolAvailable: true }), stay)
+  assert.deepEqual(decide({ ...base, usage: out, poolAvailable: false }), stay)
+  assert.deepEqual(decide({ ...base, usage: out, limitHit: true, manual: true }), stay, 'a limit hit on a hand-picked account too')
 })
 
 test('decide: guards — toggle off, on the pool, unsaved login, busy, cooldown, not out', () => {
@@ -116,8 +119,8 @@ test('projection: the binding window, and where auto-switch would go (cached rea
     assert.deepEqual([p.binding.window, p.binding.at], ['fiveHour', p.fiveHour.at])
     assert.equal(p.weekly.basis, 'flatOut')
     assert.equal(calls(), n0, 'the projection makes no usage calls')
-    // B and C not read yet: nothing known to switch to but the pool.
-    assert.deepEqual(p.next, { to: 'pool', label: 'the pool' })
+    // B and C not read yet: nothing known to switch to, and the pool is never suggested.
+    assert.equal(p.next, null)
     await t.req('GET', '/api/accounts/usage') // the menu reads every account: now the cache knows B has the most weekly room
     p = (await t.req('GET', '/api/spend')).json.projection
     assert.deepEqual(p.next, { to: UUID.B, label: 'b@example.com' })
@@ -159,7 +162,7 @@ test('sampler: samples the active account only; when it runs out, switches to an
   } finally { await t.done() }
 })
 
-test('sampler: everything exhausted goes to the pool, and never back; the toggle and a running switch stop it', async () => {
+test('sampler: everything exhausted stays put (never the pool); the toggle and a running switch stop it', async () => {
   const t = await setup()
   try {
     assert.deepEqual((await t.req('POST', '/api/autoswitch', { enabled: false })).json, { enabled: false })
@@ -168,14 +171,12 @@ test('sampler: everything exhausted goes to the pool, and never back; the toggle
     assert.equal((await t.req('POST', '/api/autoswitch', { enabled: 'yes' })).status, 400)
     await t.req('POST', '/api/autoswitch', { enabled: true })
 
-    // Every account is out: the pool, and never back.
+    // Every account is out: stay on the account, never the pool.
     t.people.A.five = 100; t.people.B.five = 99.5; t.people.C.week = 98 // 2% of C's week: not even a last resort
     const d = await t.server.sampler.sample()
-    assert.deepEqual([d.action, d.to], ['switch', 'pool'])
-    assert.equal((await t.req('GET', '/api/accounts')).json.active, 'pool')
-    assert.equal((await t.req('GET', '/api/spend')).json.projection, null, 'no projection on the pool')
+    assert.deepEqual([d.action, d.why], ['none', 'every account is out; the pool is never chosen automatically'])
+    assert.notEqual((await t.req('GET', '/api/accounts')).json.active, 'pool')
     t.people.B.five = 0
-    assert.equal((await t.server.sampler.sample()).why, 'on the pool')
 
     // A manual switch in progress: the sampler stands aside. Held open by a slow login check on B, which
     // runs after the profile has left the pool (the sampler checks "on the pool" before "busy").
@@ -199,7 +200,7 @@ test('decide: quarantine accounts — gone at once on the work Wi-Fi, preferred 
   const spent = new Map([['A', { fiveHour: w(100, 2 * 3600e3), weekly: w(40) }], ['C', { fiveHour: w(100, 600e3), weekly: w(99) }], ['D', fine]])
   assert.deepEqual(decide({ ...banned, usage: spent }), { action: 'switch', to: 'C', why: 'quarantine' })
   assert.deepEqual(decide({ ...banned, usage: new Map() }), { action: 'switch', to: 'A', why: 'quarantine' }, 'usage unknown: still a regular account')
-  assert.equal(decide({ ...banned, saved: ['B', 'D'], poolAvailable: false }).why, 'nowhere to go', 'no regular account at all')
+  assert.equal(decide({ ...banned, saved: ['B', 'D'], poolAvailable: false }).why, 'every account is out; the pool is never chosen automatically', 'no regular account at all')
   // Out on the work Wi-Fi: regular accounts only.
   const both = new Map([['B', { fiveHour: w(10, 600e3), weekly: w(10) }], ['C', { fiveHour: w(10, 3600e3), weekly: w(10) }]])
   assert.equal(decide({ ...base, usage: both, onWork: true, quarantine }).to, 'C')
@@ -265,4 +266,14 @@ test('decide: soonest weekly reset first only within 36 h, then the 5-hour one',
   assert.deepEqual(decide({ ...base, usage }), { action: 'switch', to: 'B', why: 'five_hour' }, 'neither week resets within 36 h: most weekly room')
   const soon = new Map([['B', usage.get('B')], ['C', { fiveHour: w(10, 3 * 3600e3), weekly: w(30, 20 * 3600e3) }]])
   assert.deepEqual(decide({ ...base, usage: soon }), { action: 'switch', to: 'C', why: 'five_hour' }, 'a week resetting within 36 h goes first')
+})
+
+test('AUTO_POOL is a hard-off constant and decide() never returns the pool for any input mix', async () => {
+  const { AUTO_POOL } = await import('../server/autoswitch.mjs')
+  assert.equal(AUTO_POOL, false)
+  const out = new Map([...base.usage].map(([k, u]) => [k, { ...u, fiveHour: w(100), weekly: w(100) }]))
+  for (const extra of [{}, { limitHit: true }, { manual: true, limitHit: true }, { prefer: true }, { rebalance: true }, { onWork: true, quarantine: new Set(['A']) }, { saved: ['A'] }, { usage: new Map() }]) {
+    const d = decide({ ...base, usage: out, poolAvailable: true, activeUsage: { fiveHour: w(100), weekly: w(100) }, ...extra })
+    assert.notEqual(d.to, 'pool', JSON.stringify(extra))
+  }
 })

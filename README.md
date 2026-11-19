@@ -323,7 +323,8 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
 - **Auto-switch.** An account is out when its 5-hour or weekly window reaches 99 %, or when a running
   agent reports a usage limit. Agentville then switches to the saved account with room (both windows
   under 95 %) whose **weekly** window resets soonest (the 5-hour reset breaks ties, and resets
-  within an hour of each other count as a tie), else to the pool. The idea: an account's weekly
+  within an hour of each other count as a tie). If none has room it stays put: the pool is never
+  chosen automatically (a fixed rule), so you can switch to it by hand. The idea: an account's weekly
   allowance is lost when it resets, so spend the one that expires first. At most once every 15
   minutes, and never from the pool back to an account.
 - **Rebalancing.** Once a switch has left you on an account with a later weekly reset, Agentville
@@ -337,6 +338,23 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
   Networks are recognised by the router's hardware address, a local lookup that needs no permission.
   On that network quarantine accounts are never used, and Agentville moves off one straight away.
   Anywhere else they're preferred when they have room. Being offline never counts as leaving.
+
+## Notifications from agents
+
+An agent can push a note into Agentville, for example "done with X". Its row in the left panel
+then shows in a notification colour that beats every other status (including stalled), and the
+note goes away when you open that agent.
+
+- API: `POST /api/notify` with `{ "session": "<agent id, Claude Code session id or Codex thread id>", "message": "1-500 chars", "title"?: "up to 80 chars" }`
+  returns `{ ok: true, id, notice }` (404 if no agent matches, 429 past 30 a minute per agent).
+  `POST /api/notify/clear` with `{ "id": "<agent id>" }` clears it. Each agent in `GET /api/agents`
+  has `notice: { message, title, at, count } | null`. Stored in `notifications.json` in the data folder.
+- Local only: like every POST, the request needs an `Origin` matching the server (the CLI sets it).
+- CLI: `node tools/notify.mjs "message" [--title "t"] [--session <id>] [--port 5275]`. Without
+  `--session` it uses `CLAUDE_CODE_SESSION_ID`, then `CODEX_THREAD_ID`. `tools/agentville-notify`
+  is a shell wrapper that works from anywhere (link it onto your PATH if you like).
+- Example instruction for an agent: "When you finish this, run
+  `node /path/to/agentville/tools/notify.mjs "done with X" --title "X"` so I get a notification."
 
 ## Acting on one agent
 

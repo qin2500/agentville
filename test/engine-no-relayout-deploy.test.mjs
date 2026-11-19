@@ -42,6 +42,12 @@ function emptyServer() {   // an empty world-plan server: GET lists nothing, a P
   return f;
 }
 const noSeen = text => text.replace(/"seen":\d+/g, '"seen":0');
+// city-compact (2026-11-17): the first engine load after that deploy sizes every city to fit once
+// (world/fit.js), so a saved town that grew to a historic peak is compacted one time. The tests below that pin "nothing
+// moves" run the fantasy mod with that compaction off (rules.compact: false), which proves the load itself still keeps
+// every tile; the compaction tests at the end pin what the one-time compaction keeps (every home) and that every load
+// after it is byte-identical again.
+const noCompact = { ...fantasy, rules: { ...fantasy.rules, compact: false } };
 const saved = () => ({ [fx.classic.storeKey]: fx.classic.stored, [fx.engine.storeKey]: fx.engine.stored, [fx.engine.seedKey]: fx.engine.seed });
 
 test('the fixture records its source: main before M7, both layouts, tiers crossed', () => {
@@ -79,7 +85,7 @@ test('classic: after the hydrate, loads and polls keep every tile and the stored
   assert.equal(noSeen(ls.getItem(fx.classic.storeKey)), noSeen(fx.classic.stored), 'va.world9 unchanged but for `seen`');
 });
 
-test('engine: after the hydrate, loads and polls keep every building and prop tile and the stored keys byte-identical', async () => {
+function engineCapture() {
   const NOW = Date.UTC(2026, 10, 14, 12, 0, 0), SEED = 7;
   const ag = (id, project, o = {}) => ({ id, name: id, project, bucket: o.bucket ?? 'building', role: o.role, parentId: o.parent,
     severity: null, live: true, lastActivityAt: NOW - 60_000, since: NOW - 3_600_000, prs: o.prs ?? [], harness: 'claude-code' });
@@ -91,7 +97,11 @@ test('engine: after the hydrate, loads and polls keep every building and prop ti
   const demoPrs = [{ id: '101', live: true }, { id: '99', live: false }];
   for (let i = 0; i < 40; i++) demoPrs.push({ id: String(500 + i), live: false });
   const src = { agents, projects: [{ name: 'demo-app', prs: demoPrs, agentsEver: 91, transcriptBytes: 4e6 }, { name: 'codex-app', prs: [], agentsEver: 2, transcriptBytes: 1e5 }] };
+  return { NOW, SEED, src };
+}
 
+test('engine: after the hydrate, loads and polls keep every building and prop tile and the stored keys byte-identical', async () => {
+  const { SEED, src } = engineCapture();
   const ls = fakeLs(saved());
   await hydratePlan({ fetch: emptyServer(), ls, timeoutMs: 300 });
   const store = { get: (k, d) => { const v = ls.getItem(k); return v == null ? d : JSON.parse(v); }, set: (k, v) => ls.setItem(k, JSON.stringify(v)) };
@@ -110,7 +120,7 @@ test('engine: after the hydrate, loads and polls keep every building and prop ti
   assert.ok(expectedObjects.length > 400, 'the persisted part of the capture is still large');
   const objectsAt = now => {
     const { input, serverId } = toWorldInput(makeView(src, { now }), { seed: SEED, salt: 'nest' });
-    const w = buildWorld(input, persisted, { mod: fantasy, now, seed: SEED, serverId });
+    const w = buildWorld(input, persisted, { mod: noCompact, now, seed: SEED, serverId });
     saveWorld(store, persisted, { mod: fantasy });
     return [...w.objects.values()].filter(o => ['building', 'prop', 'tree', 'decal'].includes(o.kind) && !isWild(o.id))
       .map(o => [o.id, o.kind, o.project ?? null, o.lot ?? null, o.model ?? null, o.variant ?? null, o.tx, o.ty]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
@@ -215,7 +225,7 @@ function assertEngineKeepsClassic(world, persisted, { L, S }) {
 }
 
 // Loads the engine on `ls` (no engine key yet) as the app does, builds a few times, returns what it built.
-function engineFirstLoad(ls, agents, projects) {
+function engineFirstLoad(ls, agents, projects, mod = noCompact) {
   const store = storeOf(ls);
   const persisted = loadWorld(store, { now: ENGINE_NOW, mod: fantasy, adopt: true });
   // the import is kept on the engine's own key at once, renamed; classic's key is never written
@@ -226,7 +236,7 @@ function engineFirstLoad(ls, agents, projects) {
   for (let i = 0; i < 3; i++) {
     const now = ENGINE_NOW + i * 3000;
     const { input, serverId } = toWorldInput(makeView({ agents: engineAgents(agents), projects }, { now }), { seed: persisted.seed, salt: 'nest' });
-    world = buildWorld(input, persisted, { mod: fantasy, now, seed: persisted.seed, serverId });
+    world = buildWorld(input, persisted, { mod, now, seed: persisted.seed, serverId });
     saveWorld(store, persisted, { mod: fantasy });
   }
   return { world, persisted };
@@ -278,4 +288,62 @@ test('engine, classic-only browser: a classic town grown through every tier (0 -
   const { world, persisted } = engineFirstLoad(ls, agents, projects(n));
   assertEngineKeepsClassic(world, persisted, ref);
   assert.equal(ls.getItem('va.world9'), stored, 'va.world9 byte-identical after the engine import');
+});
+
+// ---- city-compact (2026-11-17): the one-time compaction on the first load after that deploy -------------------------
+const housed = w => new Map([...w.objects.values()].filter(o => o.data?.owner === 'home' || o.data?.owner === 'pr').map(o => [o.data.item, o]));
+const blockTiles = P => Object.values(P.blocks).filter(b => !b.away).reduce((n, b) => n + b.w * b.h, 0);
+
+test('engine, saved town: the first load after the deploy compacts it once (every home kept), then every load is byte-identical', async () => {
+  const { SEED, src } = engineCapture();
+  const ls = fakeLs(saved());
+  await hydratePlan({ fetch: emptyServer(), ls, timeoutMs: 300 });
+  const store = storeOf(ls);
+  const persisted = loadWorld(store, { now: fx.engine.lastNow, mod: fantasy });
+  const before = JSON.parse(JSON.stringify(persisted));
+  const build = (now, P = persisted) => {
+    const { input, serverId } = toWorldInput(makeView(src, { now }), { seed: SEED, salt: 'nest' });
+    const w = buildWorld(input, P, { mod: fantasy, now, seed: SEED, serverId });
+    saveWorld(store, P, { mod: fantasy });
+    return w;
+  };
+  // what the town houses today, compaction off (the capture as it stands)
+  const ref = housed(buildWorld(toWorldInput(makeView(src, { now: fx.engine.lastNow }), { seed: SEED, salt: 'nest' }).input, JSON.parse(JSON.stringify(before)),
+    { mod: noCompact, now: fx.engine.lastNow, seed: SEED, serverId: toWorldInput(makeView(src, { now: fx.engine.lastNow }), { seed: SEED, salt: 'nest' }).serverId }));
+  const w0 = build(fx.engine.lastNow);
+  assert.equal(persisted.fit, 1, 'compacted once');
+  assert.deepEqual([...housed(w0).keys()].sort(), [...ref.keys()].sort(), 'every home and PR house the town had is still housed');
+  assert.ok(blockTiles(persisted) <= blockTiles(before), `the town takes no more ground (${blockTiles(before)} -> ${blockTiles(persisted)})`);
+  const key = ls.getItem(fx.engine.storeKey), tiles = w => [...w.objects.values()].filter(o => !o.id.startsWith('tree:')).map(o => [o.id, o.tx, o.ty, o.model ?? null, o.variant ?? null]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const t0 = tiles(w0);
+  for (let i = 0; i < 3; i++) assert.deepEqual(tiles(build(fx.engine.lastNow)), t0, `reload ${i} after the compaction: every tile kept`);
+  assert.equal(ls.getItem(fx.engine.storeKey), key, 'va.engine2.world byte-identical after the compaction');
+  for (let i = 0; i < 3; i++) assert.deepEqual(tiles(build(fx.engine.lastNow + 60_000 + i * 3000)), t0, `a minute later ${i}: every tile kept`);
+  assert.equal(noSeen(ls.getItem(fx.engine.storeKey)), noSeen(key), 'unchanged but for `seen`');
+  // a reload from the saved key (a restart) changes nothing either
+  const again = loadWorld(store, { now: fx.engine.lastNow + 120_000, mod: fantasy });
+  assert.deepEqual(tiles(build(fx.engine.lastNow + 120_000, again)), t0, 'restart: every tile kept');
+});
+
+test('engine, classic-only browser: the first engine load compacts a classic town grown through every tier once, keeping every item classic housed', async () => {
+  const mk = (id, project, role = 'worker', parentId) => ({ id, project, role, parentId, bucket: 'active', status: 'working', prs: [] });
+  const agents = [mk('g-boss', 'grown', 'boss'), mk('g-l1', 'grown', 'lead', 'g-boss'), mk('g-l2', 'grown', 'lead', 'g-boss'),
+    mk('g-w1', 'grown', 'worker', 'g-l1'), mk('g-s1', 'grown'), mk('n-boss', 'near', 'boss'), mk('n-s1', 'near')];
+  const prs = n => Array.from({ length: n }, (_, i) => ({ id: String(i + 1), live: i % 5 === 0 }));
+  const projects = n => [{ name: 'grown', prs: prs(n), agentsEver: 5 + n, transcriptBytes: 2e6 }, { name: 'near', prs: prs(2), agentsEver: 3, transcriptBytes: 1e5 }];
+  const ls = fakeLs();
+  globalThis.localStorage = ls;
+  const byId = new Map(agents.map(a => [a.id, a]));
+  let n = 0, clock = 1000, tier = 0;
+  for (; n <= 400 && tier < 3; n += 2) { const P = W.plan(agents, byId, projects(n)); W.layout(P, clock += 10); tier = P.villages.find(v => v.name === 'grown').tier; }
+  n -= 2;
+  const S = JSON.parse(ls.getItem('va.world9'));
+  const { world, persisted } = engineFirstLoad(ls, agents, projects(n), fantasy);
+  const B = S.blocks.grown, after = persisted.blocks.grown;
+  assert.ok(after.w * after.h < B.w * B.h, `the grown city takes less ground (${B.w}x${B.h} -> ${after.w}x${after.h})`);
+  assert.equal(after.tier, 3, 'still a city (cathedral, square, market)');
+  const civic = [...world.objects.values()].filter(o => o.project === 'grown' && o.kind === 'building' && !o.id.startsWith('lot:')).map(o => o.model);
+  for (const c of ['cathedral', 'guildhall', 'markethall']) assert.ok(civic.includes(c), `the civic core keeps its ${c}`);
+  const items = housed(world);
+  for (const id of Object.keys(S.lots.grown.a).filter(id => S.lots.grown.h?.[id] == null)) assert.ok(items.has(id), `${id} still housed`);
 });

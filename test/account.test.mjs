@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createServer } from '../server/serve.mjs'
+import { PERSONAL_ROUTING_ENV } from '../server/account.mjs'
 
 import { makeAccountHome, SETTINGS, TOKEN } from './fixtures/account-home.mjs'
 
@@ -59,7 +60,9 @@ test('round trip pool -> personal -> pool restores every file byte for byte; not
     assert.deepEqual(r.json.results, [{ id: 'aaaa0001', status: 'respawned' }, { id: 'aaaa0002', status: 'respawned' }])
     assert.deepEqual(t.respawns(), [['respawn', 'aaaa0001'], ['respawn', 'aaaa0002']], 'sequential, no extra flags')
     const settings = JSON.parse(t.read('settings'))
-    assert.deepEqual(settings.env, { KEEP_ME: 'yes', ALSO_KEEP: 'x' }, 'pool keys out, others kept')
+    // Pool keys out, others kept, and the route set explicitly back to Anthropic: a running Claude
+    // hot-reloads settings without dropping deleted keys, so absence alone would leave it on the gateway.
+    assert.deepEqual(settings.env, { KEEP_ME: 'yes', ALSO_KEEP: 'x', ...PERSONAL_ROUTING_ENV }, 'pool keys out, others kept')
     assert.deepEqual([settings.permissions, settings.model, settings.hooks], [SETTINGS.permissions, 'opus', {}])
     const j1 = JSON.parse(t.read('aaaa0001'))
     assert.deepEqual(j1.respawnFlags, ['--name', 'API Lead', '--model', 'claude-opus-5-5'])

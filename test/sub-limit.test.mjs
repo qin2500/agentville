@@ -1,5 +1,5 @@
 // Sub-agents terminated by the usage limit or an API error: classified as stopped (not "Done"),
-// rolled up on the parent and the Tasks list, and the one-message-per-parent resume nudge.
+// rolled up on the parent, and the one-message-per-parent resume nudge.
 // Synthetic fixtures and fakes only: never the real ~/.claude, accounts, network or sessions.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -10,7 +10,6 @@ import { scan as scanClaude, apiLimitOf } from '../server/claude-code.mjs'
 import { scan as scanCodex } from '../server/codex.mjs'
 import { build, subsStopped } from '../server/classify.mjs'
 import { createSubLimitNudger, nudgeText, pending, parentProblem, MAX_AGE_MS } from '../server/sub-limit.mjs'
-import { taskRows } from '../web/src/tasks-model.js'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-sub-limit-'))
 const claude = path.join(root, 'claude')
@@ -67,7 +66,7 @@ test('apiLimitOf reads the record fields, and the reset time only from the harne
   assert.equal(apiLimitOf({ ...limitRecord(0, 'Request failed'), quotaLimits: { status: 'rejected' } }).reason, 'Stopped by usage limit')
 })
 
-test('a sub-agent the usage limit terminated is stalled red, not Done; the parent and Tasks say so', async () => {
+test('a sub-agent the usage limit terminated is stalled red, not Done; the parent says so', async () => {
   const out = await agents()
   const a = out.find((x) => x.id === sid('aaa111'))
   assert.deepEqual([a.bucket, a.severity, a.reason, a.role], ['stalled', 'error', 'Stopped by usage limit · resets 6:20pm', 'sub'])
@@ -82,8 +81,6 @@ test('a sub-agent the usage limit terminated is stalled red, not Done; the paren
   assert.deepEqual([p.bucket, p.severity, p.reason], ['stalled', 'error', '3 sub-agents stopped by the usage limit or API errors'])
   assert.deepEqual(p.subsStopped, { count: 3, limit: 2, resetsAt: resetSec * 1000 })
   assert.doesNotMatch(JSON.stringify(out), /TOPSECRET|hit your|All done/)
-  const tasks = taskRows([{ id: pid, kind: 'agent', agentId: pid, addedAt: 0 }], out, {})
-  assert.deepEqual([tasks.open[0].status, tasks.open[0].tone], ['3 sub-agents stopped by the usage limit or API errors', 'error'])
 })
 
 test('resumed (a newer record after the error) it is no longer stopped', async () => {

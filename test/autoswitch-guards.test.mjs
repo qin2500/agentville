@@ -62,8 +62,8 @@ test('target: needs 20% room in both windows; the 90%-weekly / 113 h account is 
   assert.equal(decide({ ...base, activeUsage: act, usage }).to, 'C', 'most weekly headroom when no week resets within 36 h')
   const edge = (five, week) => decide({ ...base, activeUsage: act, usage: new Map([['B', { fiveHour: w(five), weekly: w(week) }]]) }).to
   assert.equal(edge(80, 80), 'B', 'exactly 20% room is enough')
-  assert.equal(edge(80.5, 10), 'pool', 'under 20% of the 5-hour window')
-  assert.equal(edge(10, 80.5), 'pool', 'under 20% of the week')
+  assert.equal(edge(80.5, 10), undefined, 'under 20% of the 5-hour window')
+  assert.equal(edge(10, 80.5), undefined, 'under 20% of the week')
 })
 
 test('target: soonest weekly reset first, but only within 36 h and with real room', () => {

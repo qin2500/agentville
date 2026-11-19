@@ -23,6 +23,7 @@
 import { hash } from '../core/rng.js';
 import { near } from '../mod/kit/layout.js';
 import { runRules, rulesOf, projectNames, planFor, localCtx } from './rules-phase.js';
+import { FIT_VERSION, compactOn } from './fit.js';
 
 export { planFor, localCtx };
 // The layout fields every mod must define (mod.rules.layout); there is no engine fallback: a missing field fails loudly.
@@ -98,11 +99,13 @@ export function planSettlements(input, persisted, mod, { now, seed, forcedTier =
     const busy = awake * 10 + here.filter(a => a.status !== 'resting').length;
     const prsCompat = requests.filter(r => r.owner === 'pr').map(r => ({ id: String(r.pr ?? r.item.slice(3)).replace(/^.*#/, ''), live: !!r.building }));
     const { tier, gt, need, cap, crowns, style, growth, plan } = R;
-    return { name, tier, gt, need, cap, crowns, style, growth, busy, requests, homes, prs: prsCompat, plan };
+    // size to fit (fit.js): R.fit = this rebuild's compaction or shrink, R.low = the surplus clock to persist
+    return { name, tier, gt, need, cap, crowns, style, growth, busy, requests, homes, prs: prsCompat, plan, ...(R.fit ? { fit: R.fit } : {}), ...(R.low ? { low: R.low } : {}), ...(R.avoid ? { avoid: R.avoid } : {}) };
   });
   // placeBlocks asks planFor(...) positionally: hand it this rebuild's plans so no hook runs a second time
   const items = settlements.flatMap(s => s.requests.map(r => (r.owner === 'home' ? `${r.item}:${r.rank}` : `${r.item}:${r.building ? 1 : 0}`)));
-  return { settlements, sig: JSON.stringify([settlements.map(s => [s.name, s.tier, s.cap, s.crowns, s.style?.key]), items]) };
+  // a city whose surplus clock runs carries a 1 (so the rebuild that starts the clock saves it; fit.js)
+  return { settlements, sig: JSON.stringify([settlements.map(s => (s.low ? [s.name, s.tier, s.cap, s.crowns, s.style?.key, 1] : [s.name, s.tier, s.cap, s.crowns, s.style?.key])), items]) };
 }
 
 // ---------------- classic: layout() up to placeVillage (block placement: engine mechanism) ----------------
@@ -112,17 +115,42 @@ export function planSettlements(input, persisted, mod, { now, seed, forcedTier =
  * The world's geometry round the blocks (roads, land, sea, venues) is the mod's: world/layout.js runLayout.
  * @returns {{ villages: object[], square: object, parks: object[] }} villages: SiteVillage (settlement + index, block,
  *   plan, accent, origin, plaza, cx, cy); square: mod.rules.layout.square; parks: hidden blocks still reserved. */
+/** The share of the shown blocks' tiles the one-time compaction must free before the world is packed afresh. */
+export const REPACK_SHARE = 0.1;
+function repackDue(villages, B) {
+  if (!B || typeof B !== 'object') return false;
+  let total = 0, freed = 0;
+  for (const pv of villages) {
+    const b = Object.prototype.hasOwnProperty.call(B, pv.name) ? B[pv.name] : null;
+    if (!b || b.away || !Number.isFinite(b.w * b.h)) continue;
+    total += b.w * b.h;
+    if (pv.fit && pv.plan) freed += Math.max(0, b.w * b.h - pv.plan.w * pv.plan.h);
+  }
+  return total > 0 && freed >= REPACK_SHARE * total;
+}
+
 export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed = 0, fast = true, cache = null } = {}) {
   if (typeof now !== 'number') throw new TypeError('placeBlocks: `now` (ms) is required');
   const { square: SQUARE, gap: GAP, accents: ACCENT, searchX, searchY, aspect: ASPECT, reserveMs: RESERVE_MS } = layoutOf(mod);
   // M7 growth room: kept round blocks placed into a standing town; the first build of a world (no block saved yet) packs
   // every block at the plain gap exactly as before, so a fresh world is as compact as it always was.
-  const ROOM = persisted.blocks && Object.keys(persisted.blocks).length ? growRoomOf(mod) : null;
+  // Size to fit (fit.js), once per world: a layout saved before the compaction (persisted.fit) is packed afresh, every
+  // shown block by the packer a new world uses (so ROOM is off for it), every hidden one sent `away`.
+  // Only when the compaction frees a real share of the ground (REPACK_SHARE of the shown blocks' tiles): a layout that was
+  // already compact keeps every block where it is (the shrunk blocks shrink in place).
+  const COMPACT = compactOn(mod), repack = COMPACT && persisted.fit !== FIT_VERSION && repackDue(villages, persisted.blocks);
+  const ROOM = !repack && persisted.blocks && Object.keys(persisted.blocks).length ? growRoomOf(mod) : null;
   const roomOf = t => { const i = Math.max(0, Math.min(3, Math.floor(Number(t) || 0))); return { x: ROOM.x[i], y: ROOM.y[i] }; };
   persisted.blocks ||= {};
   persisted.lots ||= {};
   const B = persisted.blocks;
   const shown = new Set(villages.map(v => v.name));
+  const wasAt = new Map();   // repack: each shown block's centre before it (its homes keep their place in the city)
+  if (repack) for (const [n, b] of Object.entries(B)) {
+    if (!b || typeof b !== 'object') continue;
+    if (shown.has(n) && !b.away) wasAt.set(n, [b.x + b.w / 2, b.y + b.h / 2]);
+    b.away = true;
+  }
   // classic: held / obstacles / evict
   const held = n => B[n] && !B[n].away && (shown.has(n) || now - (B[n].seen || 0) < RESERVE_MS);
   const obstacles = self => [SQUARE, ...Object.keys(B).filter(n => n !== self && held(n)).map(n => B[n])];
@@ -310,10 +338,21 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
       // M6 nested growth (design decision): a plan that nests the one this block drew (p.nest.from === b.nest) is first
       // placed at the origin that leaves every old item on its exact tile (old origin - nest offset), else as near it as fits.
       const n = p.nest, nested = replan && n && b.nest === n.from && Number.isInteger(n.dx) && Number.isInteger(n.dy);
-      const anchor = nested ? { x: b.x - n.dx, y: b.y - n.dy, w: p.w, h: p.h } : null;
+      // size to fit (fit.js): a shrink stands where every lot in use keeps its tile (inside the old block, so it fits)
+      const em = replan && pv.fit?.mode === 'embed' && Number.isInteger(pv.fit.dx) && Number.isInteger(pv.fit.dy) ? pv.fit : null;
+      const anchor = em ? { x: b.x + em.dx, y: b.y + em.dy, w: p.w, h: p.h } : nested ? { x: b.x - n.dx, y: b.y - n.dy, w: p.w, h: p.h } : null;
       const r = replan ? replanSpot(b, p.w, p.h, name, anchor) : findSpot(p.w, p.h, name, 0, pv.tier);
-      if (b) { delete b.away; Object.assign(b, r); }
-      else {
+      if (b) {
+        delete b.away; Object.assign(b, r);
+        // repack: keep the accent unless a neighbour placed before it already wears it
+        if (wasAt.has(name)) {
+          const used = Object.keys(B).filter(k => k !== name && held(k) && near(B[k], r, GAP + 4)).map(k => B[k].acc);
+          if (used.includes(b.acc)) {
+            const tally = i => Object.values(B).filter(o => o.acc === i).length;
+            b.acc = ACCENT.map((_, i) => i).filter(i => !used.includes(i)).sort((i, j) => tally(i) - tally(j) || i - j)[0] ?? b.acc;
+          }
+        }
+      } else {
         // parity: style.neighbourhood-accent
         const used = Object.keys(B).filter(n => held(n) && near(B[n], r, GAP + 4)).map(n => B[n].acc);
         const tally = i => Object.values(B).filter(o => o.acc === i).length;
@@ -323,6 +362,13 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
       evict(b, name);
     }
     Object.assign(b, { tier: pv.tier, gt: pv.gt, cap: pv.cap, crowns: pv.crowns ?? 1, seen: now });
+    if (COMPACT) { b.fit = FIT_VERSION; if (pv.low) b.low = { since: pv.low.since, peak: pv.low.peak }; else delete b.low; }
+    // repack: where each home stood, moved with its city (lots.js deals a re-planned city nearest these)
+    const was = wasAt.get(name), Lz = persisted.lots[name];
+    if (was && Lz?.at && typeof Lz.at === 'object') {
+      const sx = Math.round(b.x + p.w / 2 - was[0]), sy = Math.round(b.y + p.h / 2 - was[1]);
+      if (sx || sy) for (const [k, v] of Object.entries(Lz.at)) if (Array.isArray(v)) Lz.at[k] = [v[0] + sx, v[1] + sy];
+    }
     if (typeof p.chain === 'string') b.nest = p.chain; else delete b.nest;   // M6: the plan the next re-plan grows from
     // classic placeVillage's geometry only: plaza and centre (lots and ground are A4's)
     const plaza = { x: b.x + p.plaza.x, y: b.y + p.plaza.y, w: p.plaza.w, h: p.plaza.h };
@@ -330,6 +376,7 @@ export function placeBlocks(villages, persisted, mod, { now, ctxFor = null, seed
       cx: plaza.x + (plaza.w >> 1), cy: plaza.y + (plaza.h >> 1) });
   }
   const vs = villages.map((pv, index) => Object.assign(byName.get(pv.name), { index }));
+  if (COMPACT) persisted.fit = FIT_VERSION;
   // parity: world.hidden-blocks-park-14d
   const parks = Object.keys(B).filter(n => !shown.has(n) && held(n)).map(n => B[n]);
   return { villages: vs, square: SQUARE, parks };

@@ -260,7 +260,7 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
     s.ending ||= why
     broadcast(s, { type: 'ending', why })
     const step = Math.max(50, Math.floor(endWaitMs * 0.4))
-    if (s.kind === 'attach') {
+    if (s.kind === 'attach' || s.kind === 'shell') { // hang up (a shell and its jobs get SIGHUP, as when a window closes)
       signal(s, 'SIGHUP')
       if (await wait(s, step)) return true
       signal(s, 'SIGTERM')

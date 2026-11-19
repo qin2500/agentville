@@ -34,7 +34,7 @@ test('incident numbers: really out with no 20% target goes to C (most weekly roo
   assert.deepEqual(decide({ ...INCIDENT, activeUsage: { fiveHour: w(90, 20 * MIN), weekly: w(27, 5 * DAY) } }), { action: 'switch', to: 'C', why: 'limit', fallback: true }, 'a limit stop alone')
   assert.deepEqual(decide({ ...INCIDENT, limitHit: false }), { action: 'switch', to: 'C', why: 'five_hour', fallback: true }, 'OUT_AT alone, no limit stop yet')
   assert.deepEqual(decide({ ...INCIDENT, activeUsage: { fiveHour: w(40), weekly: w(99.5) }, limitHit: false }).to, 'C', 'out on the week')
-  // Before the fix this was { action: 'none', why: 'nowhere to go' }.
+  // Before the fix this was { action: 'none', why: 'every account is out; the pool is never chosen automatically' }.
 })
 
 test('last resort: ranked by weekly room, then soonest weekly reset; floors are inclusive', () => {
@@ -45,7 +45,7 @@ test('last resort: ranked by weekly room, then soonest weekly reset; floors are 
   assert.equal(two({ fiveHour: w(90), weekly: w(50) }, { fiveHour: w(91), weekly: w(10) }), 'B', 'exactly 10% of the 5-hour window is enough')
   assert.equal(two({ fiveHour: { used: 0, resetsAt: null, none: true }, weekly: w(96) }, { fiveHour: w(95), weekly: w(10) }), 'B', 'no 5-hour limit always has room')
   const none = decide({ ...INCIDENT, usage: new Map([['B', { error: 'Login expired', fiveHour: null, weekly: null }], ['C', { fiveHour: w(95), weekly: w(10) }]]) })
-  assert.deepEqual(none, { action: 'none', why: 'nowhere to go' }, 'unknown usage, or under 10% of the 5-hour window: not a last resort')
+  assert.deepEqual(none, { action: 'none', why: 'every account is out; the pool is never chosen automatically' }, 'unknown usage, or under 10% of the 5-hour window: not a last resort')
 })
 
 test('last resort comes before the pool (the pool is one-way), and a real target before both', () => {
@@ -53,13 +53,13 @@ test('last resort comes before the pool (the pool is one-way), and a real target
   const roomy = new Map([...INCIDENT.usage, ['B', { fiveHour: w(50), weekly: w(70) }]])
   assert.deepEqual(decide({ ...INCIDENT, usage: roomy }), { action: 'switch', to: 'B', why: 'five_hour' })
   const dead = new Map([...INCIDENT.usage].map(([k, u]) => [k, { ...u, weekly: w(99) }]))
-  assert.equal(decide({ ...INCIDENT, usage: dead, poolAvailable: true }).to, 'pool')
+  assert.equal(decide({ ...INCIDENT, usage: dead, poolAvailable: true }).action, 'none', 'never the pool')
 })
 
 test('proactive switching still needs 20% room: no hop onto a nearly-used account early', () => {
   const soft = { ...INCIDENT, manual: false, limitHit: false }
-  assert.deepEqual(decide({ ...soft, activeUsage: { fiveHour: w(96, 2 * H), weekly: w(27, 5 * DAY) } }), { action: 'none', why: 'nowhere to go' }, 'at SWITCH_AT, not OUT_AT')
-  assert.deepEqual(decide({ ...soft, activeUsage: { fiveHour: w(80, 2 * H), weekly: w(27, 5 * DAY) }, projectedMs: 2 * MIN }), { action: 'none', why: 'nowhere to go' }, 'projected to fill')
+  assert.deepEqual(decide({ ...soft, activeUsage: { fiveHour: w(96, 2 * H), weekly: w(27, 5 * DAY) } }), { action: 'none', why: 'every account is out; the pool is never chosen automatically' }, 'at SWITCH_AT, not OUT_AT')
+  assert.deepEqual(decide({ ...soft, activeUsage: { fiveHour: w(80, 2 * H), weekly: w(27, 5 * DAY) }, projectedMs: 2 * MIN }), { action: 'none', why: 'every account is out; the pool is never chosen automatically' }, 'projected to fill')
   assert.deepEqual(decide({ ...soft, activeUsage: { fiveHour: w(80, 2 * H), weekly: w(27, 5 * DAY) }, rebalance: true }), { action: 'none', why: 'not out' }, 'rebalance')
 })
 
@@ -129,7 +129,7 @@ test('sampler, every account out: no switch, a { why, until } block for the bann
     ])
     r.env.reading = { fiveHour: w(100, 50 * MIN), weekly: w(27, 5 * DAY) }
     let d = await r.sampler.tick()
-    assert.deepEqual([d.action, d.why], ['none', 'nowhere to go'])
+    assert.deepEqual([d.action, d.why], ['none', 'every account is out; the pool is never chosen automatically'])
     assert.equal(r.calls.length, 0)
     assert.deepEqual((await r.sampler.info()).blocked, { why: 'all accounts low', until: NOW + 50 * MIN }, 'the active 5-hour reset is the soonest')
     const blockedLines = () => r.logLines().filter((e) => e.action === 'autoswitch_blocked')

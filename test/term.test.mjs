@@ -136,7 +136,7 @@ test('a bg job runs `claude attach <short>`; I/O and resize reach the PTY', asyn
   c.type('size\r')
   await c.see('size 120x40')
   const agents = await (await fetch(`${base}/api/agents`)).json()
-  assert.deepEqual(agents.term, { available: true, running: [cc(ids.job)] })
+  assert.deepEqual(agents.term, { available: true, running: [cc(ids.job)], plain: [] })
   // While it is embedded, "Open in Ghostty" refuses: one process per conversation.
   const open = await post(`/api/open/${encodeURIComponent(cc(ids.job))}`)
   assert.deepEqual([open.status, (await open.json()).error], [409, 'Running in the built-in terminal; use Pop out'])

@@ -14,7 +14,7 @@
 //   city-plan WALKABLE (the plan ground routes treat as path)          → RULES.layout.paths (MOD0 extension)
 import { tierFor, capacityFor, planSettlement, WALKABLE } from '../../web/src/city-plan.js';
 import { projectStyle, applyNeighbourRule } from './style.js';
-import { lotVariants } from './variety.js';
+import { lotVariants, propVariants } from './variety.js';
 
 const DAY = 864e5;
 // classic constants (world.js), unchanged
@@ -126,4 +126,6 @@ export const HOOKS = {
   /** Which of the 16 building variants each plan lot draws (variety.js): no two neighbours alike, a taller core. Art only:
    *  the engine stamps the same lots either way. */
   lotVariants(lots, key, opts) { return lotVariants(lots, key, opts); },
+  /** How each market stall draws (variety.js propVariants): neighbouring stalls differ in cloth, goods and canopy. Art only. */
+  propVariants(props, key) { return propVariants(props, key); },
 };
