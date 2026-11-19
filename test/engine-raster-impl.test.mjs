@@ -134,8 +134,11 @@ test('real classic art, drawn through a fake DOM: every fantasy building look ra
   const wide = rasterize('cottage', null, { kind: 'building', w: 3, h: 3 }).bounds.w;
   const classic = rasterize('cottage', null, { kind: 'building', w: 3, h: 3, scale: 0.8 }).bounds.w;
   assert.ok(wide > classic, 'engine scale draws wider than classic');
-  for (const kind of ['fountain', 'stall', 'bench', 'statue', 'lamppost', 'fence']) {
+  for (const kind of ['fountain', 'bench', 'statue', 'lamppost', 'fence']) {
     const r = rasterize(kind, null, { kind: 'prop', variant: 1, len: 3 });
     assert.ok(r && r.bounds.w > 0 && r.classic, kind);
   }
+  // the market stall is drawn natively at engine scale (art/props/stall.js), never the classic sprite blown up 1.25x
+  const st = rasterize('stall', null, { kind: 'prop', variant: 1, w: 2, h: 1 });
+  assert.ok(st && st.bounds.w > 40 && st.classic === false, 'stall: engine-scale art');
 });

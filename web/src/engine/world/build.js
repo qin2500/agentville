@@ -35,13 +35,13 @@ export function buildWorld(input, persisted, opts) {
  * Yield labels (for debugging only): 'rules' (only when it runs them), 'settlements', 'blocks', 'layout', 'stamp' (per
  * village), 'lots' (per village), 'venues', 'cover', 'scatter' (when the mod scatters), 'cost', 'cover-final', 'anchors'.
  * Returns the World. */
-export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, rules = null, cache = null, cityCap = null, retireOpts = null } = {}) {
+export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, rules = null, cache = null, cityCap = null, retireOpts = null, fitOpts = null } = {}) {
   now ??= input?.now ?? 0;
   seed ??= persisted?.seed ?? input?.seed ?? 0;
   persisted.lots ||= {};
   const ctxFor = projectKey => modCtx(mod, { seed, now, projectKey, forcedTier, forcedStyle });
   const opts = { now, seed, forcedTier, forcedStyle, serverId, ctxFor };
-  if (!rules) { rules = runRules(input, persisted, mod, { ...opts, cityCap, retireOpts }); yield 'rules'; }
+  if (!rules) { rules = runRules(input, persisted, mod, { ...opts, cityCap, retireOpts, fitOpts }); yield 'rules'; }
   // city cap (prune.js): the rules phase decided who retires / comes back; record it (idempotent) before lots are dealt
   const CAP = capOf(cityCap);
   commitRetire(persisted, rules, now, new Set((input?.agents || []).map(a => serverId(a.id) ?? a.id)));

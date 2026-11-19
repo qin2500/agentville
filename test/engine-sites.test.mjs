@@ -16,6 +16,7 @@ const { default: fantasyDefault } = await import('../mods/agentville.fantasy/ind
 const { HOOKS, RULES, tierWithHysteresis } = await import('../mods/agentville.fantasy/rules.js');
 
 const MOD = { ...fantasyDefault, hooks: { ...HOOKS, layout: fantasyDefault.hooks.layout } };   // the rule hooks plus fantasy's layout
+const NO_COMPACT = { ...MOD, rules: { ...MOD.rules, compact: false } };   // city-compact off (world/fit.js)
 const KEY = 'va.engine2.world', DEMO_KEY = 'va.engine2.world.demo';   // fantasy's PersistDecl key / demoKey
 const terrainAt = (sites, x, y) => {   // the class a layout gave tile (x, y): its tiles, else `outside`
   const T = sites.tiles;
@@ -247,7 +248,11 @@ test('classic import (fantasy persist.import): va.world8 keeps every block where
   assert.equal(typeof P.seed, 'number');
   assert.deepEqual(P.blocks, w8.blocks); // deep copy, untouched
   assert.notEqual(P.blocks, w8.blocks);
-  const { sites } = run(inputOf(agentsFor(SPEC), IMPORT_PROJECTS), P);
+  // the import itself keeps every block (compaction off: the one-time size-to-fit is pinned below)
+  const P0 = JSON.parse(JSON.stringify(P));
+  const in0 = inputOf(agentsFor(SPEC), IMPORT_PROJECTS);
+  const pv0 = planSettlements(in0, P, NO_COMPACT, { now: in0.now, ctxFor: ctxFor(in0.now, null), serverId: id => id });
+  const sites = runLayout(placeBlocks(pv0.settlements, P, NO_COMPACT, { now: NOW }), NO_COMPACT);
   for (const v of sites.villages) {
     assert.deepEqual(rectOf(v.block), rectOf(w8.blocks[v.name]), `${v.name} stayed put`);
     assert.equal(v.block.acc, w8.blocks[v.name].acc);
@@ -260,6 +265,12 @@ test('classic import (fantasy persist.import): va.world8 keeps every block where
   saveWorld(store, P);
   assert.ok(store.writes.every(k => k === KEY || k === SEED_KEY), `wrote only engine keys: ${store.writes}`);
   assert.deepEqual(store.get('va.world8'), w8);
+  // city-compact (2026-11-17): with the size-to-fit on, beta's old bigger bucket is compacted to what it needs, once
+  const { pv: pv1 } = run(inputOf(agentsFor(SPEC), IMPORT_PROJECTS), P0);
+  const beta = pv1.settlements.find(v => v.name === 'beta');
+  assert.ok(beta.cap < w8.blocks.beta.cap, `beta: ${w8.blocks.beta.cap} -> ${beta.cap} lots`);
+  assert.ok(P0.blocks.beta.w * P0.blocks.beta.h < w8.blocks.beta.w * w8.blocks.beta.h, 'beta takes less ground');
+  assert.equal(P0.fit, 1);
 });
 
 test('classic import: prefers va.world9, demo reads the .demo keys, own key wins, empty otherwise', () => {

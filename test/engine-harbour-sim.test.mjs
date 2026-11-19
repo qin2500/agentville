@@ -220,7 +220,7 @@ function badMove(grid, x0, y0, x1, y1) {
 }
 
 test('inv4 harbour-6: 600 ticks (merges mid-run), porters never stand on or walk through blocked tiles; frozen agents stay put', () => {
-  // at the classic pace every town-to-quay leg is over 6 s and fades; quick porters make the legs walk (on nav paths)
+  // quick porters (every leg walks, at any pace: test/engine-harbour-walk.test.mjs) cover many legs in 600 ticks
   const { sim, world, input, berths } = setup();
   for (const p of portersOf(sim)) p.speed = 9;
   const g = world.grid, last = new Map(), frozen = new Map();

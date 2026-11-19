@@ -8,10 +8,12 @@
 //     at tier 1 the crate is carried from home;
 //   - a porter whose ship sails drops its crate and heads home; one whose agent woke up (or left) is gone at once (the
 //     agent itself is drawn again); with reduced motion nobody walks.
-// Rules: every leg walks only if the D4 rule says so (ctx.shouldWalk: <= 6 s, on screen, not stalled / error /
-// stopped), else it fades; a porter only ever stands in for a RESTING agent, so stalled / error agents never move.
-// Movement: legs come from ctx.nav.path and are set as a.path (a.move = 'fade' for a long leg); the sim moves the porter
-// and refuses an illegal path (a.stuck). Imports nothing from the engine.
+// Every leg WALKS, however long (classic dock-walk.js walks the whole trip at 20 px/s). The D4 fade rule (ctx.shouldWalk:
+// <= 6 s, on screen) is for agents changing place; a porter's whole point is the walk, and a faded town-to-quay leg made
+// it pop up on the quay out of nowhere. A porter only ever stands in for a RESTING agent, so stalled / error agents never
+// move; with reduced motion nobody walks (released).
+// Movement: legs come from ctx.nav.path and are set as a.path; the sim moves the porter (an off-screen one at the LOD
+// pace, which keeps its real-time speed) and refuses an illegal path (a.stuck). Imports nothing from the engine.
 //
 // Where it walks to: the walkable deck tile beside the ship's middle (venues stamp piers; once they are walkable the
 // porter walks out onto the pier). Until then (pier tiles still blocked water) it falls back to the nearest walkable
@@ -168,20 +170,15 @@ function yardOf(ctx, venue) {
   return nearestWalkable(ctx.world, y.tx, y.ty, 4);
 }
 
-/** Set one leg to (x, y): walk when the D4 rule allows, else fade. False when nav has no way. */
+/** Set one leg to (x, y): a walk along the nav path, whatever its length (see the header). False when nav has no way. */
 function leg(a, ctx, to) {
   const from = here(a);
   const p = ctx.nav?.path?.(from, { x: to.x, y: to.y }, {});
   if (!p || p.length < 2) return false;
   const pts = Array.from(p);
   if (pts[pts.length - 2] !== to.x || pts[pts.length - 1] !== to.y) pts.push(to.x, to.y);
-  let len = 0, cx = from.x, cy = from.y;
-  for (let i = 0; i + 1 < pts.length; i += 2) { len += Math.hypot(pts[i] - cx, pts[i + 1] - cy); cx = pts[i]; cy = pts[i + 1]; }
-  const status = a.agentId != null ? ctx.actors?.get?.(a.agentId)?.status ?? null : null;
-  const walk = typeof ctx.shouldWalk === 'function' ? ctx.shouldWalk(len, a.speed || SPEED, ctx.onScreen ? ctx.onScreen(from.x, from.y) : true, status)
-    : len / (a.speed || SPEED) <= 6;
   a.path = Float32Array.from(pts);
-  a.move = walk ? undefined : 'fade';
+  a.move = undefined;
   a.arrived = false; a.stuck = false;
   return true;
 }

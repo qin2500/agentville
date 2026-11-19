@@ -4,7 +4,7 @@
 // phase reads for it, so a poll re-runs the hooks of the projects whose inputs changed and nothing else:
 //   world part:   the mod (identity), seed, forced tier / style            (a change clears the memo)
 //   project part: its WorldInput project record, its agents, its PRs (by identity when they are the very objects of the
-//                 last call, see mod/input.js createInputReuse; else by JSON), persisted.blocks[name] (gt, tier, cap, nest),
+//                 last call, see mod/input.js createInputReuse; else by JSON), persisted.blocks[name] (gt, tier, cap, nest, fit, low, w, h, away),
 //                 persisted.lots[name] (tier + the items still inside the hold window at `now`), and `now` itself when a
 //                 hook read ctx.time.now for this project last time.
 // Each project's rules come from runRules on that project alone (rules-phase.js loops projects independently: a hook
@@ -40,7 +40,7 @@ export function createRulesMemo() {
     stats.runs++;
     const now = opts.now ?? input?.now, seed = opts.seed ?? input?.seed ?? persisted?.seed ?? 0;
     const forcedTier = opts.forcedTier ?? null, forcedStyle = opts.forcedStyle ?? null;
-    const wk = JSON.stringify([cache?.modKey ? cache.modKey(mod) : String(mod?.id ?? ''), seed, forcedTier, forcedStyle, capOf(opts.cityCap), opts.retireOpts ?? null]);
+    const wk = JSON.stringify([cache?.modKey ? cache.modKey(mod) : String(mod?.id ?? ''), seed, forcedTier, forcedStyle, capOf(opts.cityCap), opts.retireOpts ?? null, opts.fitOpts ?? null]);
     if (wk !== worldKey) { worldKey = wk; byName = new Map(); lastSig = null; lastParts = null; }
     const holdMs = mod?.rules?.holdMs ?? DAY / 2;
     const B = persisted?.blocks || {}, LOTS = persisted?.lots || {};
@@ -58,7 +58,7 @@ export function createRulesMemo() {
       const b = B[name], L = LOTS[name];
       // small: the block (gt, tier, cap, nest) and the held lots (tier + the ids still inside the hold window), flat; compared
       // value by value with last call's (what JSON equality of the same arrays said, without building the strings)
-      const small = b ? [1, b.gt ?? null, b.tier ?? null, b.cap ?? null, b.nest ?? null] : [0];
+      const small = b ? [1, b.gt ?? null, b.tier ?? null, b.cap ?? null, b.nest ?? null, b.fit ?? null, b.low?.since ?? null, b.low?.peak ?? null, b.w ?? null, b.h ?? null, !!b.away] : [0];
       if (L && typeof L === 'object') { small.push(1, L.tier ?? null); for (const id of Object.keys(L.a || {})) if (now - (L.h?.[id] ?? now) <= holdMs) small.push(id); }
       // city cap (prune.js): this city's retired agents and its last retirement
       { const C = retiredOf(persisted, name); small.push(2, C.lastAt, ...Object.keys(C.a).sort()); }
@@ -83,6 +83,8 @@ export function createRulesMemo() {
         // pj / ij: this project's piece and items as JSON (ij without its brackets), joined into the sig below
         // a city over its cap is judged again every poll (the 14-day floor and the retire rate read the clock)
         if (r.projects[name]?.prune?.over > 0) timeRead = true;
+        // a city whose surplus clock runs is judged again every poll (fit.js: the shrink waits on the clock)
+        if (r.projects[name]?.low) timeRead = true;
         e = { small, refs, now, timeRead, rules: r.projects[name], lint: r.lint, piece, items: its, pj: JSON.stringify(piece), ij: JSON.stringify(its).slice(1, -1) };
         ran.push(name);
         stats.projectsRun++;

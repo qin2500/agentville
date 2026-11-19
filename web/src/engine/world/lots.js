@@ -25,8 +25,20 @@ export function assignLots(settlement, persistedLots, now, mod) {
   // keeps every old lot id on the same tiles, so a re-plan keeps each item's lot instead of dealing afresh.
   const chain = typeof p.chain === 'string' ? p.chain : null;
   const nested = !!L && !!chain && typeof L.nest === 'string' && (L.nest === chain || L.nest === p.nest?.from);
-  if (!L || L.cap !== settlement.cap || L.tier !== settlement.tier || (L.crowns ?? 1) !== (settlement.crowns ?? 1)) {
-    if (nested) Object.assign(L, { cap: settlement.cap, tier: settlement.tier, crowns: settlement.crowns ?? 1 });
+  // Size to fit (fit.js): a shrink keeps every lot in use on its tile under a new id (fit.remap: old id -> new id); the
+  // one-time compaction to a fresh plan deals every item again, nearest where it stood (fit.mode 'fresh').
+  const fit = settlement.fit && typeof settlement.fit === 'object' ? settlement.fit : null;
+  // (applied once: a replay of the same rules finds the lot map already on the new plan)
+  const pending = !!L && (L.cap !== settlement.cap || (L.nest ?? null) !== chain);
+  const remap = pending && fit?.mode === 'embed' && fit.remap && typeof fit.remap === 'object' ? fit.remap : null;
+  if (remap) {
+    const own = k => Object.prototype.hasOwnProperty.call(remap, k);
+    for (const [id, lot] of Object.entries(L.a || {})) { if (own(lot)) L.a[id] = remap[lot]; else { delete L.a[id]; delete L.h?.[id]; } }
+    if (L.f) { const f = {}; for (const [lot, t] of Object.entries(L.f)) if (own(lot)) f[remap[lot]] = t; L.f = f; }
+    Object.assign(L, { cap: settlement.cap, tier: settlement.tier, crowns: settlement.crowns ?? 1 });
+  }
+  if (!L || L.cap !== settlement.cap || L.tier !== settlement.tier || (L.crowns ?? 1) !== (settlement.crowns ?? 1) || (fit?.mode === 'fresh' && pending)) {
+    if (nested && fit?.mode !== 'fresh') Object.assign(L, { cap: settlement.cap, tier: settlement.tier, crowns: settlement.crowns ?? 1 });
     else {
       was = L?.at || null;   // where each item stood before this re-plan (absolute tiles; absent in layouts saved before M4)
       L = persistedLots[name] = { cap: settlement.cap, tier: settlement.tier, crowns: settlement.crowns ?? 1, a: {}, h: {} };
@@ -58,6 +70,7 @@ export function assignLots(settlement, persistedLots, now, mod) {
     if (now - L.h[id] > holdMs) { delete L.a[id]; delete L.h[id]; }
   }
   const used = new Set(Object.values(L.a));
+  const avoid = Array.isArray(settlement.avoid) && settlement.avoid.length ? new Set(settlement.avoid) : null;
   // Engine (M4 layout): a re-plan draws a new plan, so classic dealt every item a fresh lot in request order
   // and homes jumped across the block. An item that had a lot before the re-plan now takes the free lot of its best
   // available rank nearest where it stood (an identical lot at the same tiles keeps it exactly in place).
@@ -75,6 +88,8 @@ export function assignLots(settlement, persistedLots, now, mod) {
     let lot = null;
     const at = o && was?.[id];
     if (Array.isArray(at)) for (const r of ranks) if ((lot = nearest(r, at))) break;
+    // size to fit (fit.js): while a city waits to shrink, a newcomer takes a lot the shrink keeps when one is free
+    if (!lot && avoid) for (const r of ranks) if ((lot = p.lots.find(l => l.rank === r && !used.has(l.id) && !avoid.has(l.id)))) break;
     if (!lot) for (const r of ranks) if ((lot = p.lots.find(l => l.rank === r && !used.has(l.id)))) break;
     lot ||= p.lots.find(l => !used.has(l.id));
     if (!lot) {

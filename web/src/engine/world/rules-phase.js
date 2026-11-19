@@ -14,6 +14,7 @@ import { hash, streamFor } from '../core/rng.js';
 import { validateLots } from '../mod/validate.js';
 import { growthRoom, anchoredRect, nearRect } from './room.js';
 import { retire, retiredOf, capOf } from './prune.js';
+import { FIT_VERSION, FIT_DEFAULTS, compactOn, pickSmaller, lowClock, shrinkTarget } from './fit.js';
 
 const DAY = 864e5;
 const RANK_KEYS = ['L', 'M', 'S'];
@@ -118,7 +119,7 @@ const itemOf = r => (r.owner === 'home' ? `home:${r.agent}` : `pr:${r.pr ?? Stri
  *   serverId?: (opaque: string) => string, ctxFor?: (projectKey: string) => object }} opts
  * @returns {RulesResult}
  */
-export function runRules(input, persisted, mod, { now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, ctxFor = null, cityCap = null, retireOpts = null } = {}) {
+export function runRules(input, persisted, mod, { now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, ctxFor = null, cityCap = null, retireOpts = null, fitOpts = null } = {}) {
   now ??= input?.now;
   seed ??= input?.seed ?? persisted?.seed ?? 0;
   const H = mod.hooks, holdMs = mod.rules?.holdMs ?? DAY / 2;
@@ -168,9 +169,10 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
     }
     const need = lots.length + held;
     // parity: world.capacity-buckets
-    // City cap: the planner is never asked for more lots than the cap (a standing plan never shrinks: see below).
-    let cap = H.capacity(tier, CAP != null ? Math.min(need, CAP) : need, ctx);
-    if (b && b.tier === tier && b.cap > cap) cap = b.cap; // classic: capacity only grows within a tier
+    // City cap: the planner is never asked for more lots than the cap.
+    const want = CAP != null ? Math.min(need, CAP) : need;
+    let cap = H.capacity(tier, want, ctx);
+    if (b && b.tier === tier && b.cap > cap) cap = b.cap; // classic: capacity only grows within a tier (fit.js may shrink it)
     const crowns = H.crowns ? H.crowns(project, here, ctx) : 1;
     const style = H.style ? H.style(name, { ...ctx, tier }, project.preset) : { key: '' };
     const ranks = { L: 0, M: 0, S: 0 };
@@ -178,9 +180,55 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
     // M6 nested growth: the plan grows from the one this block drew last (its chain), so a re-plan only adds.
     // M7 thin growth: the planner is asked to grow thin (`grow`), and, when this rebuild will re-plan a standing block,
     // told how much room the block has round it in each corner (room.js), so it grows where the block keeps its place.
-    const from = typeof b?.nest === 'string' ? b.nest : null;
+    let from = typeof b?.nest === 'string' ? b.nest : null;
+    // Size to fit (fit.js): the one-time compaction of a block, then a shrink after a week-long surplus (only empty lots go)
+    let fit = null, low = null, avoid = null;
+    if (b && compactOn(mod)) {
+      const La = L?.a && typeof L.a === 'object' ? L.a : {}, has = k => Object.prototype.hasOwnProperty.call(La, k);
+      const keepN = lots.filter(r => has(r.owner === 'home' ? `home:${sidOf(r)}` : r.item)).length;   // requested and housed now
+      const fitNeed = Math.max(want, keepN), fitCap = keepN > want ? Math.max(H.capacity(tier, fitNeed, ctx), H.capacity(tier, want, ctx)) : H.capacity(tier, want, ctx);
+      // the lots in use (assigned or held), on the plan the block stands on; unknown when the lot map is another plan's
+      const usedOk = !!L && L.tier === b.tier && L.cap === b.cap;
+      const used = usedOk ? Object.values(La) : null;
+      const current = () => {
+        const p = planFor(mod, b.tier, hash(name), b.cap, b.crowns ?? crowns, ctx, style ?? null, seed, undefined, from, null);
+        return p && p.w === b.w && p.h === b.h ? p : null;   // not the plan the block stands on: never embed into it
+      };
+      const fresh = c => planFor(mod, tier, hash(name), c, crowns, ctx, style ?? null, seed, ranks, null, null);
+      // the planner gets the picked plan's own chain back (it holds `c` lots, so the planner returns it as it is)
+      const take = (pick, c) => { cap = c; from = typeof pick.plan.chain === 'string' ? pick.plan.chain : null;
+        fit = pick.mode === 'embed' ? { mode: 'embed', dx: pick.dx, dy: pick.dy, remap: pick.remap } : { mode: 'fresh' }; };
+      if (b.fit !== FIT_VERSION) {
+        // one-time compaction: the smallest of the plan it has, a nest ancestor that keeps every lot in use, a fresh plan
+        if (b.tier !== tier) take({ mode: 'fresh', plan: {} }, fitCap);
+        else {
+          const cur = current(), fp = fresh(fitCap);
+          const pick = cur ? pickSmaller(cur, fp, { tier, lots: fitCap, used: used ?? [], allowMove: true })
+            : (fp && fp.w * fp.h < b.w * b.h ? { mode: 'fresh', plan: fp } : null);
+          if (pick && !(pick.mode === 'embed' && !used)) take(pick, fitCap);
+          else if (pick) take({ mode: 'fresh', plan: pick.plan }, fitCap);
+        }
+      } else if (b.tier === tier && !b.away) {
+        // hysteresis: a surplus that lasts FIT_DEFAULTS.afterMs, then the smallest plan that keeps every lot in use
+        low = lowClock(b.low, { cap: b.cap, fitCap, need: fitNeed, now });
+        const after = Number.isFinite(fitOpts?.afterMs) ? fitOpts.afterMs : FIT_DEFAULTS.afterMs;
+        if (low && used) {
+          // one spare lot: never shrink to a bucket the peak fills
+          const peakCap = H.capacity(tier, low.peak + 1, ctx), cur = peakCap < b.cap ? current() : null;
+          // a week whose peak still fills the plan: start a new week from today's need, so an old spike cannot block forever
+          if (!cur && now - low.since >= after) low = { since: now, peak: fitNeed };
+          const fp = cur ? fresh(peakCap) : null;
+          if (cur && now - low.since >= after) {
+            const pick = pickSmaller(cur, fp, { tier, lots: peakCap, used, allowMove: false });
+            if (pick) { take(pick, peakCap); low = null; }
+          }
+          // still waiting: newcomers are dealt lots the coming shrink keeps, so the lots it drops empty out
+          if (low && cur) { const t = shrinkTarget(cur, fp, { tier, lots: peakCap }); if (t?.avoid.length) avoid = t.avoid; }
+        }
+      }
+    }
     let grow = null, obs = null;
-    if (from && thin) {
+    if (from && thin && !fit) {
       grow = {};
       if (!b.away && tier >= b.tier && (b.tier !== tier || b.cap !== cap)) {
         obs = [layout.square, ...Object.keys(B).filter(n => n !== name && !B[n].away).map(n => grownTo.get(n) || B[n])];
@@ -193,7 +241,7 @@ export function runRules(input, persisted, mod, { now, seed, forcedTier = null, 
       const r = anchoredRect(b, plan);
       if (!obs.some(o => nearRect(r, o, layout.gap))) grownTo.set(name, r);   // it will stand there (else it moves: unknown)
     }
-    projects[name] = { growth, gt, tier, need, cap, crowns, style, lots, ranks, plan, ...(prune ? { prune } : {}) };
+    projects[name] = { growth, gt, tier, need, cap, crowns, style, lots, ranks, plan, ...(prune ? { prune } : {}), ...(fit ? { fit } : {}), ...(low ? { low } : {}), ...(avoid ? { avoid } : {}) };
   }
   return { projects, lint };
 }

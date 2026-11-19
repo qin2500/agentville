@@ -156,6 +156,8 @@ export const FEATURES = Object.freeze(['layout', 'terrain.classes', 'scatter.at'
  *  scatter?: (tile: ScatterTile, draw: (k: number) => number, ctx: ModCtx) => ScatterPick|null,
  *  styleNeighbours?: (styles: Map<string, object>, blocks: Array<{ name: string, x: number, y: number, w: number, h: number }>,
  *    distinctPicks: (blocks, options: (name: string) => any[], near?: number) => Map<string, any>) => Map<string, object>,   // additive: after layout, vary adjacent blocks' styles
+ *  lotVariants?: (lots: object[], projectKey: string, opts: { w: number, h: number, nest: object|null }) => Map<string, number>,   // additive (city-variety): how each lot draws (0..63), art only
+ *  propVariants?: (props: object[], projectKey: string) => Map<number, number>,   // additive (market stalls): index into plan.props -> variant (0..4095), art only
  *  freeLot?: (lot: { id: string, w: number, h: number, rank: string|null, look: string|null }, ctx: ModCtx) => { kind?: string, ground: number, props?: Array<{ kind: string, x: number, y: number, v?: number }> },   // additive (city cap): a free lot drawn as a green (lot-local tiles); without it the house stays
  * }} ModHooks
  *
@@ -163,7 +165,8 @@ export const FEATURES = Object.freeze(['layout', 'terrain.classes', 'scatter.at'
  *  id: string, name: string, version: string, apiVersion: number, chain: string[],
  *  rules: { layout: { square: { x: number, y: number, w: number, h: number }, gap: number, accents: string[],
  *            searchX: number, searchY: number, aspect: number, reserveMs: number }, holdMs: number,
- *            styleReads?: string[] },   // styleReads (additive): style fields the building art draws; a hash of only these keys the sprite cache
+ *            styleReads?: string[], compact?: boolean },   // styleReads (additive): style fields the building art draws; a hash of only these keys the sprite cache
+ *                                       // compact (additive, city-compact): false keeps plans growing only (no size-to-fit, world/fit.js)
  *  terrain: TerrainTable, objects: ObjectTypeTable, hooks: ModHooks,
  *  venues?: Record<string, VenueDef>,        // data key, deep-merged and frozen
  *  behaviour?: object, represent?: object,  // data keys, deep-merged and frozen (represent.pr per state)

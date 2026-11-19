@@ -451,13 +451,19 @@ function stampCore(grid, objects, plan, origin, ctx, rec) {
     }
   };
 
-  let pi = -1;
+  // Optional mod hook hooks.propVariants(props, projectKey) -> Map<index into plan.props, variant>: how a prop is DRAWN (art
+  // only, like lotVariants: positions and footprints never change). A throwing hook or a bad answer keeps the plan's p.v.
+  let propVariant = null;
+  try { const m = mod.hooks?.propVariants?.(plan.props || [], proj); if (m instanceof Map) propVariant = m; } catch { propVariant = null; }
+  let pi = -1, pIdx = -1;
   for (const p of plan.props || []) {
+    pIdx++;
     const i = counter[p.kind] = (counter[p.kind] ?? -1) + 1;
     const id = `prop:${proj}:${p.kind}:${i}`;
     if (replay && ++pi < replay.n) { replayProp(id); continue; }
     const fp = footprintFor(p, mod.objects);
-    const variant = (p.v | 0);
+    const pv = propVariant?.get(pIdx);
+    const variant = Number.isInteger(pv) && pv >= 0 && pv < 4096 ? pv : (p.v | 0);
     if (!fp) {   // decal
       const t = originTile(p, { walk: 'floor', w: 1, h: 1 });
       put({ id, kind: 'decal', model: p.kind, tx: OX + t.tx, ty: OY + t.ty, w: 1, h: 1, z: 0, walk: 'floor', project: proj, styleKey, variant });

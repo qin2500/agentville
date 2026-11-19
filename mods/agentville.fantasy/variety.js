@@ -77,3 +77,51 @@ export function lotVariants(lots, key, opts = {}) {
   }
   return out;
 }
+
+// ---- market stalls (2026-11-19) ----
+// A stall's variant packs three looks (web/src/engine/art/props/stall.js decodes the same way; a mod may not import
+// engine files): lo = v & 7 is the cloth, goods = (mid + 3 * lo) & 7 with mid = (v >> 3) & 7, and shape = (hi + lo + mid) % 3
+// with hi = v >> 6 (0 striped awning, 1 peaked pavilion, 2 round hood).
+export const STALL_CLOTHS = 8, STALL_GOODS = 8, STALL_SHAPES = 3;
+export const stallLook = v => { v = Math.max(0, v | 0); const lo = v & 7, mid = (v >> 3) & 7; return { cloth: lo, goods: (mid + 3 * lo) & 7, shape: ((v >> 6) + lo + mid) % 3 }; };
+export const stallVariant = (cloth, goods, shape) => {
+  const lo = cloth & 7, mid = (goods - 3 * lo) & 7, hi = (((shape - lo - mid) % 3) + 3) % 3;
+  return lo | (mid << 3) | (hi << 6);
+};
+/** Stalls closer than this (plan tiles, centre to centre) count as neighbours: the row (3 apart) and the next rows. */
+const STALL_NEAR_X = 3.5, STALL_NEAR_Y = 2.5;
+
+/**
+ * How each market stall of a plan is drawn: Map<index into props, variant> for the props of kind 'stall' only. Neighbouring
+ * stalls never share a cloth or goods and a row alternates its canopy shapes when it can, so a market reads as many
+ * traders, not one tent copied. Art only: no stall moves. Pure and deterministic in (props, key); greedy in plan order and
+ * seeded by each stall's ordinal (not its tiles), so a nested plan, which keeps the older plan's props first shifted by its
+ * offset, draws its old stalls exactly as before (prefix-stable).
+ */
+export function propVariants(props, key) {
+  const out = new Map(), placed = [];
+  if (!Array.isArray(props)) return out;
+  const k = String(key ?? '');
+  let n = 0;
+  props.forEach((p, i) => {
+    if (!p || p.kind !== 'stall' || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    const h = mixh(fnv(`${k}|stall|${n++}`));
+    const near = placed.filter(o => Math.abs(o.x - p.x) <= STALL_NEAR_X && Math.abs(o.y - p.y) <= STALL_NEAR_Y);
+    const N = STALL_CLOTHS * STALL_GOODS * STALL_SHAPES;
+    let best = -1, bestCost = Infinity;
+    for (let t = 0; t < N; t++) {
+      const c = (t + (h & 7)) % STALL_CLOTHS, g = ((t >> 3) + ((h >>> 3) & 7)) % STALL_GOODS, s = (Math.floor(t / 64) + ((h >>> 6) % 3)) % STALL_SHAPES;
+      let cost = t * 1e-4;
+      for (const o of near) {
+        if (o.c === c) cost += 10;
+        if (o.g === g) cost += 6;
+        if (o.s === s) cost += o.y === p.y ? 4 : 1;
+      }
+      if (cost < bestCost) { bestCost = cost; best = stallVariant(c, g, s); }
+    }
+    const L = stallLook(best);
+    out.set(i, best);
+    placed.push({ x: p.x, y: p.y, c: L.cloth, g: L.goods, s: L.shape });
+  });
+  return out;
+}

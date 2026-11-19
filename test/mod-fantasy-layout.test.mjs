@@ -71,10 +71,14 @@ function worldPin(name, m = mod) {
 // it); the hashed village blocks carry that field. With `nest` left out the old pins still match (geometry unchanged).
 // Re-pinned (M7 dress): the countryside scatter (meadow, bloom-meadow, footpath terrain; copses) changes the terrain
 // and wild-object layers of `world`; every `sites` pin (the layout itself) is unchanged.
+// Re-pinned (city-compact, 2026-11-17): every block now persists `fit: 1` (world/fit.js, the size-to-fit mark); the hashed
+// village blocks carry that field. A fresh town is already compact: with rules.compact false (no mark) the old pins
+// (citydemo 71b762831e8e16f5/cb43c46b2ebea63c, busy c56459900054e3cf/bc6f64602ca96b7c, stress 8d25ba0e1687ea1b/2f065193add09327)
+// still match exactly, so no geometry changed.
 const PINS = {
-  citydemo: { sites: '71b762831e8e16f5', world: 'cb43c46b2ebea63c' },
-  busy: { sites: 'c56459900054e3cf', world: 'bc6f64602ca96b7c' },
-  stress: { sites: '8d25ba0e1687ea1b', world: '2f065193add09327' },
+  citydemo: { sites: '5d0863b0216852f2', world: '940b2e9e9d153265' },
+  busy: { sites: '55ec95a830b58df8', world: '6c3641424dc192fd' },
+  stress: { sites: 'da1995706bd99b7b', world: 'e4509b07dde333d7' },
 };
 
 if (process.env.VA_PIN_PRINT) {
