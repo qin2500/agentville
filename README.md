@@ -323,7 +323,8 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
 - **Auto-switch.** An account is out when its 5-hour or weekly window reaches 99 %, or when a running
   agent reports a usage limit. Agentville then switches to the saved account with room (both windows
   under 95 %) whose **weekly** window resets soonest (the 5-hour reset breaks ties, and resets
-  within an hour of each other count as a tie), else to the pool. The idea: an account's weekly
+  within an hour of each other count as a tie). If none has room it stays put: the pool is never
+  chosen automatically (a fixed rule), so you can switch to it by hand. The idea: an account's weekly
   allowance is lost when it resets, so spend the one that expires first. At most once every 15
   minutes, and never from the pool back to an account.
 - **Rebalancing.** Once a switch has left you on an account with a later weekly reset, Agentville
