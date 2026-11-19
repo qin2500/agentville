@@ -132,6 +132,16 @@ truth for every signature is `web/src/engine/mod/api.js`.
 | `style` | `(projectKey, ctx, preset?) → { key, accent? }` | once per project | opaque to the engine except `accent` |
 | `layout` | `(LayoutInput, ctx) → LayoutResult` | world rebuild, only when a block moves | input `{ settlements, square, parks, paths }`; `ctx.time` is not given and the result is cached. Returns bounds, focus, terrain-class, ground, road and lot rasters, `outside`, venue sites and `data` |
 | `scatter` | `(ScatterTile, draw, ctx) → ScatterPick \| null` | world rebuild, per unbuilt tile whose class `grows` | optional |
+| `styleNeighbours` | `(styles, blocks, distinctPicks) → Map` | world rebuild, after `layout` | additive: vary the styles of blocks that sit next to each other; `distinctPicks` helps choose options that differ |
+| `lotVariants` | `(lots, projectKey, { w, h, nest }) → Map<lotId, 0..63>` | stamp time, per plan | additive, art only: how each lot's building draws. `lots` are `{ id, x, y, w, h }` in plan order (plan-local tiles). Keep it prefix-stable (a plan that grows by appending lots must not change the variants of the lots it already had) so a tier-up never repaints a standing house; `nest` carries the older plan for nested growth |
+| `propVariants` | `(props, projectKey) → Map<index, 0..4095>` | stamp time, per plan | additive, art only: how each prop of the plan draws, keyed by its index in `plan.props`. The fantasy mod uses it for market stalls (cloth, goods and canopy are packed into the variant). A prop with no entry draws its default look |
+| `freeLot` | `(lot, ctx) → { kind?, ground, props? }` | per free lot | additive: a free lot (one the city cap or a shrink left empty) drawn as a green, in lot-local tiles; without it the house stays |
+
+**`rules.compact`** (additive, default on). The engine sizes each city's plan to the homes it needs: on the first
+load it compacts a block to the smallest plan that keeps every lot in use, and after a week-long surplus it shrinks the
+plan (only empty lots go; every lot in use keeps its tile under a new id). A mod whose plans cannot be re-planned this
+way sets `rules: { compact: false }` and keeps plans that only grow. The logic lives in `web/src/engine/world/fit.js`;
+`node tools/engine/footprint.mjs --fixture busy` prints what a fixture would shrink to.
 
 **Data keys**, deep-merged over the parent (arrays replace) and frozen: `rules`, `terrain` (`types`, `byName`,
 `wildCost`, `classes`), `objects`, `behaviour`, `represent` (`agent`, `boss`, `sub`, `poses`, `cues`, `pr`, `project`) and

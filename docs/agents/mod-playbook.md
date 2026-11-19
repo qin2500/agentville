@@ -90,6 +90,12 @@ const represent = { pr: { building: { as: 'lot', model: 'flag' }, merged: { as: 
 
 All hooks start as a call to the parent. Replace one body at a time. The names, from `MOD1_HOOKS`:
 `growth`, `tier`, `capacity`, `lots`, `crowns`, `planSettlement`, `style`, `layout`, and the optional `scatter`.
+Further optional, additive hooks: `styleNeighbours` (vary adjacent blocks), `lotVariants` (how each lot's building
+draws, 0..63) and `propVariants` (how each prop, such as a market stall, draws, 0..4095); both variant hooks are art only
+and must be deterministic from the plan, and `lotVariants` must be prefix-stable so a standing house never repaints when a
+plan grows. `freeLot` draws an empty lot as a green. In `rules`, `compact: false` opts out of the engine's size-to-fit
+(compaction and shrink); the default keeps each city sized to the homes it needs. Signatures are in
+`web/src/engine/mod/api.js`.
 
 ```js
 // A per-project accent from a list; only `accent` is read by the engine.
