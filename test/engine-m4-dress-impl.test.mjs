@@ -118,7 +118,9 @@ test('[world.wave-glints] glints come from layoutData.waves, culled to the view 
   let any = 0; for (let t = 0; t < 4; t += 0.5) { const n = gl(run(w, { t, actors: [] })); any += n; assert.ok(n <= CAPS.glints); }
   assert.ok(any > 0);
   assert.equal(gl(run(w, { t: 1, actors: [] }, { rect: [9e4, 9e4, 9e4 + 10, 9e4 + 10], zoom: 2 })), 0);
-  assert.equal(gl(run(w, { t: 1, actors: [] }, { ...view, zoom: 0.2, mode: 'map' })), 0);
+  // Map zoom is the same village, smaller: the glints are drawn there too, under the same cap
+  let anyMap = 0; for (let t = 0; t < 4; t += 0.5) { const n = gl(run(w, { t, actors: [] }, { ...view, zoom: 0.2, mode: 'map' })); anyMap += n; assert.ok(n <= CAPS.glints); }
+  assert.ok(anyMap > 0);
 });
 
 test('[vil.pose-hammer-sparks-badge] a hammering villager throws sparks', () => {

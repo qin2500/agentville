@@ -52,6 +52,11 @@ const PIERS = [null, [0], [-1, 0, 1], [-2, -1, 0, 1], [-2, -1, 0, 1, 2]];
 const UNITS = [null, 4, 4, 5, 6];        // classic berth units per pier side (26 px each); a berth here is 2 of them
 const PITCH = 7, PIER_W = 2, SHIP = 3;   // tiles
 export const PIER_ID = /^p\d/;           // pier berth ids; anything else is at anchor
+// parity: har.ships-along-the-pier
+/** A moored ship lies along its pier, bow out to sea (+y): engine facing 1 (SW on screen, the art's 'S' heading), as
+ *  classic dock-art moors every ship heading 'S'. Facing 2 (-x) laid every hull across its pier, so a brig sat on the
+ *  planks and on the ships either side of it. */
+export const MOOR_FACE = 1;
 
 /**
  * Where everything stands, in tiles. Pure; also used by the plan's tests and by ambient code that wants the harbour's
@@ -91,7 +96,7 @@ function plan({ site, level: lv }) {
     const bx = side === 'w' ? x - 1 : x + PIER_W;
     for (let j = 0; j < per; j++) {
       const id = `p${k + 2}${side}${j}`, ty = y0 + 1 + j * SHIP;
-      berths.push({ id, tx: bx, ty, face: 2 });
+      berths.push({ id, tx: bx, ty, face: MOOR_FACE });
       nodes[`deck-${id}`] = { tx: side === 'w' ? x : x + 1, ty };   // where a porter stands to load this berth
     }
   }
@@ -101,7 +106,7 @@ function plan({ site, level: lv }) {
     const ay = tail + 4;
     anchors.push(...piers.map(p => [p.x + 1, ay]), [xmin - 6, ay], [xmax + 6, ay - 1], [xmin - 12, ay + 1], [xmax + 12, ay]);
   }
-  anchors.forEach(([tx, ty], i) => berths.push({ id: `a${i}`, tx, ty, face: 2 }));
+  anchors.forEach(([tx, ty], i) => berths.push({ id: `a${i}`, tx, ty, face: MOOR_FACE }));
 
   // ---- piers: plank decks (walkable) in berth-length planks, bollards where each berth starts, cranes at the root
   const top = quay ? quay.y1 + 1 : sea;
@@ -168,26 +173,53 @@ function plan({ site, level: lv }) {
   return { objects, nodes, berths };
 }
 
+// parity: har.brig-takes-two-berths
+/** A berth is SHIP tiles of a pier side; a brig's hull is 4.5 tiles (classic dock-art: a cargo ship takes 3 berth units
+ *  where a sloop takes 2), so a brig on a pier takes a head and the berth inside it (BRIG_SPAN berths). ship.js moors it
+ *  with its bow at the head's sea end, over both. */
+export const BRIG_SPAN = 2;
+/** The pier berth just inside b (toward the quay, same pier side), or null. */
+const innerOf = (pier, b) => pier.find(o => o.tx === b.tx && o.ty === b.ty - SHIP) ?? null;
+
 /** Which berth each harbour PR takes (VenueDef.assign; the 5th argument tells ship classes). Stable: a PR keeps the
- *  berth it had. A new brig takes a free pier head (the outermost berth of a pier side), then any pier berth; a smaller
- *  ship takes a pier berth that is not a head first, so the heads stay free for brigs. The overflow lies at anchor. */
+ *  berth it had while that still fits. A brig on a pier takes a head (the outermost berth of a pier side) AND the berth
+ *  inside it, which no other ship may take; a new brig takes a head whose inner berth is free, else lies at anchor, and
+ *  only when both are full squeezes onto any free pier berth. A smaller ship takes a plain berth first (neither a head
+ *  nor the berth inside one), then the berths inside heads, then heads, so the heads stay free for brigs. The overflow
+ *  lies at anchor. */
 function assign(prIds, berths, prev, ctx, info = {}) {
-  const ids = prIds.slice(0, berths.length), valid = new Set(berths.map(b => b.id)), used = new Set(), out = {};
-  for (const id of ids) {
-    const b = Object.prototype.hasOwnProperty.call(prev || {}, id) ? prev[id] : undefined;
-    if (valid.has(b) && !used.has(b)) { out[id] = b; used.add(b); }
-  }
+  const ids = prIds.slice(0, berths.length), byId = new Map(berths.map(b => [b.id, b])), used = new Set(), out = {};
   const pier = berths.filter(b => PIER_ID.test(b.id)), outer = new Map();
   for (const b of pier) { const k = `${b.tx}`; if (!outer.has(k) || outer.get(k).ty < b.ty) outer.set(k, b); }
-  const heads = pier.filter(b => outer.get(`${b.tx}`) === b), rest = pier.filter(b => !heads.includes(b));
+  const isHead = b => outer.get(`${b.tx}`) === b;
+  const heads = pier.filter(isHead), inner = new Set(heads.map(h => innerOf(pier, h)).filter(Boolean));
+  const plain = pier.filter(b => !isHead(b) && !inner.has(b)), insides = pier.filter(b => inner.has(b));
   const atAnchor = berths.filter(b => !PIER_ID.test(b.id));
-  const firstFree = list => list.find(b => !used.has(b.id));
+  const big = id => info?.[id]?.model === 'brig';
+  const free = b => b && !used.has(b.id);
+  // a brig on a pier head also holds the berth inside it; anywhere else (at anchor, or squeezed in) just its own berth
+  const take = (id, b) => {
+    out[id] = b.id; used.add(b.id);
+    if (big(id) && isHead(b)) { const i = innerOf(pier, b); if (i) used.add(i.id); }
+  };
+  const prevOf = id => { const v = Object.prototype.hasOwnProperty.call(prev || {}, id) ? prev[id] : undefined; return typeof v === 'string' ? byId.get(v) : undefined; };
+  // kept berths: smaller ships first (they hold one berth each), then brigs, which keep a pier head only while the
+  // berth inside it is free too (an older assignment may have put a ship there); otherwise they are placed afresh
+  for (const id of ids) { const b = prevOf(id); if (!big(id) && free(b)) take(id, b); }
+  for (const id of ids) {
+    const b = prevOf(id);
+    if (!big(id) || !free(b)) continue;
+    const i = isHead(b) ? innerOf(pier, b) : null;
+    if (!i || free(i)) take(id, b);
+  }
+  const firstFree = list => list.find(free);
   for (const id of ids) {
     if (out[id]) continue;
-    const big = info?.[id]?.model === 'brig';
-    const b = (big ? firstFree(heads) ?? firstFree(rest) : firstFree(rest) ?? firstFree(heads)) ?? firstFree(atAnchor);
+    const b = big(id)
+      ? heads.find(h => free(h) && (!innerOf(pier, h) || free(innerOf(pier, h)))) ?? firstFree(atAnchor) ?? firstFree(pier)
+      : firstFree(plain) ?? firstFree(insides) ?? firstFree(heads) ?? firstFree(atAnchor);
     if (!b) break;
-    out[id] = b.id; used.add(b.id);
+    take(id, b);
   }
   return out;
 }

@@ -3,7 +3,7 @@
 // stress fixture loaded WITH its nested growth history (design decision), plus the 400-agent busy row.
 //
 //   node tools/perf/engine-perf.mjs [--fixture stress] [--layout e2e/fixtures/engine/stress-nested.layout.json]
-//        [--busy busy] [--runs 3] [--port 5403] [--window 10] [--out /tmp/enginev2/m7-perf.json] [--no-profile]
+//        [--busy busy] [--runs 3] [--port 5403] [--window 10] [--out /tmp/enginev2/m7-perf.json] [--no-profile] [--map-settle 30000]
 //
 // Browser rows run in a hidden headless Chromium (never a visible window, never focus) at 1440x900, against the art-pass
 // vite dev server (tools/artpass/vite.config.mjs), which this script starts on --port and stops when done. Each run is a
@@ -32,6 +32,8 @@ const LAYOUT = path.resolve(ROOT, opt('layout', 'e2e/fixtures/engine/stress-nest
 const RUNS = Math.max(1, +opt('runs', 3)), PORT = +opt('port', 5403), WINDOW_S = +opt('window', 10);
 const OUT = path.resolve(opt('out', '/tmp/enginev2/m7-perf.json'));
 const PROFILE = !flag('no-profile');
+// --map-settle ms: how long the Map row waits for every tile to bake before its steady window (a loaded machine needs more)
+const MAP_SETTLE_MS = +opt('map-settle', 30000);
 const TRACE = flag('trace');   // per-frame log of the pan/zoom gesture (villagePerf.trace) in each run's panzoomTrace
 // GPU: Playwright's default headless shell rasterises on SwiftShader (CPU), which is not the MacBook-class Chromium the
 // budgets name. The new headless mode (channel 'chromium', still no window) with ANGLE Metal uses the real GPU.
@@ -302,7 +304,7 @@ async function stressRun(browser, layout, run, wantProfile) {
 
   // Map zoom: the whole world at 0.25
   await setCam(page, { x: d.grid.ox + d.grid.w / 2, y: d.grid.oy + d.grid.h / 2, z: 0.25 });
-  const mapSettled = await settle(page, 30000);
+  const mapSettled = await settle(page, MAP_SETTLE_MS);
   out.map = { settled: mapSettled, ...(await steady(page, cdp)) };
   if (wantProfile) out.profileMap = await profile(cdp, () => sleep(4000));
 

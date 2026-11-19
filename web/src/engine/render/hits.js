@@ -7,7 +7,8 @@
 //     hit but still occlude.
 //     Hit = { id, kind, rect: [x0, y0, x1, y1] CSS px, key, z }
 //       slice hits add src: { img, sx, sy, sw, sh } (the source rect the slice draws, for pixel-alpha picking);
-//       actor hits add occluded: true when a slice drawn after the actor overlaps its sprite rect (x-ray).
+//       actor hits add occluded: true when a slice drawn after the actor overlaps its sprite rect (x-ray); a non-agent
+//       actor hit (a hull) also gets src (its whole sprite), so pick.js reads its pixels as it does a slice's.
 //     One hit per slice (a building with five strips gives five hits, all with the building's id), so the empty air
 //     beside a tower is not the tower's.
 //
@@ -32,8 +33,15 @@ export const depthOfKey = key => Math.floor(key / ROW);
 /** Layer field of a packed sort key. */
 export const layerOfKey = key => ((Math.floor(key / LAYER_UNIT) % LAYER_SLOTS) + LAYER_SLOTS) % LAYER_SLOTS;
 
-/** Drawn sprite rect of an actor item, 1x world px. Falls back to a 16x24 box with the pivot at its bottom centre. */
+/** Drawn sprite rect of an actor item, 1x world px. Falls back to a 16x24 box with the pivot at its bottom centre.
+ *  A strip of a sliced hull (it.clip = [L, R], renderer actorItems) is that strip of the sprite rect. */
 export function actorRect(it) {
+  const r = spriteRect(it);
+  if (it.clip) { r[0] = Math.max(r[0], it.clip[0]); r[2] = Math.min(r[2], it.clip[1]); }
+  return r;
+}
+/** The whole sprite's rect of an actor item (a hull strip's included), 1x world px. */
+function spriteRect(it) {
   const p = it.p || toScreen(it.x, it.y);
   const w = it.img?.width ?? it.w ?? 16, h = it.img?.height ?? it.h ?? 24;
   const px = it.pivot?.x ?? w / 2, py = it.pivot?.y ?? h;
@@ -94,6 +102,13 @@ export function buildHits(merged, toCss, { index: given = null } = {}) {
       if (!index) index = sliceIndex(merged.filter(m => m && !m.actor));
       const h = { id: it.oid, kind: it.hit, rect: cssRect(toCss, r), key: keyOf(it), z: it.z ?? 0 };
       if (occludersOf(index, it, r).length) h.occluded = true;
+      // a non-agent actor (a hull on a berth) is picked by its pixels like a slice: its sprite is mostly air (sails,
+      // rigging, water round the hull), and that air must fall through to the deck or the hull behind it
+      // (a strip of a sliced hull: that strip of its sprite, one hit per strip as for a static's slices)
+      if (it.hit !== 'agent' && it.img && it.img.width > 0 && it.img.height > 0) {
+        const x0 = it.clip ? spriteRect(it)[0] : r[0];
+        h.src = { img: it.img, sx: r[0] - x0, sy: 0, sw: r[2] - r[0], sh: it.img.height };
+      }
       out.push(h);
     } else {
       if (!(it.sw > 0 && it.sh > 0)) continue;

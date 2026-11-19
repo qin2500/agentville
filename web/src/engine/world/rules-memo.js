@@ -17,6 +17,7 @@
 //     ran:  the projects whose hooks ran this call (tests and the debug counters)
 import { runRules, projectNames } from './rules-phase.js';
 import { planSettlements } from './sites.js';
+import { retiredOf, capOf } from './prune.js';
 
 const DAY = 864e5;
 
@@ -39,7 +40,7 @@ export function createRulesMemo() {
     stats.runs++;
     const now = opts.now ?? input?.now, seed = opts.seed ?? input?.seed ?? persisted?.seed ?? 0;
     const forcedTier = opts.forcedTier ?? null, forcedStyle = opts.forcedStyle ?? null;
-    const wk = JSON.stringify([cache?.modKey ? cache.modKey(mod) : String(mod?.id ?? ''), seed, forcedTier, forcedStyle]);
+    const wk = JSON.stringify([cache?.modKey ? cache.modKey(mod) : String(mod?.id ?? ''), seed, forcedTier, forcedStyle, capOf(opts.cityCap), opts.retireOpts ?? null]);
     if (wk !== worldKey) { worldKey = wk; byName = new Map(); lastSig = null; lastParts = null; }
     const holdMs = mod?.rules?.holdMs ?? DAY / 2;
     const B = persisted?.blocks || {}, LOTS = persisted?.lots || {};
@@ -59,6 +60,8 @@ export function createRulesMemo() {
       // value by value with last call's (what JSON equality of the same arrays said, without building the strings)
       const small = b ? [1, b.gt ?? null, b.tier ?? null, b.cap ?? null, b.nest ?? null] : [0];
       if (L && typeof L === 'object') { small.push(1, L.tier ?? null); for (const id of Object.keys(L.a || {})) if (now - (L.h?.[id] ?? now) <= holdMs) small.push(id); }
+      // city cap (prune.js): this city's retired agents and its last retirement
+      { const C = retiredOf(persisted, name); small.push(2, C.lastAt, ...Object.keys(C.a).sort()); }
       let e = byName.get(name);
       // the same record objects as last time (mod/input.js createInputReuse) are the same content; a different object is
       // compared by its JSON (the old whole-project key, now only for the records that are not the same objects)
@@ -78,6 +81,8 @@ export function createRulesMemo() {
         const pv = planSettlements(sub, persisted, mod, o, r);
         const [[piece], its] = JSON.parse(pv.sig);
         // pj / ij: this project's piece and items as JSON (ij without its brackets), joined into the sig below
+        // a city over its cap is judged again every poll (the 14-day floor and the retire rate read the clock)
+        if (r.projects[name]?.prune?.over > 0) timeRead = true;
         e = { small, refs, now, timeRead, rules: r.projects[name], lint: r.lint, piece, items: its, pj: JSON.stringify(piece), ij: JSON.stringify(its).slice(1, -1) };
         ran.push(name);
         stats.projectsRun++;

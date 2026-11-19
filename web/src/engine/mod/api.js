@@ -107,8 +107,9 @@ export const FEATURES = Object.freeze(['layout', 'terrain.classes', 'scatter.at'
  *  hooks.scatter(tile: ScatterTile, draw: (k: number) => number, ctx: ModCtx) => ScatterPick|null, called for every
  *  unbuilt tile whose class `grows`; draw(k) = rand(seed, mod.id, 'scatter', x, y, k).
  *
- * @typedef {{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string }} PrSpec
- *  venue: a VenueDef kind. mod.represent.pr: { building?, loading?, merged?, closed?: PrSpec } (data) or (prView, ctx) => PrSpec.
+ * @typedef {{ as: 'lot'|'venue'|'none', model?: string, venue?: string, tint?: string, flag?: string, load?: number }} PrSpec
+ *  venue: a VenueDef kind. Additive v1: flag (#rrggbb) and load (0..1, clamped) say how a venue PR is doing; its token
+ *  shows them (the vessel art: a pennant in the flag colour, cargo stowed by load). mod.represent.pr: { building?, loading?, merged?, closed?: PrSpec } (data) or (prView, ctx) => PrSpec.
  *  The data table merges per state over the parent's: a state the child names replaces the parent's whole PrSpec.
  * @typedef {{ label?: string, model?: string, accent?: string }} ProjectSpec
  *  label: a template of at most 40 characters, `{name}` is the project name.
@@ -155,6 +156,7 @@ export const FEATURES = Object.freeze(['layout', 'terrain.classes', 'scatter.at'
  *  scatter?: (tile: ScatterTile, draw: (k: number) => number, ctx: ModCtx) => ScatterPick|null,
  *  styleNeighbours?: (styles: Map<string, object>, blocks: Array<{ name: string, x: number, y: number, w: number, h: number }>,
  *    distinctPicks: (blocks, options: (name: string) => any[], near?: number) => Map<string, any>) => Map<string, object>,   // additive: after layout, vary adjacent blocks' styles
+ *  freeLot?: (lot: { id: string, w: number, h: number, rank: string|null, look: string|null }, ctx: ModCtx) => { kind?: string, ground: number, props?: Array<{ kind: string, x: number, y: number, v?: number }> },   // additive (city cap): a free lot drawn as a green (lot-local tiles); without it the house stays
  * }} ModHooks
  *
  * @typedef {{
@@ -212,11 +214,12 @@ export const DOLL_SIZE = Object.freeze({ w: 16, h: 24 });
 // ---------------- M6 world events (additive to v1: an optional top-level `events` function on the mod) ----------------
 // BEGIN M6-EVENTS (M6 events). Engine side: render/event-fx.js (runEvents, createEventFx, drawEventFx).
 
-/** @typedef {{ type: 'merge'|'found'|'tierUp'|'arrive'|'leave', project?: string, pr?: string, id?: string, from?: number, to?: number, tick: number }} SimEvent
+/** @typedef {{ type: 'merge'|'found'|'tierUp'|'arrive'|'leave'|'retire', project?: string, lot?: string, pr?: string, id?: string, from?: number, to?: number, tick: number }} SimEvent
  *  What the sim saw change at a poll: merge { pr, project }, found { project }, tierUp { project, from, to },
- *  arrive / leave { id (actor), project }. Frozen plain data.
+ *  arrive / leave { id (actor), project }, retire { project, lot (the freed lot's object id) } (city cap). Frozen plain data.
  * @typedef {{ kind: string, at: string, effect: string, seconds: number, colors?: string[] }} EventSpec
- *  at: 'plaza:<projectKey>' (that village's plaza), 'actor:<actorId>' (follows the actor), 'pr:<prId>' (its berth).
+ *  at: 'plaza:<projectKey>' (that village's plaza), 'actor:<actorId>' (follows the actor), 'pr:<prId>' (its berth),
+ *  'obj:<objectId>' (the centre of a world object's footprint, or of a lot drawn as a green).
  *  effect: 'burst' (confetti), 'ring' (expanding ring), 'site:<objId>' (scaffolds over that object), 'anim:<name>'
  *  (an actor pose: idle walk hammer sit carry wave cheer sleep enter; needs an actor: at).
  *  seconds: (0, 30]. colors: up to 6 CSS hex colours. Unknown shapes are dropped, never thrown on.

@@ -119,7 +119,8 @@ test('[har.ship-class-by-pr-size] small < 50 lines, big > 500 lines or > 20 file
   assert.notEqual(small, mid); assert.notEqual(mid, bigLines);
   assert.equal(bigFiles, bigLines, '> 20 files is as big as > 500 lines');
   assert.equal(modelOf({ additions: 300, deletions: 200, files: 20 }), mid, 'exactly 500 lines and 20 files stay medium');
-  assert.equal(modelOf({ additions: 0, deletions: 0, files: 0 }), small, 'empty size is small (classic: only a missing size is sloop)');
+  // classic: a missing size is a sloop (medium). WorldInput fills a missing size with zeros, so all zeros means unknown
+  assert.equal(modelOf({ additions: 0, deletions: 0, files: 0 }), mid, 'unknown (all-zero) size is medium, as classic draws a PR with no size');
   assert.equal(reprWorld.representPr(pr('merged', { additions: 9, deletions: 9, files: 1 }), fantasy, {}).as, 'none', 'merged PRs are not drawn as ships');
   assert.equal(reprWorld.representPr(pr('loading', { additions: 9, deletions: 9, files: 1 }), fantasy, {}).venue, 'harbour');
 });

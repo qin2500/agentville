@@ -203,6 +203,7 @@ it, e.g. `typeof load.merged === 'number'`):
 | `shrinkAfterMs?: number` | `VenueDef` | A level lower than the persisted one is taken only after it has been wanted for longer than this (by `ctx.time.now`); a higher level is taken at once. The engine keeps the low-since time in `persisted.venues[siteId].low`. Without it a lower level is taken at once, as before. |
 | `deck: true` | plan object (walk `'floor'` only) | The footprint becomes walkable ground: `LAYOUT_GROUND.VENUE` (walkable over water) where the ground is empty and `ROAD.PATH` where there is no road, so actors and the road graph reach a pier. `deck` on any other walk mode is dropped with lint. |
 | 5th argument `info` | `VenueDef.assign(prIds, berths, prev, ctx, info)` | `prId → { model?, state? }`: the PrSpec model and the PR state, e.g. to give big ships the long berths. Frozen. |
+| `flag?: '#rrggbb'`, `load?: number` | `PrSpec` (a venue PR) | How the PR is doing, for its token to show: `flag` a colour (the fantasy pennant: red while a check fails, green once approved), `load` 0..1, clamped (the fantasy cargo: checks passed, plus the review). They reach the token through its berth on every poll. A bad value is dropped with lint. |
 
 **Features.** `FEATURES` is `layout`, `terrain.classes`, `scatter.at`, `represent.pr`, `represent.project`, `venues`,
 `persist`, `prs.loading`. A mod asks `ctx.api.has(name)` before relying on one. `prs.loading` is also a declaration: list it in the mod's

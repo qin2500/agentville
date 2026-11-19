@@ -1,11 +1,11 @@
 // Tokens (M5 P3): one sim actor per item that holds a venue berth. Pure, no DOM, no clock of its own.
 // The host (world-sim) calls sync(berths, states, now) on every snapshot:
-//   berths: itemId -> { venue, berth, tx, ty, face, model?, tint?, state? } (world/venue.js venueAssignments().prs);
+//   berths: itemId -> { venue, berth, tx, ty, face, model?, tint?, flag?, load?, state? } (world/venue.js venueAssignments().prs);
 //   states: Map itemId -> WorldInput PR state (an entry's own `state` wins).
 // Rules (deterministic: items are visited in id order, every counter is per store):
 //   - an entry whose state is 'merged' or 'closed' makes no token (history never arrives as a fresh token);
 //   - any other entry gets the actor `token:<itemId>` (kind 'token') at its berth tile centre, created through
-//     host.spawn(spec) (which runs the kind's behaviour init). Fields: item, venue, berth, tx, ty, face, model, tint,
+//     host.spawn(spec) (which runs the kind's behaviour init). Fields: item, venue, berth, tx, ty, face, model, tint, flag, load,
 //     berthFace, itemState, gridFree: true (the sim does not grid-check its paths), seq (creation order, from 1: oldest first);
 //   - an entry that moved to another berth updates venue / berth / tx / ty / face in place (the behaviour re-places);
 //   - a token whose entry is gone, or whose state became 'merged' / 'closed', departs: a.depart = { since: now,
@@ -41,9 +41,12 @@ export function createTokens(host) {
     if (a.venue !== v || a.berth !== berth || a.tx !== tx || a.ty !== ty || a.berthFace !== face) {
       a.venue = v; a.berth = berth; a.tx = tx; a.ty = ty; a.berthFace = face;
     }
-    const m = own(b, 'model'), t = own(b, 'tint');
+    const m = own(b, 'model'), t = own(b, 'tint'), f = own(b, 'flag'), l = own(b, 'load');
     a.model = typeof m === 'string' ? m : a.model ?? null;
     a.tint = typeof t === 'string' ? t : a.tint ?? null;
+    // the PR's progress changes while the token stays: these follow the berth entry every sync (none: none shown)
+    a.flag = typeof f === 'string' ? f : null;
+    a.load = Number.isFinite(l) ? l : null;
   };
 
   /** @returns {{ added: string[], departed: string[] }} item ids, in id order */

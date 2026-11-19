@@ -1,15 +1,18 @@
 /**
  * Live PR state for the PRs Agentville believes are open. Claude Code's own cache
  * (gh-pr-status-cache.json, see prstatus.mjs) is written rarely, so on its own the dock never
- * sees an open -> merged change. Every interval this asks GitHub once, with ONE batched GraphQL
- * query through the `gh` CLI (no shell, 20 s timeout), and keeps only { state, checks, review }
- * per PR: no titles, no bodies. Results override the cache (see prstatus.annotate).
+ * sees an open -> merged change. Every interval this asks GitHub with batched GraphQL queries of
+ * at most BATCH PRs each through the `gh` CLI (no shell, 20 s timeout), and keeps only
+ * { state, checks, review, size } per PR: no titles, no bodies. Results override the cache (see
+ * prstatus.annotate). One query for all MAX_TARGETS PRs (100 check runs each) is too heavy for
+ * GitHub: it answers HTTP 504 every time, so nothing (no merges, no PR sizes) ever arrived.
  * Failures (gh missing, signed out, network, rate limit) log one short line and back off.
  */
 import { execFile } from 'node:child_process'
 import { prFacts } from './prstatus.mjs'
 
 export const MAX_TARGETS = 60
+export const BATCH = 15 // PRs per GraphQL query: 20 took ~5 s, 60 timed out (HTTP 504)
 const MAX_RESULTS = 500
 const TIMEOUT_MS = 20_000
 const MAX_BACKOFF_MS = 15 * 60_000
@@ -83,8 +86,12 @@ export function mapResponse(resp, prs) {
 export function ghRunner(query) {
   return new Promise((resolve, reject) => {
     execFile('gh', ['api', 'graphql', '-f', `query=${query}`], { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env: process.env }, (err, stdout) => {
-      if (err) return reject(err)
-      try { resolve(JSON.parse(stdout)) } catch { reject(new Error('bad json')) }
+      let json = null
+      try { json = JSON.parse(stdout) } catch { /* not JSON */ }
+      // gh exits 1 when GraphQL reports any error (one PR it cannot see), but the other PRs' data is still there
+      if (err && !(json && !err.killed && json.data && typeof json.data === 'object')) return reject(err)
+      if (!json) return reject(new Error('bad json'))
+      resolve(json)
     })
   })
 }
@@ -105,18 +112,28 @@ export function createPrPoll({ targets, run = ghRunner, intervalMs = 120_000, lo
   async function poll() {
     let list
     try { list = pickTargets(targets() || []).map(parsePrUrl) } catch { return 0 }
+    list = list.filter(Boolean)
     if (!list.length) return 0
-    try {
-      const got = mapResponse(await run(buildQuery(list)), list)
-      for (const [k, f] of got) { results.delete(k); results.set(k, f) }
-      while (results.size > MAX_RESULTS) results.delete(results.keys().next().value)
-      delay = intervalMs
-      return got.size
-    } catch (e) {
+    // one query per BATCH PRs, one after another; a batch that fails loses only its own PRs this round
+    let n = 0, ok = 0, last = null
+    for (let i = 0; i < list.length; i += BATCH) {
+      const part = list.slice(i, i + BATCH)
+      try {
+        const got = mapResponse(await run(buildQuery(part)), part)
+        for (const [k, f] of got) { results.delete(k); results.set(k, f) }
+        n += got.size
+        ok++
+      } catch (e) { last = e }
+    }
+    while (results.size > MAX_RESULTS) results.delete(results.keys().next().value)
+    if (!ok) {
       delay = Math.min(Math.max(delay, intervalMs) * 2, MAX_BACKOFF_MS)
-      log(`pr poll: ${why(e)}; retrying in ${Math.round(delay / 1000)}s`)
+      log(`pr poll: ${why(last)}; retrying in ${Math.round(delay / 1000)}s`)
       return -1
     }
+    delay = intervalMs
+    if (last) log(`pr poll: ${why(last)} for some PRs; the rest refreshed`)
+    return n
   }
 
   function schedule(ms) {

@@ -126,6 +126,24 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
     }
   };
 
+  /** The mod's tile art for tile (tx, ty) (grid index i), or null (no art: the caller paints the flat diamond). */
+  function tileBmp(tx, ty, i, style, memo, render) {
+    const code = grid.ground[i];
+    const nb = { n: groundAt(tx, ty - 1), e: groundAt(tx + 1, ty), s: groundAt(tx, ty + 1), w: groundAt(tx - 1, ty),
+      ne: groundAt(tx + 1, ty - 1), se: groundAt(tx + 1, ty + 1), sw: groundAt(tx - 1, ty + 1), nw: groundAt(tx - 1, ty - 1),
+      terrain: grid.terrain[i], road: grid.road ? grid.road[i] : 0,
+      tn: terrainAt(tx, ty - 1), te: terrainAt(tx + 1, ty), ts: terrainAt(tx, ty + 1), tw: terrainAt(tx - 1, ty) };
+    const bk = blockAt(tx, ty);
+    nb.tx = tx; nb.ty = ty;
+    if (bk) nb.style = bk.style;
+    // a styled tile may vary by position (nb.tx/ty), so it is memoised per tile; plain tiles share by neighbourhood
+    const mk = `${code}|${nb.n},${nb.e},${nb.s},${nb.w},${nb.ne},${nb.se},${nb.sw},${nb.nw}|${nb.terrain}|${nb.tn},${nb.te},${nb.ts},${nb.tw}|${nb.road}|${tx & 7},${ty & 7}${bk ? `|${bk.key || bk.x + ',' + bk.y}|${tx},${ty}` : ''}`;
+    if (memo.has(mk)) return memo.get(mk);
+    const bmp = render(code, nb, style) || null;
+    memo.set(mk, bmp);
+    return bmp;
+  }
+
   /** Paint chunk (cx, cy) at 1x into `cv` (a fresh 512x256 canvas unless one is passed in to be reused). */
   function bake(cx, cy, style, cv = createCanvas(CHUNK_W, CHUNK_H)) {
     const ctx = cv.getContext('2d');
@@ -136,26 +154,65 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
         const i = idx(tx, ty);
         if (i < 0) continue;
         const sx = (tx - ty) * HW - ox, sy = (tx + ty) * HH - oy;   // north corner within the chunk bitmap
-        let bmp = null;
-        if (render) {
-          const code = grid.ground[i];
-          const nb = { n: groundAt(tx, ty - 1), e: groundAt(tx + 1, ty), s: groundAt(tx, ty + 1), w: groundAt(tx - 1, ty),
-            ne: groundAt(tx + 1, ty - 1), se: groundAt(tx + 1, ty + 1), sw: groundAt(tx - 1, ty + 1), nw: groundAt(tx - 1, ty - 1),
-            terrain: grid.terrain[i], road: grid.road ? grid.road[i] : 0,
-            tn: terrainAt(tx, ty - 1), te: terrainAt(tx + 1, ty), ts: terrainAt(tx, ty + 1), tw: terrainAt(tx - 1, ty) };
-          const bk = blockAt(tx, ty);
-          nb.tx = tx; nb.ty = ty;
-          if (bk) nb.style = bk.style;
-          // a styled tile may vary by position (nb.tx/ty), so it is memoised per tile; plain tiles share by neighbourhood
-          const mk = `${code}|${nb.n},${nb.e},${nb.s},${nb.w},${nb.ne},${nb.se},${nb.sw},${nb.nw}|${nb.terrain}|${nb.tn},${nb.te},${nb.ts},${nb.tw}|${nb.road}|${tx & 7},${ty & 7}${bk ? `|${bk.key || bk.x + ',' + bk.y}|${tx},${ty}` : ''}`;
-          if (memo.has(mk)) bmp = memo.get(mk);
-          else { bmp = render(code, nb, style) || null; memo.set(mk, bmp); }
-        }
+        const bmp = render ? tileBmp(tx, ty, i, style, memo, render) : null;
         if (bmp) ctx.drawImage(bmp, sx - HW, sy);
         else diamond(ctx, sx, sy, colourAt(i));
       }
     }
     return { img: cv, x: ox, y: oy, w: CHUNK_W, h: CHUNK_H };
+  }
+
+  /**
+   * Paint the ground of 1x world-px rect [x0, y0, x1, y1] straight through `gfx` (its transform set to 1x world px): every
+   * grid tile whose diamond meets the rect, from the same tile art as a chunk bake, so the pixels are the baked chunks'
+   * (the art is 32x16 diamonds that partition the plane: the order does not matter). For the Map tiles (map-tiles.js):
+   * no chunk is baked or cached, so painting a whole view never churns the chunk cache. Off-grid tiles are left as they are.
+   */
+  /**
+   * Build the tile art paintRect(rect) will draw (the mod memoises it), until `deadline` (performance.now ms): true once
+   * all of it is built. At least one tile is built per call, so calls spread over idle slices always finish; a Map tile
+   * bake (renderer) runs this first, so its paint is memo hits and never one long task.
+   */
+  function prepRect(rect, deadline, style = styleOf(null)) {
+    const render = mod?.ground?.renderTile;
+    if (!render) return true;
+    const memo = new Map(), clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const u0 = Math.floor(rect[0] / HW) - 1, u1 = Math.ceil(rect[2] / HW) + 1, v0 = Math.floor(rect[1] / HH) - 2, v1 = Math.ceil(rect[3] / HH);
+    for (let v = v0; v <= v1; v++) {
+      for (let u = u0; u <= u1; u++) {
+        if ((u + v) & 1) continue;
+        const tx = (u + v) / 2, ty = (v - u) / 2, i = idx(tx, ty);
+        if (i < 0) continue;
+        const sx = u * HW, sy = v * HH;
+        if (sx + HW <= rect[0] || sx - HW >= rect[2] || sy + 2 * HH <= rect[1] || sy >= rect[3]) continue;
+        tileBmp(tx, ty, i, style, memo, render);
+        if (clock() > deadline) return false;
+      }
+    }
+    return true;
+  }
+
+  function paintRect(gfx, rect, style = styleOf(null)) {
+    const render = mod?.ground?.renderTile, memo = new Map();
+    const u0 = Math.floor(rect[0] / HW) - 1, u1 = Math.ceil(rect[2] / HW) + 1, v0 = Math.floor(rect[1] / HH) - 2, v1 = Math.ceil(rect[3] / HH);
+    let n = 0;
+    for (let v = v0; v <= v1; v++) {
+      for (let u = u0; u <= u1; u++) {
+        if ((u + v) & 1) continue;
+        const tx = (u + v) / 2, ty = (v - u) / 2, i = idx(tx, ty);
+        if (i < 0) continue;
+        const sx = u * HW, sy = v * HH;
+        if (sx + HW <= rect[0] || sx - HW >= rect[2] || sy + 2 * HH <= rect[1] || sy >= rect[3]) continue;
+        const bmp = render ? tileBmp(tx, ty, i, style, memo, render) : null;
+        if (bmp) gfx.image(bmp, 0, 0, bmp.width ?? 2 * HW, bmp.height ?? 2 * HH, sx - HW, sy, bmp.width ?? 2 * HW, bmp.height ?? 2 * HH);
+        else {
+          const col = colourAt(i);
+          for (let r = 0; r < 2 * HH; r++) { const half = (r < HH ? 4 * r + 2 : 4 * (2 * HH - 1 - r) + 2) / 2; gfx.rect(sx - half, sy + r, 2 * half, 1, col); }
+        }
+        n++;
+      }
+    }
+    return n;
   }
 
   function drawMapTiles(gfx, cam, view) {
@@ -304,5 +361,5 @@ export function createGround({ world, mod = world?.mod, cache, createCanvas = de
     }
   }
 
-  return { chunkKeys, drawChunks, prebake, invalidate, cache: chunks };
+  return { chunkKeys, drawChunks, prebake, paintRect, prepRect, invalidate, cache: chunks };
 }

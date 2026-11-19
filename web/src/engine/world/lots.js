@@ -12,7 +12,8 @@ export const RANKS = { L: ['L', 'M', 'S'], M: ['M', 'L', 'S'], S: ['S', 'M', 'L'
  * nearest its `at` (its lot's absolute top-left before the re-plan; written whenever the settlement has an origin). An item keeps its lot for as long as it shows; one that is gone
  * keeps it mod.rules.holdMs (then it is freed), and is the first to give it up when a newcomer finds every lot taken.
  * Mutates persistedLots[settlement.name] like classic.
- * @returns {{ byLot: Map<string, string>, items: Map<string, { owner: 'home'|'pr', agentId?, pr?, building? }> }} */
+ * settlement.retired (optional Set of items): retired homes, freed at once and listed in `freed` (lot ids) and L.f.
+ * @returns {{ byLot: Map<string, string>, items: Map<string, { owner: 'home'|'pr', agentId?, pr?, building? }>, freed: string[] }} */
 // parity: world.persisted-layout (the saved lots and their absolute positions carry over every poll, re-plan and reload)
 export function assignLots(settlement, persistedLots, now, mod) {
   const holdMs = mod?.rules?.holdMs;
@@ -33,6 +34,9 @@ export function assignLots(settlement, persistedLots, now, mod) {
   }
   if (chain) L.nest = chain; else delete L.nest;
   L.h ||= {};
+  // City cap (prune.js): a retired agent's home is freed at once (no hold) and its lot is remembered in L.f (lot id ->
+  // when) so the world draws it as a green (hooks.freeLot) until a newcomer takes it. Nothing else moves.
+  const retired = settlement.retired instanceof Set ? settlement.retired : null, freed = [];
   const o = settlement.origin || settlement.block || null;
   const abs = lot => (o ? [o.x + lot.x, o.y + lot.y] : null);
   const lots = new Map(p.lots.map(l => [l.id, l]));
@@ -48,6 +52,7 @@ export function assignLots(settlement, persistedLots, now, mod) {
   for (const [id, lot] of Object.entries(L.a)) {
     if (!lots.has(lot)) { delete L.a[id]; delete L.h[id]; continue; }   // the plan has no such lot any more
     if (extra.has(id)) { delete L.h[id]; continue; }
+    if (retired?.has(id)) { (L.f ||= {})[lot] = now; freed.push(lot); delete L.a[id]; delete L.h[id]; continue; }
     // parity: world.vanished-hold-12h
     L.h[id] ??= now;
     if (now - L.h[id] > holdMs) { delete L.a[id]; delete L.h[id]; }
@@ -78,10 +83,12 @@ export function assignLots(settlement, persistedLots, now, mod) {
       lot = lots.get(L.a[gone]); delete L.a[gone]; delete L.h[gone];
     }
     L.a[id] = lot.id; used.add(lot.id);
+    if (L.f) delete L.f[lot.id];
   }
+  if (L.f) { for (const k of Object.keys(L.f)) if (!lots.has(k) || used.has(k)) delete L.f[k]; if (!Object.keys(L.f).length) delete L.f; }
   // where each assigned item stands (absolute top-left of its lot), for the next re-plan; only written with an origin
   if (o) { L.at = {}; for (const [id, lotId] of Object.entries(L.a)) { const l = lots.get(lotId); if (l) L.at[id] = abs(l); } }
   const byLot = new Map(Object.entries(L.a).filter(([id]) => extra.has(id)).map(([id, lot]) => [lot, id]));
   const items = new Map([...extra].filter(([id]) => L.a[id]));
-  return { byLot, items };
+  return { byLot, items, freed };
 }

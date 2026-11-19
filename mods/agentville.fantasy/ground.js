@@ -258,7 +258,7 @@ export function renderTile(code, nb, style) {
   const px = tilePixels(code, nb, style);
   let bmp = null;
   if (px) {
-    const c = makeCanvas(px.w, px.h), x = c?.getContext?.('2d');
+    const c = makeCanvas(px.w, px.h), x = c?.getContext?.('2d', { willReadFrequently: true });
     if (x) { const id = x.createImageData(px.w, px.h); id.data.set(px.data); x.putImageData(id, 0, 0); bmp = c; }
   }
   memo.set(k, bmp); if (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value);

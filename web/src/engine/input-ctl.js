@@ -90,7 +90,8 @@ export function attachInput({ cv, host, camera, getHits, pick, alphaAt, resolve,
     if (p?.village) { const v = p.village; camera.centerOn({ x: v.x ?? v.cx, y: v.y ?? v.cy }, { animate: true, zoomIn: true }); return; }
     if (p?.id && isDemoId(p.id)) return;
     // a host panel hit (the host maps its own hit kinds, engine-host.js): opens with the link it carries, if any
-    if (p?.panel) { const k = String(p.panel); (openPanel || (h => fire('va:panel', { href: h })))(k.startsWith('link:') ? k.slice(5) : null); return; }
+    // (the key goes along too, so the host can find the link of a hit that carries none itself, e.g. a token)
+    if (p?.panel) { const k = String(p.panel); (openPanel || (h => fire('va:panel', { href: h })))(k.startsWith('link:') ? k.slice(5) : null, k); return; }
     app.select(p ? p.id : null, { fromVillage: true, pan: false });   // parity: inp.click-select
   };
   const onCancel = () => { clearT(press); if (drag?.moved) camera.endDrag(); drag = null; setCursorStyle(''); };

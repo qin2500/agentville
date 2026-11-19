@@ -3,7 +3,8 @@
 // (mod.actors, docs/village-mods.md "actors"); this module turns (look, facing, anim, frame) into a sticker image.
 //
 //   createDoll({ size?: { w, h }, scale?, outline?, rim?, shadow?, parts?, anims?, createCanvas?, maxFrames?, maxBytes? })
-//     -> { frame(look, facing, anim, f, { selected }) -> { img, pivot, head, w, h } | null, stats(), clear(), keyOf(look) }
+//     -> { frame(look, facing, anim, f, { selected }) -> { img, pivot, head, w, h } | null, stats(), clear(), keyOf(look),
+//          frameKey(look, facing, anim, f, { selected }) -> a key (number, else short string) of that frame (no render) | null }
 //
 // Pixels are drawn into a plain RGBA buffer (no canvas API), so a frame is bit-exact in every browser and in node:
 //   1. the parts of the look (look.parts then look.extras), sorted by part.layer (stable), are painted into a w x h box
@@ -158,6 +159,13 @@ export function createDoll({ size = { w: 16, h: 24 }, scale = 1, outline = INK, 
     if (k === undefined) { k = lookKey(look); keys.set(look, k); }
     return k;
   }
+  // short ids for look keys (a look key spells out the palette: long to hash in every frameKey lookup)
+  const lookIds = new WeakMap(), idOfKey = new Map(), animIds = new Map();
+  function lookId(look) {
+    let n = lookIds.get(look);
+    if (n === undefined) { const k = keyOf(look); n = idOfKey.get(k); if (n === undefined) idOfKey.set(k, n = idOfKey.size + 1); lookIds.set(look, n); }
+    return n;
+  }
 
   /** Paints the figure (no outline) for the drawn facing into a w x h buffer. */
   function figure(look, drawn, af) {
@@ -268,6 +276,19 @@ export function createDoll({ size = { w: 16, h: 24 }, scale = 1, outline = INK, 
     return Object.freeze({ img: toImage(data), pivot, head: Object.freeze({ x: pivot.x, y: top }), w: W, h: H });
   }
 
+  /** A short key of the frame frame() returns for these arguments (equal keys: the same pixels), for callers that keep
+   *  frames of their own (render/actor-atlas.js); null for no look. Renders nothing. */
+  function frameKey(look, facing = 0, anim = 'idle', f = 0, { selected = false } = {}) {
+    if (!look || typeof look !== 'object') return null;
+    const fc = ((facing | 0) % FACINGS + FACINGS) % FACINGS;
+    const af = animFrame(anims, anim, f);
+    let ai = animIds.get(af.name);
+    if (ai === undefined) animIds.set(af.name, ai = animIds.size);
+    // a number while it fits (a Map hashes a number for free, a fresh string every lookup); else a short string
+    if (ai < 64 && af.i < 256) return (((lookId(look) * 64 + ai) * 256 + af.i) * FACINGS + fc) * 2 + (selected ? 1 : 0);
+    return `${lookId(look)}|${fc}|${af.name}|${af.i}|${selected ? 1 : 0}`;
+  }
+
   function frame(look, facing = 0, anim = 'idle', f = 0, { selected = false } = {}) {
     if (!look || typeof look !== 'object') return null;
     const fc = ((facing | 0) % FACINGS + FACINGS) % FACINGS;
@@ -281,7 +302,7 @@ export function createDoll({ size = { w: 16, h: 24 }, scale = 1, outline = INK, 
   }
 
   return {
-    frame, keyOf,
+    frame, frameKey, keyOf,
     size: Object.freeze({ w, h, W, H, scale: s }),
     stats: () => ({ frames: cache.size, bytes, renders, evicted, missing: [...missing].slice(0, 32) }),
     clear() { cache.clear(); bytes = 0; },

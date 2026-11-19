@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 const { REPRESENT } = await import('../mods/agentville.fantasy/represent-pr.js');
 const { REPRESENT: REEXPORTED } = await import('../mods/agentville.fantasy/represent.js');
-const { VENUES, tierFor, levelOf, decodeLevel } = await import('../mods/agentville.fantasy/venues.js');
+const { VENUES, tierFor, levelOf, decodeLevel, MOOR_FACE } = await import('../mods/agentville.fantasy/venues.js');
 const { resolveMod } = await import('../web/src/engine/mod/registry.js');
 const { toWorldInput } = await import('../web/src/engine/mod/input.js');
 const { representPr, prView, cleanPrTitle } = await import('../web/src/engine/sim/represent-world.js');
@@ -34,7 +34,8 @@ test('PRs: building is a lot, loading is a ship at the harbour by size, merged a
   const mod = fantasy(), lint = [];
   const size = (additions, deletions, files) => ({ size: { additions, deletions, files } });
   assert.deepEqual({ ...representPr(pr(1, 'building'), mod, { lint }) }, { as: 'lot' });
-  assert.deepEqual({ ...representPr(pr(2, 'loading'), mod, { lint }) }, { as: 'venue', venue: 'harbour', model: 'dinghy' });
+  assert.deepEqual({ ...representPr(pr(2, 'loading'), mod, { lint }) }, { as: 'venue', venue: 'harbour', model: 'cutter', flag: '#f4efe4', load: 0 },
+    'no size yet: a cutter (classic: no size -> sloop); no checks yet: a cream pennant, nothing stowed (the pennant and cargo: test/engine-harbour-ui.test.mjs)');
   assert.equal(representPr(pr(2, 'loading', size(25, 24, 1)), mod).model, 'dinghy', '< 50 lines: a dinghy');
   assert.equal(representPr(pr(2, 'loading', size(25, 25, 1)), mod).model, 'cutter', '50 lines: a cutter');
   assert.equal(representPr(pr(2, 'loading', size(300, 200, 20)), mod).model, 'cutter', '500 lines, 20 files: still a cutter');
@@ -109,7 +110,7 @@ test('harbour plan: piers, bollards; nodes foot, yard, a deck node per pier bert
     assert.deepEqual(p.nodes.foot, { tx: 50, ty: 42 });
     assert.deepEqual(p.nodes.yard, lv >= 2 ? { tx: 53, ty: 41 } : { tx: 50, ty: 42 });
     assert.equal(new Set(p.berths.map(b => b.id)).size, p.berths.length);
-    for (const b of p.berths) assert.ok(b.ty > SITE.data.sea && b.face === 2);
+    for (const b of p.berths) assert.ok(b.ty > SITE.data.sea && b.face === MOOR_FACE);   // along the pier, bow out to sea
     assert.ok(p.berths[0].tx === 49 && p.berths[1].tx === 49, 'main pier, west side first');
     const pier = p.berths.filter(b => /^p\d/.test(b.id)), first = p.berths.findIndex(b => !/^p\d/.test(b.id));
     assert.equal(first, pier.length, 'berths at anchor come after every pier berth');
@@ -156,7 +157,7 @@ test('harbour berths: the loading PR gets a berth, kept across polls; merged PRs
   assert.deepEqual(Object.keys(a1.venues.dock), ['alpha#1'], 'merged PRs no longer compete for berths');
   const b1 = a1.venues.dock['alpha#1'];
   assert.ok(b1, 'the loading PR has a berth');
-  assert.equal(a1.prs['alpha#1'].model, 'dinghy');
+  assert.equal(a1.prs['alpha#1'].model, 'cutter');   // no size yet: classic's middle class
   input = inputOf([pr(2, 'loading'), ...merged, pr(1, 'loading')]);
   const a2 = venueAssignments(w, input, mod, persisted);
   assert.equal(a2.venues.dock['alpha#1'], b1, 'stable across polls');

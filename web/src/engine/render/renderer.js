@@ -25,20 +25,27 @@ import * as ACCENT from './accent.js';
 import * as EFFECTS from './effects.js';
 import * as MARKS from './marks.js';
 import * as EVFX from './event-fx.js';
+import * as MAPTILES from './map-tiles.js';
+import * as TILESTORE from './map-tile-store.js';
+import * as ATLAS from './actor-atlas.js';
 import { styleKeyFor } from '../art/style-key.js';
 import * as CRAFT from './craft-art.js';
+import { venueOutlines } from './venue-outline.js';
 import { anchors as lampAnchors } from '../art/props/lighthouse.js';
+import { DECK as PLANK_TOP } from '../art/props/pier.js';
 import { hash } from '../core/rng.js';
 import { CARRIER_KIND } from '../../engine-host.js';
 const DEFAULTS = {
   sortKey: DEPTH.sortKey, LAYER: DEPTH.LAYER, mergeSorted: DEPTH.mergeSorted, feetKey: DEPTH.feetKey, chunkOf: DEPTH.chunkOf,
-  sliceSprite: SLICE.sliceSprite, SpriteCache: SPRITES.SpriteCache, spriteKey: SPRITES.spriteKey, placeholder: SPRITES.placeholder,
+  sliceSprite: SLICE.sliceSprite, sliceHull: SLICE.sliceHull, SpriteCache: SPRITES.SpriteCache, spriteKey: SPRITES.spriteKey, placeholder: SPRITES.placeholder,
   createGround: GROUND.createGround, createGroundCache: GROUNDCACHE.createGroundCache, createLighting: LIGHT.createLighting, createXray: XRAY.createXray,
   rasterize: RASTER.rasterize, loadClassicArt: RASTER.loadClassicArt, createGfx: GFX.createGfx, artView: ARTVIEW.artView, FLAGS: ACTOR.FLAGS,
   createActorArt: ACTORART.createActorArt, styleKeyFor, buildHits: HITS.buildHits,
   accentsOf: ACCENT.accentsOf, accentEdges: ACCENT.accentEdges, drawAccentEdges: ACCENT.drawAccentEdges,
   createCraftArt: CRAFT.createCraftArt, createEffects: EFFECTS.createEffects, actorOffset: EFFECTS.actorOffset, selectionMarks: MARKS.selectionMarks, drawMarks: MARKS.drawMarks, importantStars: MARKS.importantStars,
-  drawEventFx: EVFX.drawEventFx, animOverrides: EVFX.animOverrides,
+  drawEventFx: EVFX.drawEventFx, animOverrides: EVFX.animOverrides, createMapTiles: MAPTILES.createMapTiles,
+  createTileStore: TILESTORE.createTileStore,
+  createActorAtlas: ATLAS.createActorAtlas,
 };
 // parity: bld.pr-building-site
 /** A PR lot is a building site while its PR is live (lots.js writes data.building); data.site is the older name. */
@@ -69,7 +76,11 @@ export const CHUNK = 16;
 const HIT_KIND = { building: 'house', venue: 'dock', token: 'ship' }; // hit names unchanged, so va:dock clicks still work
 const STATIC_KINDS = new Set(['building', 'prop', 'tree', 'venue', 'token', 'decal']);
 const MAP_ZOOM = 0.25;
+// Working out tile signatures (a world rebuild, dusk) is spread over frames: at most this long per frame.
+const MAP_SIG_MS = 2;
 // Waterside actors (craft-art.js) and the carrier: drawn only while flagged VISIBLE (a carrier off the map is not).
+// The sort depth of what flies over everything (gulls): past any world's depth (depth.js keys stay exact to ~2^31).
+const AIR_DEPTH = 1 << 24;
 const WATERSIDE = new Set([...CRAFT.CRAFT_KINDS, CARRIER_KIND]);
 const SWEEP_FROM = 0.4;   // night amount from which a lighthouse sweeps
 const ck = (cx, cy) => cx + ',' + cy;
@@ -239,7 +250,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   }
   // Everything sliceSprite (and the item fields below) reads from an object, plus its look (model/variant/style: also in the
   // sprite key, so the entry check catches them; kept here so the key stands on its own).
-  const sliceAt = o => `${o.tx},${o.ty},${o.w},${o.h},${o.z ?? ''},${o.kind},${o.walk ?? ''},${o.run ? `${o.run.dir},${o.run.len},${o.run.side ?? ''}` : ''},`
+  const sliceAt = o => `${o.tx},${o.ty},${o.w},${o.h},${o.z ?? ''},${o.kind},${o.walk ?? ''}${o.deck ? ',deck' : ''},${o.run ? `${o.run.dir},${o.run.len},${o.run.side ?? ''}` : ''},`
     + `${o.dir ?? ''},${o.len ?? ''},${o.side ?? ''},${o.model},${o.variant ?? ''},${o.styleKey ?? ''}`;
   function slicesOf(obj, entry, ready) {
     if (entry.empty) return [];
@@ -278,6 +289,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     world = w; chunks = new Map(); worldSeq++;
     accents = D.accentsOf ? D.accentsOf(w) : new Map();
     edges = D.accentEdges ? D.accentEdges(w, accents) : [];
+    edgesSig = MAPTILES.sigHash(JSON.stringify(edges));
     // ambient effects read sprite anchors (chimney, ridge, windows) of ready sprites only
     // an injected effects hook (tests, mods) wins over the built-in ambient effects
     if (!deps?.effects) { effects = D.createEffects ? D.createEffects({ world: w, mod, accents, edges: false, entryOf: o => entryOf(o) }) : null; D.effects = effects; }
@@ -311,14 +323,27 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     let key;
     if (D.feetKey) key = D.feetKey(x, y, LAYER.ACTOR);
     else { const s = x + y - 1, depth = Math.floor(s), sub = Math.min(3, Math.floor((s - depth) * 4)); key = D.sortKey(depth, sub, LAYER.ACTOR, Math.round(x - y)); }
+    // a gull is in the air, wheeling over the masts: drawn over the whole world layer (the classic art draws them last)
+    if (a.kind === 'gull') key = D.sortKey(AIR_DEPTH, 0, LAYER.EFFECT, 0);
     return { key, actor: a, x, y, oid: a.id, hit: a.kind === 'agent' ? 'agent' : a.kind === 'token' ? HIT_KIND.token : null, z: 0 };
+  }
+  // a carrier wears the look of the agent it works for, else a townsperson look by its own seed (kept per carrier: the
+  // look records are compared by reference, actor-art lookFor)
+  const carrierLooks = new Map();
+  function carrierLook(a) {
+    let c = carrierLooks.get(a.id);
+    if (!c || c.agentId !== a.agentId || c.look0 !== a.look) {
+      if (carrierLooks.size > 4096) carrierLooks.clear();
+      carrierLooks.set(a.id, c = { agentId: a.agentId, look0: a.look, look: a.look ?? { seed: hash(a.id) } });
+    }
+    return { ...a, kind: a.agentId != null ? 'agent' : 'folk', id: a.agentId ?? a.id, look: c.look };
   }
   // People and critters: the classic character sheets as engine-scale stickers (actor-art.js); carts: the engine's cart
   // prop; anything else (or before the sheets load): a small cached placeholder box.
-  function actorSprite(a, x, y) {
-    if (craftArt && CRAFT.CRAFT_KINDS.has(a.kind)) { const c = craftArt.frame(a, { lit: dark }); if (c) return c; }
+  function actorSprite(a, x, y, hl = false) {
+    if (craftArt && CRAFT.CRAFT_KINDS.has(a.kind)) { const c = craftArt.frame(a, { lit: dark, hl }); if (c) return c; }
     // a carrier wears the look of the agent it works for, else a townsperson look by its own seed
-    const who = a.kind === CARRIER_KIND ? { ...a, kind: a.agentId != null ? 'agent' : 'folk', id: a.agentId ?? a.id, look: a.look ?? { seed: hash(a.id) } } : a;
+    const who = a.kind === CARRIER_KIND ? carrierLook(a) : a;
     const f = actorArt?.frame?.(who, { selected: hasFlag(a, 'SELECTED') || !!a.selected });
     if (f) return f;
     if (a.kind === 'cart' && artReady) {
@@ -343,6 +368,73 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     g.rect(x - 1, y - 1, 8, 7, '#2a1a0e'); g.rect(x, y, 6, 5, '#b98c4e'); g.rect(x, y + 2, 6, 1, '#7a5630'); g.rect(x + 2, y, 1, 5, '#7a5630');
   }
 
+  // Map zoom (actor-atlas.js): an actor's frame from the atlas page of the device scale, under its frame key. People and
+  // critters are keyed by actor-art frameKey (the doll composes nothing for a key the atlas has); any other actor sprite
+  // (craft, carts) by its image, which its own cache keeps.
+  const imgKeys = new WeakMap();
+  let imgKeyN = 0;
+  const imgKey = img => { let k = imgKeys.get(img); if (k === undefined) imgKeys.set(img, k = 'i|' + ++imgKeyN); return k; };
+  function atlasSlot(a, x, y, hl, s) {
+    const art = actorArt && !hl && a.kind !== 'cart' && !(craftArt && CRAFT.CRAFT_KINDS.has(a.kind));
+    if (art) {
+      const who = a.kind === CARRIER_KIND ? carrierLook(a) : a, sel = { selected: hasFlag(a, 'SELECTED') || !!a.selected };
+      const k = actorArt.frameKey?.(who, sel);
+      if (k) return atlas.get(k, s) ?? atlas.put(k, s, actorArt.frame(who, sel));
+    }
+    const e = actorSprite(a, x, y, hl);
+    if (!e?.img || e.placeholder) return null;
+    const k = imgKey(e.img);
+    return atlas.get(k, s) ?? atlas.put(k, s, e);
+  }
+
+  /** The frame's outdoor actors in `rect` (64 px margin) as drawable items with their real sprite, back to front. */
+  /** mapScale: Map zoom's device scale, to draw people and critters from the actor atlas (it.slot) */
+  function actorItems(frame, rect, mapScale = 0) {
+    const alpha = frame.alpha ?? 1, m = 64, items = [], list = frame.actors || [];
+    const useAtlas = mapScale > 0 && atlas && !debugNoAtlas;
+    // event fx: an `anim:<name>` effect swaps an actor's pose for its lifetime (a copy; the sim's actor is untouched)
+    const poses = frame.fx?.length && D.animOverrides ? D.animOverrides(frame.fx, frame.t ?? 0) : null;
+    // the hull under the pointer (host panel hover '<kind>:<actor id>') is drawn with its highlight outline
+    const hoverHull = hoveredToken(frame.hoverPanel);
+    for (let a of list) {
+      if (hasFlag(a, 'INDOORS')) continue;
+      if (WATERSIDE.has(a.kind) && !hasFlag(a, 'VISIBLE')) continue;
+      // culled on its interpolated feet before anything else is worked out for it
+      const x = a.px !== undefined ? a.px + (a.x - a.px) * alpha : a.x, y = a.py !== undefined ? a.py + (a.y - a.py) * alpha : a.y;
+      const p = toScreen(x, y);
+      if (p.sx < rect[0] - m || p.sx > rect[2] + m || p.sy < rect[1] - m || p.sy > rect[3] + 2 * m) continue;
+      const pose = poses?.get(String(a.id));
+      if (pose) a = { ...a, anim: pose.anim, frame: pose.frame };
+      const it = actorItem(a, alpha);
+      it.p = p;
+      // the sprite actually drawn: its size and pivot are the actor's hit rect and x-ray shape
+      const hl = a.kind === 'token' && hoverHull != null && hoverHull === String(a.id);
+      const sl = useAtlas ? atlasSlot(a, it.x, it.y, hl, mapScale) : null;
+      if (sl) {
+        it.slot = sl; it.w = sl.w; it.h = sl.h; it.pivot = sl.pivot; it.head = sl.head;
+        if (a.kind === 'token') it.img = actorSprite(a, it.x, it.y, hl).img;   // a hull's hit is its pixels (buildHits)
+        items.push(it);
+        continue;
+      }
+      const e = actorSprite(a, it.x, it.y, hl);
+      const w = e.img?.width ?? 16, h = e.img?.height ?? 24;
+      it.img = e.img; it.w = w; it.h = h; it.pivot = { x: e.pivot?.x ?? w / 2, y: e.pivot?.y ?? h };
+      if (e.head) it.head = e.head;
+      if (e.placeholder) it.ph = true;
+      // a hull longer than a tile: one piece per 16-px strip, each at the depth of its own stretch of keel (slice.js
+      // sliceHull), so the pier planks, the people on them and the next hull sort against each part of it
+      if (e.len > 1 && D.sliceHull && !e.placeholder) {
+        const x0 = Math.round(p.sx - it.pivot.x), parts = D.sliceHull({ x: it.x, y: it.y, face: a.face, len: e.len }, x0, x0 + w);
+        if (parts.length > 1) {
+          parts.forEach((q, i) => items.push({ ...it, key: q.key, clip: [q.L, q.R], lead: i === 0 }));
+          continue;
+        }
+      }
+      items.push(it);
+    }
+    return items.sort((a, b) => a.key - b.key);
+  }
+
   // ---- actors over a kept static layer (see draw: the kept / keep ways)
   /** Where an actor item's sprite lands (1x world px), with its stalled bob, a gull's lift and a hull's bob. */
   function actorAt(it, t) {
@@ -356,7 +448,15 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     const a = it.actor, p = it.p, at = it.at ?? actorAt(it, frame.t ?? 0);
     const al = hasFlag(a, 'GHOST') ? 0.5 : Number.isFinite(a.alpha) && a.alpha < 1 ? Math.max(0, a.alpha) : undefined;
     if (at.lift) g.rect(Math.round(p.sx) - 2, Math.round(p.sy), 5, 2, 'rgba(16,10,24,0.18)');   // a gull's shadow on the water
-    g.image(it.img, 0, 0, it.w, it.h, at.x, at.y, it.w, it.h, al);
+    const sl = it.slot;
+    // Map zoom: the frame pre-scaled in the actor atlas, copied 1:1 at the whole device px nearest its 1x spot
+    if (sl) g.image(sl.img, sl.sx, sl.sy, sl.sw, sl.sh, Math.round(at.x * slotScale) / slotScale, Math.round(at.y * slotScale) / slotScale, sl.sw / slotScale, sl.sh / slotScale, al);
+    else if (it.clip) {
+      // one strip of a sliced hull; the rest of the actor's bookkeeping is its lead strip's
+      const [L, R] = it.clip;
+      g.image(it.img, L - at.x, 0, R - L, it.h, L, at.y, R - L, it.h, al);
+      if (!it.lead) return;
+    } else g.image(it.img, 0, 0, it.w, it.h, at.x, at.y, it.w, it.h, al);
     if (debug && it.ph) { draws.placeholder++; draws.actorPlaceholder++; }
     if (a.kind === CARRIER_KIND && a.carry) carried(p);
     if (a.fx && a.fx.includes?.('lantern')) lantern(p);   // night walkers carry one (mods ambient); lighting.js adds its pool
@@ -365,6 +465,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   /** The rect an actor item can touch (its sprite, plus the shadow, crate and lantern round its feet), 1 px margin. */
   function actorBox(it) {
     const at = it.at, sx = Math.round(it.p.sx), sy = Math.round(it.p.sy);
+    if (it.clip) return [it.clip[0] - 1, Math.min(at.y, sy) - 1, it.clip[1] + 1, Math.max(at.y + it.h, sy + 3) + 1];   // a hull strip
     return [Math.min(at.x, sx - 6) - 1, Math.min(at.y, sy - 18) - 1, Math.max(at.x + it.w, sx + 10) + 1, Math.max(at.y + it.h, sy + 3) + 1];
   }
   // column buckets (16 px) of every slice of the kept static list, for the slices under an actor's rect
@@ -397,11 +498,15 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   function redrawActors(items, frame, drawn, drawnItems) {
     if (!items.length) return;
     const t = frame.t ?? 0, rects = [];
-    for (const it of items) { it.at = actorAt(it, t); rects.push(actorBox(it)); }
+    for (const it of items) {
+      if (it.paint) { rects.push(it.box); continue; }
+      it.at = actorAt(it, t); rects.push(actorBox(it));
+    }
     g.clipRects(rects);
     g.drawLayer('ground');
     for (const it of D.mergeSorted([slicesIn(rects), items])) {
       if (it.actor) drawActor(it, frame, drawn, drawnItems);
+      else if (it.paint) paintItem(it);
       else g.image(it.img, it.sx, it.sy, it.sw, it.sh, it.dx, it.dy, it.sw, it.sh);
     }
     g.unclip();
@@ -427,10 +532,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     const toCss = (x, y) => [(x - c0.sx) * z + cssW / 2, (y - c0.sy) * z + cssH / 2];
     const isMap = z <= MAP_ZOOM || frame.mode === 'map';
     g.begin(dpr, cam);
-    if (isMap) return drawMap(frame, { cam, cssW, cssH, dpr, z, rect, gview, toCss });
     let ph = now();
-    const lap = k => { const t = now(); phase[k] = +(t - ph).toFixed(2); ph = t; };
-    phase.rebuilt = 0;
     // While the view moves (a drag, a zoom step, and MOVE_MS after), a frame rasters nothing and bakes no ground: what is
     // missing draws as placeholder / flat ground and is built between frames (rasterIdle), so a gesture frame never
     // pays for a raster. A still view keeps the small in-frame budget.
@@ -438,6 +540,10 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     if (lastCamNow !== null && camNow !== lastCamNow) lastMoveT = ph;
     lastCamNow = camNow;
     const moving = ph - lastMoveT < MOVE_MS;
+    if (isMap) return drawMap(frame, { cam, cssW, cssH, dpr, z, rect, gview, toCss, moving });
+    lastMap = null;
+    const lap = k => { const t = now(); phase[k] = +(t - ph).toFixed(2); ph = t; };
+    phase.rebuilt = 0;
     frameBudget = moving ? 0 : (frame.budgetMs ?? FRAME_RASTER_MS);
     cache.pump?.(frameBudget);
     if (ph - lastTrim >= TRIM_MS) { lastTrim = ph; cache.trim?.(); }   // back under the cap once sprites go stale
@@ -497,27 +603,12 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     stat.lists = lists; stat.visObjs = visObjs;
     lap('stat');
 
-    // actors: cull by screen rect, sort once per frame
-    const alpha = frame.alpha ?? 1, m = 64;
-    const items = [];
-    // event fx: an `anim:<name>` effect swaps an actor's pose for its lifetime (a copy; the sim's actor is untouched)
-    const poses = frame.fx?.length && D.animOverrides ? D.animOverrides(frame.fx, frame.t ?? 0) : null;
-    for (let a of frame.actors || []) {
-      if (hasFlag(a, 'INDOORS')) continue;
-      if (WATERSIDE.has(a.kind) && !hasFlag(a, 'VISIBLE')) continue;
-      const pose = poses?.get(String(a.id));
-      if (pose) a = { ...a, anim: pose.anim, frame: pose.frame };
-      const it = actorItem(a, alpha), p = toScreen(it.x, it.y);
-      if (p.sx < rect[0] - m || p.sx > rect[2] + m || p.sy < rect[1] - m || p.sy > rect[3] + 2 * m) continue;
-      it.p = p;
-      // the sprite actually drawn: its size and pivot are the actor's hit rect and x-ray shape
-      const e = actorSprite(a, it.x, it.y);
-      const w = e.img?.width ?? 16, h = e.img?.height ?? 24;
-      it.img = e.img; it.w = w; it.h = h; it.pivot = { x: e.pivot?.x ?? w / 2, y: e.pivot?.y ?? h };
-      if (e.placeholder) it.ph = true;
-      items.push(it);
+    // actors: cull by screen rect, sort once per frame; with the hover outline of a venue (a pier) in among them
+    let items = actorItems(frame, rect);
+    if (frame.hoverPanel && hoveredToken(frame.hoverPanel) == null) {
+      const ol = outlineItems(venueOutlines(visObjs), '#ffe9a8');
+      if (ol.length) items = D.mergeSorted([items, ol]);
     }
-    items.sort((a, b) => a.key - b.key);
 
     // building fade (selected actor behind/inside): per-object alpha, computed only when someone is selected
     const selected = (frame.actors || []).filter(a => hasFlag(a, 'SELECTED') || a.selected);
@@ -557,6 +648,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       hits = D.buildHits(merged, toCss);
       for (const it of merged) {
         if (it.actor) drawActor(it, frame, drawn, drawnItems);
+        else if (it.paint) paintItem(it);
         else g.image(it.img, it.sx, it.sy, it.sw, it.sh, it.dx, it.dy, it.sw, it.sh, fade.get(it.oid));
       }
       if (debug) countMarks(stat.list);
@@ -614,19 +706,16 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     // selection marks: indoors ghost at the door, the home outline, the marker over a selected agent
     if (D.selectionMarks && D.drawMarks) {
       const marks = D.selectionMarks({ world, actors: frame.actors || [], selected: frame.selected ?? undefined, crowd: frame.crowd });
-      if (D.importantStars) marks.stars = D.importantStars({ actors: frame.actors || [] });
+      if (D.importantStars) {
+        // only the stars of the actors in the view (with the actors' margin): one off the view draws nothing anyone sees
+        const r = rect, m = 64;
+        marks.stars = D.importantStars({ actors: frame.actors || [] }).filter(st => { const p = toScreen(st.x, st.y); return p.sx >= r[0] - m && p.sx <= r[2] + m && p.sy >= r[1] - m && p.sy <= r[3] + 2 * m; });
+      }
       D.drawMarks(g, marks, { entryOf: doorOf, frameOf: a => actorArt?.frame?.(a, { selected: true }) ?? null, headOf, now: (frame.t ?? 0) * 1000 });
     }
-    // host panel hover: the venue (or its token) under the pointer lights up its outline
-    if (frame.hoverPanel) {
-      for (const o of visObjs) if (o.kind === 'venue' || o.kind === 'token') outline(o, '#ffe9a8');
-      // a hull under the pointer ('<kind>:<actor id>'): its sprite rect, one px line
-      const hp = String(frame.hoverPanel);
-      for (const it of drawnItems) if (it.actor.kind === 'token' && hp.endsWith(`:${it.actor.id}`)) {
-        const x0 = Math.round(it.p.sx - it.pivot.x) - 1, y0 = Math.round(it.p.sy - it.pivot.y) - 1, x1 = x0 + it.w + 2, y1 = y0 + it.h + 2;
-        g.rect(x0, y0, x1 - x0, 1, '#ffe9a8'); g.rect(x0, y1, x1 - x0, 1, '#ffe9a8'); g.rect(x0, y0, 1, y1 - y0, '#ffe9a8'); g.rect(x1, y0, 1, y1 - y0 + 1, '#ffe9a8');
-      }
-    }
+    // host panel hover: a hull under the pointer is drawn with its own highlight outline (actorItems) and nothing else
+    // lights up; the venue itself (a pier) outlines its walkable decks, one outline per pier rather than one per plank
+    // section, in the world layer at the pier's depth (outlineItems): a hull or a person in front of the pier covers it
     // screen-space badges are drawn by the engine after g.end() (overlay/badges.js, device px); this hook stays for mods/tests
     D.badges?.draw?.(g, cam, gview, drawn, toCss);
     g.end();
@@ -639,11 +728,24 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     for (const it of list) if (it.mark) { if (it.mark === 'ph') draws.placeholder++; else if (it.mark === 'failed') draws.failed++; else draws.soft++; }
   }
 
-  // ---- Map zoom (z <= MAP_ZOOM): flat LOD ground, footprint diamonds and one dot per actor. No sprite is looked up or
-  // rastered here, and there is no depth merge: dots are drawn over a static layer, and the hits are the actors' only
-  // (a click at Map zoom picks a neighbourhood, input-ctl villageAt). The static layer (ground, accent edges, diamonds)
-  // is drawn once per camera and kept by the gfx (saveLayer/drawLayer); a still camera redraws only the dots.
-  let mapKey = null;
+  // ---- Map zoom (z <= MAP_ZOOM): the same village, smaller (map-tiles.js). The static town (ground, accent edges, every
+  // sprite slice) is drawn from cached tiles, each the full street-view draw of its rect at 1x box-filtered down to the
+  // device scale; the actors (their real sprites), the ambient and event effects, the night light and the selection
+  // marks are drawn over them per frame, as in the street view. Tiles are baked nearest the view centre first, between
+  // frames (rasterIdle), never inside one; a tile not baked yet shows its stale bake or another
+  // scale's, else the ground (Map LOD chunks) under it. The hits are the actors' only (a click at Map zoom picks a
+  // neighbourhood, input-ctl villageAt). The tiled layer is kept by the gfx per camera once every tile is fresh.
+  let mapKey = null, lastMap = null, edgesSig = '', tileG = null, tileCv = null;
+  // canvases for the tiles: deps.createCanvas (tests), else the raster's factory
+  const canvasOf = (w, h) => { try { return (D.createCanvas ?? RASTER.createCanvas)(w, h); } catch { return null; } };
+  const mapTiles = D.createMapTiles ? D.createMapTiles({ createCanvas: canvasOf }) : null;
+  // baked tiles kept across sessions (map-tile-store.js): null with no IndexedDB (node tests) or on a dev page
+  const tileStore = mapTiles && D.createTileStore ? D.createTileStore() : null;
+  // Map zoom's actor frames, pre-scaled to the device scale (actor-atlas.js); debugNoAtlas: the direct draw (A/B)
+  const atlas = D.createActorAtlas ? D.createActorAtlas({ createCanvas: canvasOf }) : null;
+  let slotScale = 1, debugNoAtlas = false;
+  const tileSigs = new Map();   // tile key -> signature, for the current world and lit state (mapSigAt)
+  let mapSigAt = null;
   function mapObjs(rect) {
     const out = [], { minX, maxX, minY, maxY } = chunkRange(rect);
     for (let cy = minY; cy <= maxY; cy++) for (let cx = minX; cx <= maxX; cx++) {
@@ -652,41 +754,276 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     }
     return out;
   }
-  function drawMap(frame, { cam, cssW, cssH, dpr, z, rect, gview, toCss }) {
-    cache.cancel?.();   // queued sprite jobs are street-zoom work: they are queued again when the view needs them
+  // What an object's slices are drawn from (its slice inputs and sprite key, lit or not), per world and lit state.
+  const objSigs = new Map();
+  const objSig = o => { let h = objSigs.get(o.id); if (h === undefined) objSigs.set(o.id, h = MAPTILES.sigHash(`${o.id}@${sliceAt(o)}#${keyFor(o)}`)); return h; };
+  const tileCam = r => { const t = toTile((r[0] + r[2]) / 2, (r[1] + r[3]) / 2); return { x: t.tx, y: t.ty, z: 1 }; };
+  const TILE_VIEW = { cssW: MAPTILES.TILE, cssH: MAPTILES.TILE, dpr: 1 };
+  /**
+   * Signature of everything tile (ix, iy) is drawn from: the objects that reach it, its ground chunks' content keys, the
+   * accent edges. Null when it is not worked out yet and `deadline` has passed (the work is spread over frames).
+   */
+  function tileSig(ix, iy, deadline = Infinity) {
+    const at = `${worldSeq}|${dark}`;
+    if (mapSigAt !== at) { tileSigs.clear(); objSigs.clear(); mapSigAt = at; }
+    const k = `${ix},${iy}`;
+    let s = tileSigs.get(k);
+    if (s !== undefined) return s;
+    if (now() > deadline) return null;
+    const t0 = now(), r = MAPTILES.tileRect(ix, iy);
+    let src = edgesSig + '|';
+    for (const o of objsReaching(r)) src += objSig(o) + ';';
+    for (const g0 of ground.chunkKeys?.(TILE_VIEW, tileCam(r)) ?? []) src += g0.key + ';';
+    tileSigs.set(k, s = MAPTILES.sigHash(src));
+    mb.sigMs += now() - t0;
+    return s;
+  }
+  // How far above its footprint a static sprite can reach (1x px): the reach test that picks a tile's objects before their
+  // sprites are known (the tallest art, a cathedral spire or the lighthouse, is well under it). The slices themselves
+  // are then culled to the tile exactly.
+  const REACH_UP = 384, REACH_SIDE = 32;
+  /** The static objects whose sprite can reach rect r (footprint screen box grown by the reach). */
+  function objsReaching(r) {
+    const out = [], { minX, maxX, minY, maxY } = chunkRange([r[0] - REACH_SIDE, r[1], r[2] + REACH_SIDE, r[3] + REACH_UP]);
+    for (let cy = minY; cy <= maxY; cy++) for (let cx = minX; cx <= maxX; cx++) {
+      const c = chunks.get(ck(cx, cy)); if (!c) continue;
+      for (const o of c.objs) {
+        const w = o.w || 1, h = o.h || 1;
+        const x0 = (o.tx - o.ty - h) * 16 - REACH_SIDE, x1 = (o.tx + w - o.ty) * 16 + REACH_SIDE;
+        const y0 = (o.tx + o.ty) * 8 - REACH_UP, y1 = (o.tx + w + o.ty + h) * 8 + 8;
+        if (x0 < r[2] && x1 > r[0] && y0 < r[3] && y1 > r[1]) out.push(o);
+      }
+    }
+    return out;
+  }
+  /**
+   * The slices of tile (ix, iy), back to front: every static object that reaches it, at its real sprite (from the slices
+   * the street view keeps when they are current, else sliced here and not kept: Map zoom holds no slice list per chunk,
+   * so its memory stays the sprite cache's). Null while a sprite is not built yet (each is asked for within the frame
+   * budget, else queued). It runs whole once started: an abandoned gather is all waste.
+   */
+  function tileItems(ix, iy) {
+    const r = MAPTILES.tileRect(ix, iy), items = [];
+    let ready = true;
+    for (const o of objsReaching(r)) {
+      const k = keyFor(o);
+      let e = cache.map?.get?.(k);
+      const s = sliceCache.get(o.id);
+      if (!e && s && s.key === k && usable(s.entry) && cache.adopt?.(k, s.entry)) e = s.entry;
+      if (!e) e = lookup(o, frameBudget, k);
+      if (!e) { ready = false; continue; }
+      if (!ready || e.empty) continue;
+      // the sprite's own rect (its pivot on the footprint's north corner, its true bounds): most objects the reach test
+      // let in miss the tile, and need no slicing
+      const b = e.bounds, pv = e.pivot;
+      if (b && pv && o.kind !== 'decal' && !o.run && (o.walk ?? '') !== 'edge') {
+        const n0 = toScreen(o.tx, o.ty), x0 = n0.sx - pv.x + b.x - 1, y0 = n0.sy - pv.y + b.y - 1;
+        if (x0 >= r[2] || x0 + b.w + 2 <= r[0] || y0 >= r[3] || y0 + b.h + 2 <= r[1]) continue;
+      }
+      const list = s && s.entry === e && s.at === sliceAt(o) ? s.items : D.sliceSprite(view_(o), e);
+      for (const it of list) if (it.dx < r[2] && it.dx + it.sw > r[0] && it.dy < r[3] && it.dy + it.sh > r[1]) items.push(it);
+    }
+    if (!ready) return null;
+    return items.sort((p, q) => p.key - q.key);
+  }
+  // Map tile baking counters (stats().mapBake): tries, bakes, and where the time goes (the perf harness, ?debug)
+  const mb = { drainMs: 0, maxShrink: 0, maxKeep: 0, maxDraw: 0, maxPrep: 0, maxIdle: 0, maxPump: 0, maxTile: 0, maxGather: 0, stored: 0, tries: 0, notReady: 0, groundWait: 0, baked: 0, sea: 0, derived: 0, groundMs: 0, gatherMs: 0, drawMs: 0, shrinkMs: 0, sigMs: 0 };
+  /**
+   * Bake tile (ix, iy) at device scale `scale`: the street-view draw of its rect (ground, accent edges, its slices back
+   * to front) at 1x, box-filtered down. False when a sprite it needs is not built yet (the tile is tried again).
+   */
+  function bakeTile(ix, iy, scale, sig, deadline) {
+    mb.tries++;
+    // a fresh bake at a larger scale (a step out from 1/4 to 1/8): halve it, no redraw
+    for (let k = 2; k <= 8; k *= 2) {
+      const big = mapTiles.peek(ix, iy, scale * k);
+      if (!big || big.sig !== sig) continue;
+      const d = mapTiles.store(ix, iy, scale, sig, big.img, big.size, big.sx, big.sy);
+      if (!d) break;
+      keep(ix, iy, scale, sig, d);
+      mb.derived++;
+      return true;
+    }
+    const r = MAPTILES.tileRect(ix, iy), cam1 = tileCam(r);
+    let t = now();
+    // its ground art first, spread over idle slices (a paved tile's art is its own): the paint below is then memo hits
+    const prepped = !ground.prepRect || ground.prepRect(r, deadline);
+    mb.maxPrep = Math.max(mb.maxPrep, now() - t);
+    if (!prepped) { mb.groundMs += now() - t; mb.groundWait++; return false; }
+    t = now();
+    const t00 = t, items = tileItems(ix, iy);
+    mb.gatherMs += now() - t;
+    mb.maxGather = Math.max(mb.maxGather, now() - t);
+    if (!items) { mb.notReady++; return false; }
+    t = now();
+    if (!tileCv) {
+      // CPU-backed like every sprite raster (READ) and the tile pages: a bake is CPU blits end to end, no GPU round trip
+      tileCv = canvasOf(MAPTILES.TILE, MAPTILES.TILE);
+      try { tileCv?.getContext?.('2d', { ...READ, alpha: false }); } catch { /* the gfx asks for its own */ }
+      tileG = tileCv ? D.createGfx(tileCv) : null;
+    }
+    if (!tileG) return false;
+    tileG.begin(1, cam1);
+    tileG.clear(SEA());
+    const tg = now();
+    // the ground straight from its tile art (ground.js paintRect), else through the chunk bakes
+    let land = 1;
+    if (ground.paintRect) land = ground.paintRect(tileG, r);
+    else { const gr = ground.drawChunks(tileG, cam1, { ...TILE_VIEW, rect: r, maxBakes: Infinity }); if (gr?.pending) { tileG.end(); mb.groundWait++; return false; } }
+    mb.groundMs += now() - tg;
+    if (edges.length && D.drawAccentEdges) D.drawAccentEdges(tileG, edges, { rect: r });
+    for (const it of items) tileG.image(it.img, it.sx, it.sy, it.sw, it.sh, it.dx, it.dy, it.sw, it.sh);
+    tileG.end();
+    // open sea (no ground tile, no sprite): nothing to keep, the frame's clear colour is the tile
+    if (!land && !items.length) { keep(ix, iy, scale, sig, mapTiles.store(ix, iy, scale, sig, null)); mb.sea++; return true; }
+    tileCv.getContext?.('2d')?.getImageData?.(0, 0, 1, 1);   // the canvas draws lazily: run it here, so drawMs holds it
+    const t2 = now(); mb.drawMs += t2 - t; mb.maxDraw = Math.max(mb.maxDraw, t2 - t);
+    const ok = mapTiles.store(ix, iy, scale, sig, tileCv);
+    mb.shrinkMs += now() - t2;
+    if (!ok) return false;
+    const tk = now();
+    mb.maxShrink = Math.max(mb.maxShrink, tk - t2);
+    keep(ix, iy, scale, sig, ok);
+    mb.maxKeep = Math.max(mb.maxKeep, now() - tk);
+    mb.baked++;
+    mb.maxTile = Math.max(mb.maxTile, now() - t00);
+    return true;
+  }
+  /** A fresh bake goes to the tile store too (encoded and written off the frame, in batches). */
+  function keep(ix, iy, scale, sig, e) { if (tileStore && e) tileStore.save(tileStore.keyOf(ix, iy, scale, sig), e); }
+  // Tiles read back from the store: in flight (tile key -> store key), then decoded and waiting for the next idle slice
+  const loading = new Map(), loaded = [];
+  /** Ask the store for tile (ix, iy) at `scale` and signature `sig`: true when it has it (the read is in flight). */
+  function fromStore(ix, iy, scale, sig) {
+    const k = mapTiles.keyOf(ix, iy, scale);
+    if (loading.has(k)) return true;
+    const sk = tileStore.keyOf(ix, iy, scale, sig);
+    if (!tileStore.has(sk)) return false;
+    loading.set(k, sk);
+    tileStore.load(sk).then(r => { loaded.push([ix, iy, scale, sig, r]); }, () => { loaded.push([ix, iy, scale, sig, null]); });
+    return true;
+  }
+  /** Put the decoded store reads into their atlas slots (when their signature is still current). Returns how many. */
+  function drainLoaded(deadline = Infinity) {
+    let n = 0;
+    const t0 = now();
+    while (loaded.length && (!n || now() < deadline)) {
+      const [ix, iy, scale, sig, r] = loaded.shift();
+      loading.delete(mapTiles.keyOf(ix, iy, scale));
+      if (!r) continue;   // a failed read: the tile bakes as usual
+      const cur = mapSigAt === `${worldSeq}|${dark}` ? tileSigs.get(`${ix},${iy}`) : undefined;
+      if (cur === sig && mapTiles.peek(ix, iy, scale)?.sig !== sig && mapTiles.store(ix, iy, scale, sig, r.img, r.size || TILE_SIZE(scale))) { n++; mb.stored++; }
+      r.img?.close?.();
+    }
+    mb.drainMs += now() - t0;
+    return n;
+  }
+  const TILE_SIZE = s => mapTiles.sizeOf(s);
+  /**
+   * Bake the stale or missing tiles of `list` (the view's, else its ring), nearest first, for up to `ms` (at least one
+   * try). A tile the store holds is read from it instead (asynchronously: drainLoaded puts it in). Returns how many
+   * tiles were put in.
+   */
+  function bakeMap(v, ms, list = v.tiles) {
+    const t0 = now(), deadline = t0 + ms;
+    let n = drainLoaded(deadline), tried = 0;
+    // the store opens in a few ms: until then nothing is baked that it may hold (the ground stands in meanwhile)
+    if (tileStore?.state() === 'opening') return n;
+    const stored = tileStore?.state() === 'ready';
+    for (const { ix, iy } of list) {
+      if (tried && now() >= deadline) break;
+      const sig = tileSig(ix, iy, deadline), e = mapTiles.peek(ix, iy, v.scale);
+      if (sig === null) break;
+      if (e && e.sig === sig) continue;
+      if (stored && fromStore(ix, iy, v.scale, sig)) continue;
+      tried++;
+      if (bakeTile(ix, iy, v.scale, sig, deadline)) n++;
+    }
+    return n;
+  }
+  // The ring: tiles within MAP_RING of the view, baked once the view is complete (idle time, prefetchIdle), so a pan
+  // or a step out at Map zoom lands mostly on baked tiles.
+  const MAP_RING = 2;
+  function ringOf(v) {
+    if (v.ring) return v.ring;
+    const r = v.rect, T = MAPTILES.TILE * MAP_RING, inView = new Set(v.tiles.map(t => `${t.ix},${t.iy}`));
+    return (v.ring = MAPTILES.tilesOf([r[0] - T, r[1] - T, r[2] + T, r[3] + T]).filter(t => !inView.has(`${t.ix},${t.iy}`)));
+  }
+  /** True while a ring tile of the last Map view is missing or stale (worked out once per view and lit state). */
+  function ringLeft(v) {
+    if (!v || !mapTiles) return false;
+    const at = `${worldSeq}|${dark}`;
+    if (v.ringDone === at) return false;
+    for (const { ix, iy } of ringOf(v)) {
+      const s = tileSigs.get(`${ix},${iy}`), e = mapTiles.peek(ix, iy, v.scale);
+      if (mapSigAt !== at || s === undefined || !e || e.sig !== s) return true;
+    }
+    v.ringDone = at;
+    return false;
+  }
+  function drawMap(frame, { cam, cssW, cssH, dpr, z, rect, gview, toCss, moving }) {
     noteView(null);     // nothing to prefetch for: the next step in from Map zoom lands wherever the pointer is
     visPending = 0;
+    // a Map frame rasters no sprite: the tiles' sprites are built between frames (rasterIdle pumps the queue), so a
+    // frame during the fill is never a sprite raster (one building can take longer than the whole frame budget)
+    frameBudget = 0;
+    const t0 = now();
+    if (t0 - lastTrim >= TRIM_MS) { lastTrim = t0; cache.trim?.(); }
     let visObjs = null;
     const objs = () => (visObjs ??= mapObjs(rect));
-    const key = `${worldSeq}|${cam.x}|${cam.y}|${z}|${cssW}|${cssH}|${dpr}`;
-    if (keepOn && key === mapKey && g.drawLayer?.()) { /* the static layer as drawn last time */ }
-    else {
-      g.clear(SEA());
-      const gr = ground.drawChunks(g, cam, gview);
-      groundPending = gr?.pending | 0;
-      if (debug) { draws.flat += gr?.flat | 0; draws.softGround += gr?.soft | 0; }
-      if (edges.length && D.drawAccentEdges) D.drawAccentEdges(g, edges, gview);
-      for (const o of objs()) if (o.kind === 'building' || o.kind === 'venue') {
-        const t = o.tx, u = o.ty, w = o.w, h = o.h;
-        const pts = [toScreen(t, u), toScreen(t + w, u), toScreen(t + w, u + h), toScreen(t, u + h)].map(q => [q.sx, q.sy]);
-        g.poly(pts, mod?.mapColor?.(view_(o)) ?? '#8a6a50');
+    // the view's tiles and their pins, worked out again only when the view moves (a still map is most frames)
+    const scale = z * dpr, vk = `${scale}|${rect.join(',')}`;
+    if (!lastMap || lastMap.vk !== vk) {
+      const tiles = MAPTILES.tilesOf(rect);
+      lastMap = { scale, tiles, vk, rect };
+      mapTiles?.pin(tiles.map(t => mapTiles.keyOf(t.ix, t.iy, scale)));
+    }
+    const { tiles } = lastMap;
+    const key = `${worldSeq}|${dark}|${cam.x}|${cam.y}|${z}|${cssW}|${cssH}|${dpr}`;
+    if (keepOn && key === mapKey && g.drawLayer?.()) { lastWay = 'map-kept'; }
+    else if (mapTiles) {
+      // tiles are baked between frames only (rasterIdle): a frame draws what is baked and stands in for the rest
+      const blits = [];
+      let pending = 0, bare = false;
+      const sigBy = now() + MAP_SIG_MS;
+      for (const { ix, iy } of tiles) {
+        const sig = tileSig(ix, iy, sigBy);
+        let e = mapTiles.get(ix, iy, scale);
+        if (!e || sig === null || e.sig !== sig) {
+          pending++;
+          e = e ?? mapTiles.peek(ix, iy, scale * 2) ?? mapTiles.peek(ix, iy, scale / 2);   // a stale bake, another scale's
+          if (!e) { bare = true; continue; }
+        }
+        blits.push([e, ix, iy]);
       }
-      // keep the layer only once the ground is complete (a flat placeholder chunk must not stick)
+      g.clear(SEA());
+      let gp = 0;
+      if (bare) {
+        // under the tiles not baked at any scale yet: the ground bakes already cached, else one flat quad per chunk. It
+        // bakes nothing (maxBakes 0): the tiles paint the same ground, so a stand-in bake would be the work done twice
+        const gr = ground.drawChunks(g, cam, { ...gview, maxBakes: 0 });
+        gp = gr?.pending | 0;
+        if (debug) { draws.flat += gr?.flat | 0; draws.softGround += gr?.soft | 0; }
+      }
+      const T = MAPTILES.TILE;
+      for (const [e, ix, iy] of blits) if (e.img) g.image(e.img, e.sx, e.sy, e.size, e.size, ix * T, iy * T, T, T);
+      groundPending = pending + gp;
+      // keep the layer only once every tile is fresh (a stand-in must not stick)
       mapKey = keepOn && !groundPending && g.saveLayer?.() ? key : null;
+      lastWay = 'map';
     }
-    const alpha = frame.alpha ?? 1, m = 64, items = [], drawn = [], dots = [];
-    for (const a of frame.actors || []) {
-      if (hasFlag(a, 'INDOORS')) continue;
-      if (WATERSIDE.has(a.kind) && !hasFlag(a, 'VISIBLE')) continue;
-      const it = actorItem(a, alpha), p = toScreen(it.x, it.y);
-      if (p.sx < rect[0] - m || p.sx > rect[2] + m || p.sy < rect[1] - m || p.sy > rect[3] + 2 * m) continue;
-      it.p = p; items.push(it); drawn.push(a);
-      dots.push(Math.round(p.sx) - 2, Math.round(p.sy) - 2, 4, 4);
-    }
-    items.sort((a, b) => a.key - b.key);
-    if (g.rects) g.rects(dots, '#ffffff');
-    else for (let i = 0; i < dots.length; i += 4) g.rect(dots[i], dots[i + 1], dots[i + 2], dots[i + 3], '#ffffff');
+    // every actor from the actor atlas at the device scale. A page that fills up starts over: then the slots found
+    // before it did are gone, and the frame's slots are all found again on the fresh page before any is drawn
+    slotScale = z * dpr;
+    const r0 = atlas?.resets;
+    let items = actorItems(frame, rect, slotScale);
+    if (atlas && atlas.resets !== r0) items = actorItems(frame, rect, slotScale);
+    const drawn = [], drawnItems = [];
+    for (const it of items) drawActor(it, frame, drawn, drawnItems);
+    animParts(mapAnimObjs(), frame.t ?? 0, NO_FADE);
     D.effects?.draw?.(g, cam, gview, frame);
+    if (frame.fx?.length && D.drawEventFx) D.drawEventFx(g, frame.fx, frame.t ?? 0, { world, actors: frame.actors, berths: frame.berths, rect });
+    if ((frame.night ?? 0) > SWEEP_FROM) sweeps(mapAnimObjs(), frame.t ?? 0, frame.night);
     if ((frame.night ?? 0) > 0 && lighting) {
       lighting.setTime(frame.phase ?? frame.night);
       agentStatus.clear();
@@ -700,19 +1037,81 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
       try { const extra = mod?.extraLights?.(world, frame.actors || []); if (Array.isArray(extra) && extra.length) pools = pools.concat(extra); } catch { /* a bad mod hook adds no pools */ }
       lighting.draw(g, cam, gview, pools);
     }
+    if (D.selectionMarks && D.drawMarks) {
+      // the head height of a drawn actor is its drawn frame's; any other is looked up (a mark of an actor off the view)
+      let byId = null, itemOf = null;
+      const headOf = id => {
+        if (!itemOf) { itemOf = new Map(); for (const it of items) { const a = it.actor; if (a.important || a.input?.important) itemOf.set(it.oid, it); } }
+        const it = itemOf.get(id);
+        if (it && !it.actor.selected && !hasFlag(it.actor, 'SELECTED')) return it.head ? it.pivot.y - it.head.y : null;
+        byId ??= new Map((frame.actors || []).map(a => [a.id, a]));
+        const a = byId.get(id), f = a ? actorArt?.frame?.(a, { selected: false }) : null; return f?.head && f.pivot ? f.pivot.y - f.head.y : null;
+      };
+      const marks = D.selectionMarks({ world, actors: frame.actors || [], selected: frame.selected ?? undefined, crowd: frame.crowd });
+      if (D.importantStars) {
+        // only the stars of the actors in the view (with the actors' margin): one off the view draws nothing anyone sees
+        const r = rect, m = 64;
+        marks.stars = D.importantStars({ actors: frame.actors || [] }).filter(st => { const p = toScreen(st.x, st.y); return p.sx >= r[0] - m && p.sx <= r[2] + m && p.sy >= r[1] - m && p.sy <= r[3] + 2 * m; });
+      }
+      D.drawMarks(g, marks, { entryOf: doorOf, frameOf: a => actorArt?.frame?.(a, { selected: true }) ?? null, headOf, now: (frame.t ?? 0) * 1000 });
+    }
     D.badges?.draw?.(g, cam, gview, drawn, toCss);
     g.end();
     if (debug) draws.frames++;
     return D.buildHits(items, toCss);
   }
 
+  // Map zoom's animated parts (windmill sails, forge glow) and lighthouse beams: their objects, found once per world
+  // (the per-frame list of the view's objects is thousands long and holds a handful of them). Off-view ones draw
+  // off the canvas, as the view's ring chunks did.
+  const NO_FADE = new Map();
+  let animAt = -1, animList = [];
+  function mapAnimObjs() {
+    if (animAt !== worldSeq) {
+      animAt = worldSeq; animList = [];
+      for (const c of chunks.values()) for (const o of c.objs) if (o.model === 'windmill' || o.model === 'smithy' || o.model === 'lighthouse') animList.push(o);
+    }
+    return animList;
+  }
+
   /** The door tile of a building (centre of the door's tile), for the indoors ghost. */
   function doorOf(o) { return o?.door ? { x: o.door.tx + 0.5, y: o.door.ty + 0.5 } : null; }
   function line(p, q, color) { g.poly([[p.sx, p.sy], [q.sx, q.sy], [q.sx, q.sy + 1], [p.sx, p.sy + 1]], color); }
-  function outline(o, color) {
-    const P = [toScreen(o.tx, o.ty), toScreen(o.tx + (o.w || 1), o.ty), toScreen(o.tx + (o.w || 1), o.ty + (o.h || 1)), toScreen(o.tx, o.ty + (o.h || 1))];
-    for (let i = 0; i < 4; i++) line(P[i], P[(i + 1) % 4], color);
+  /** The token actor id a host panel hover key names ('<kind>:<actor id>', the engine's resolve()), or null. */
+  function hoveredToken(hp) {
+    if (hp == null) return null;
+    const k = String(hp), i = k.indexOf(':');
+    return i > 0 && !k.startsWith('link:') ? k.slice(i + 1) : null;
   }
+  /**
+   * The ground outline of each footprint rect as world-layer items, one per 16-px strip at the footprint's own strip
+   * depth (slice.js blockStripDepth, the ground-prop layer), so they sort like the footprint's slices: drawn over its own
+   * slice (equal keys: the static list merges first) and over what is behind it, under whatever stands in front. A deck's
+   * outline (a pier's) sinks with the deck (slice.js DECK_SINK): under the hulls moored at it and the people on it.
+   * Item: { key, paint: [[p, q], ...] segments, color, box } (renderer paintItem; no hit).
+   */
+  function outlineItems(rects, color) {
+    const out = [];
+    for (const o of rects) {
+      // a deck is outlined round its plank top (the pier art's deck height), where it shows between the hulls moored at it
+      const up = o.deck ? PLANK_TOP : 0, at0 = (x, y) => { const q = toScreen(x, y); return { sx: q.sx, sy: q.sy - up }; };
+      const P = [at0(o.tx, o.ty), at0(o.tx + (o.w || 1), o.ty), at0(o.tx + (o.w || 1), o.ty + (o.h || 1)), at0(o.tx, o.ty + (o.h || 1))];
+      const xs = P.map(p => p.sx), ys = P.map(p => p.sy), y0 = Math.min(...ys) - 1, y1 = Math.max(...ys) + 2;
+      for (let k = Math.floor(Math.min(...xs) / 16); k * 16 < Math.max(...xs); k++) {
+        const L = k * 16, R = L + 16, segs = [];
+        for (let i = 0; i < 4; i++) {
+          const p = P[i], q = P[(i + 1) % 4], a = Math.max(L, Math.min(p.sx, q.sx)), b = Math.min(R, Math.max(p.sx, q.sx));
+          if (!(b > a) || p.sx === q.sx) continue;
+          const at = x => ({ sx: x, sy: p.sy + (q.sy - p.sy) * (x - p.sx) / (q.sx - p.sx) });
+          segs.push([at(a), at(b)]);
+        }
+        const depth = SLICE.blockStripDepth(o, k) - (o.deck ? SLICE.DECK_SINK : 0);
+        if (segs.length) out.push({ key: D.sortKey(depth, 0, LAYER.GROUND_PROP, k), paint: segs, color, box: [L - 1, y0, R + 1, y1] });
+      }
+    }
+    return out.sort((p, q) => p.key - q.key);
+  }
+  function paintItem(it) { for (const [p, q] of it.paint) line(p, q, it.color); }
   // A lighthouse at night sweeps a beam round its lantern: two thin wedges of warm light, flattened to the iso ground.
   // parity: har.lighthouse-sweep
   function sweeps(objs, t, night) {
@@ -765,16 +1164,30 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
 
   /** Sprite streaming state (captures wait for pending = 0): chunks' placeholder objects and the cache queue. */
   function stats() {
-    return { pending: visPending, way: lastWay, phase: { ...phase }, prefetch: pre ? { done: pre.done, full: pre.full, chunks: pre.todo?.length ?? null, at: pre.i } : null, artReady, artFailed, actorArt: actorArt?.ready ?? null, actorLooks: actorArt?.stats?.().looks ?? null, effects: effects?.stats?.() ?? null, rasterN, failed: failedN,
-      rasterMs: Math.round(rasterMs), groundPending, ...(debug ? { draws: { ...draws } } : {}), keys: keys.size, failedKeys: failedKeys.slice(), sprites: { failed: failedN, failedKeys: failedKeys.slice() }, ...(cache.stats?.() || {}) };
+    return { pending: visPending, way: lastWay, phase: { ...phase }, prefetch: pre ? { done: pre.done, full: pre.full, chunks: pre.todo?.length ?? null, at: pre.i } : null, artReady, artFailed, actorArt: actorArt?.ready ?? null, actorLooks: actorArt?.stats?.().looks ?? null, actorDoll: actorArt?.stats?.().doll ?? null, effects: effects?.stats?.() ?? null, rasterN, failed: failedN,
+      rasterMs: Math.round(rasterMs), groundPending, mapTiles: mapTiles?.stats?.() ?? null, actorAtlas: atlas?.stats?.() ?? null, mapStore: tileStore?.stats?.() ?? null, mapBake: Object.fromEntries(Object.entries(mb).map(([k, v]) => [k, Math.round(v)])), ...(debug ? { draws: { ...draws } } : {}), keys: keys.size, failedKeys: failedKeys.slice(), sprites: { failed: failedN, failedKeys: failedKeys.slice() }, ...(cache.stats?.() || {}) };
   }
   /** Debug: false always takes the full draw (no kept layers), true (default) keeps the still view. */
   function setKeep(on) { keepOn = !!on; layerKey = null; mapKey = null; }
+  /** Debug: false draws Map zoom's actors from their own frames (no actor atlas), true (default) from the atlas. */
+  function setAtlas(on) { debugNoAtlas = !on; }
   /** Build queued sprites for up to `ms` outside a frame; returns how many were built (the caller redraws if any). */
   /** Between frames: the view's queued sprites, then its flat ground chunks. Returns how many were built (> 0: draw). */
   function rasterIdle(ms = 8) {
     const t0 = now();
     let n = cache.stats?.().queued ? cache.pump?.(ms) | 0 : 0;
+    if (groundPending && lastMap && mapTiles) {
+      // Map zoom: the view's stale or missing tiles (their sprites rastered here too, within the slice)
+      const fb = frameBudget, t1 = now();
+      mb.maxPump = Math.max(mb.maxPump, t1 - t0);
+      // a tile's sprites are queued, not rastered inside its bake (the pump above builds them, one budgeted slice at a
+      // time): a dense tile's gather is then slicing only, never a run of sprite rasters in one task
+      frameBudget = 0;
+      n += bakeMap(lastMap, Math.max(0, ms - (t1 - t0)));
+      frameBudget = fb;
+      mb.maxIdle = Math.max(mb.maxIdle, now() - t0);
+      return n;
+    }
     if (groundPending && lastTown && ground?.prebake) {
       const r = ground.prebake(lastTown.cam, { cssW: lastTown.cssW, cssH: lastTown.cssH }, Math.max(0, ms - (now() - t0)), { evict: true });
       n += r.baked | 0;
@@ -828,6 +1241,7 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
   }
   /** True while the view has prefetch work left (the host keeps asking for idle time). */
   function wantsPrefetch() {
+    if (lastMap) return artReady && !groundPending && !(cache.stats?.().queued > 0) && ringLeft(lastMap);
     return !!pre && !pre.done && artReady && !visPending && !groundPending && !(cache.stats?.().queued > 0);
   }
   /**
@@ -838,6 +1252,15 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     const t0 = now();
     let built = 0, baked = 0;
     if (!wantsPrefetch()) return { built, baked, more: false };
+    if (lastMap) {
+      // Map zoom: the view is complete; its ring next. Store reads land here too (drainLoaded): no frame needed, the
+      // ring is off screen
+      const fb = frameBudget;
+      frameBudget = 0;   // as rasterIdle: the ring's sprites are queued, and pumped there
+      baked = bakeMap(lastMap, ms, ringOf(lastMap));
+      frameBudget = fb;
+      return { built, baked, more: ringLeft(lastMap) || loading.size > 0 };
+    }
     const v = pre;
     // ground first: a flat chunk on the way out is the plainest gap
     while (!v.groundDone) {
@@ -878,5 +1301,5 @@ export function createRenderer({ canvas, gfx, mod, deps, debug = false } = {}) {
     if (!more && v.groundDone) v.done = true;
     return { built, baked, more };
   }
-  return { setWorld, draw, stats, setKeep, rasterIdle, prefetchIdle, wantsPrefetch, entryOf, noteSeen: ids => actorArt?.noteSeen?.(ids), accents: () => accents };
+  return { setWorld, draw, stats, setKeep, setAtlas, rasterIdle, prefetchIdle, wantsPrefetch, entryOf, noteSeen: ids => actorArt?.noteSeen?.(ids), accents: () => accents };
 }

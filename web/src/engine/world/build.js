@@ -11,6 +11,8 @@ import { scatterWildSteps } from './scatter.js';
 import { computeCover } from './cover.js';
 import { buildVenues } from './venue.js';
 import { addSiteWork } from './site-work.js';
+import { commitRetire, retiredOf, capOf } from './prune.js';
+import { greenLotIds, stampGreen } from './greens.js';
 import { resolveMod, modCtx } from '../mod/registry.js';
 import { distinctPicks } from '../render/accent.js';
 import { drainSync } from '../core/slices.js';
@@ -20,7 +22,8 @@ import { drainSync } from '../core/slices.js';
  * @param {{ mod?: object, now?: number, seed?: number, forcedTier?: number|null, forcedStyle?: number|null, serverId?: (opaque: string) => string,
  *   rules?: import('./rules-phase.js').RulesResult }} opts  rules: runRules(...) for this same input/persisted/now/seed (the caller
  *   computed it already, e.g. for the sig); when absent it is computed here. Either way no hook runs twice per rebuild.
- * @returns {World} { version, sig, mod, grid, objects: ObjectStore, villages, square, parks, venues, bounds, focus, layoutData, lint }
+ * @returns {World} { version, sig, mod, grid, objects: ObjectStore, villages, square, parks, venues, bounds, focus, layoutData, lint,
+ *   greens: Map<lot object id, rect> (free lots drawn as greens), retired: [{ project, lot }] (homes retired by this build) }
  *   (plus a COMPAT field that nav/index.js reads until its venue diff lands: the layout's data record of that name)
  *   venues: built here (world/venue.js) from the layout's frozen venue SITES (sites.venues), never written into them. */
 export function buildWorld(input, persisted, opts) {
@@ -32,13 +35,16 @@ export function buildWorld(input, persisted, opts) {
  * Yield labels (for debugging only): 'rules' (only when it runs them), 'settlements', 'blocks', 'layout', 'stamp' (per
  * village), 'lots' (per village), 'venues', 'cover', 'scatter' (when the mod scatters), 'cost', 'cover-final', 'anchors'.
  * Returns the World. */
-export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, rules = null, cache = null } = {}) {
+export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, seed, forcedTier = null, forcedStyle = null, serverId = id => id, rules = null, cache = null, cityCap = null, retireOpts = null } = {}) {
   now ??= input?.now ?? 0;
   seed ??= persisted?.seed ?? input?.seed ?? 0;
   persisted.lots ||= {};
   const ctxFor = projectKey => modCtx(mod, { seed, now, projectKey, forcedTier, forcedStyle });
   const opts = { now, seed, forcedTier, forcedStyle, serverId, ctxFor };
-  if (!rules) { rules = runRules(input, persisted, mod, opts); yield 'rules'; }
+  if (!rules) { rules = runRules(input, persisted, mod, { ...opts, cityCap, retireOpts }); yield 'rules'; }
+  // city cap (prune.js): the rules phase decided who retires / comes back; record it (idempotent) before lots are dealt
+  const CAP = capOf(cityCap);
+  commitRetire(persisted, rules, now, new Set((input?.agents || []).map(a => serverId(a.id) ?? a.id)));
   const { settlements, sig } = planSettlements(input, persisted, mod, opts, rules);
   yield 'settlements';
   // blocks (engine mechanism), then the mod's layout round them (hooks.layout, memoised in `cache`; world/layout.js)
@@ -56,8 +62,11 @@ export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, se
     yield 'stamp';
   }
   // owners: who lives in which lot. Geometry is never touched.
+  const greens = new Map(), freedLots = [];
   for (const v of sites.villages) {
-    const { byLot, items } = assignLots(v, persisted.lots, now, mod);
+    v.retired = new Set(Object.keys(retiredOf(persisted, v.name).a).map(id => `home:${id}`));
+    const { byLot, items, freed } = assignLots(v, persisted.lots, now, mod);
+    for (const lotId of freed || []) freedLots.push({ project: v.name, lot: `lot:${v.name}:${lotId}` });
     for (const [lotId, item] of byLot) {
       const o = objects.get(`lot:${v.name}:${lotId}`);
       if (!o) continue;
@@ -68,6 +77,13 @@ export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, se
       if (o.rank === 'L' && own.owner === 'home' && v.homes.find(a => a.id === own.agentId)?.crown) { o.crown = true; if (mod.rules?.crownModel) o.model = mod.rules.crownModel; }
     }
     for (const o of objects.values()) if (o.kind === 'building' && o.project === v.name && o.lot && o.id.startsWith('lot:') && !o.data) o.data = { item: null, owner: 'house' };
+    // city cap: free lots a retirement left, and free lots past the cap, are greens (gardens, orchards, small plazas)
+    const free = id => objects.get(`lot:${v.name}:${id}`)?.data?.owner === 'house';
+    for (const lotId of greenLotIds(v, persisted.lots[v.name], CAP, free)) {
+      const o = objects.get(`lot:${v.name}:${lotId}`);
+      const g = stampGreen(grid, objects, o, mod, ctxFor(v.name));
+      if (g) greens.set(o.id, g);
+    }
     yield 'lots';
   }
   // venues (MOD-READY P6): every layout venue site whose kind the mod defines gets its level, plan, nodes and berths
@@ -107,7 +123,8 @@ export function* buildWorldSteps(input, persisted, { mod = resolveMod(), now, se
     }
   }
   return { version: grid.version, sig, mod, grid, objects, villages: sites.villages, square: sites.square, parks: sites.parks,
-    venues: venues.venues, bounds: sites.bounds, focus: sites.focus, layoutData: sites.data, lint };
+    venues: venues.venues, bounds: sites.bounds, focus: sites.focus, layoutData: sites.data, lint,
+    greens, retired: freedLots };
 }
 
 /** Optional mod hook `hooks.styleNeighbours(styles: Map<project, style>, blocks, distinctPicks) -> Map<project, style>`: lets a mod vary

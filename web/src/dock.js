@@ -63,13 +63,26 @@ export function createDock(app) {
       <footer><span class="spacer"></span><button class="ghost" type="button" data-dk="close">Close</button></footer>`;
   }
 
-  function open() {
-    if (sheet.open) return;
+  // A click on one ship names its PR (event detail.href): that row is marked and scrolled into view.
+  let current = null;
+  function mark() {
+    for (const li of sheet.querySelectorAll('.dkrow.dkcur')) li.classList.remove('dkcur');
+    if (!current) return null;
+    const btn = [...sheet.querySelectorAll('.dkpr[data-href]')].find(b => b.dataset.href === current);
+    const li = btn?.closest('.dkrow');
+    li?.classList.add('dkcur');
+    return li || null;
+  }
+  function open(e) {
+    const href = typeof e?.detail?.href === 'string' ? e.detail.href : null;
+    if (sheet.open) { current = href; mark()?.scrollIntoView?.({ block: 'nearest' }); return; }
+    current = href;
     opener = document.activeElement;
     app.closePops?.();
     render();
     sheet.showModal();
     sheet.querySelector('#dk-title')?.focus();
+    mark()?.scrollIntoView?.({ block: 'nearest' });
   }
   sheet.addEventListener('close', () => { if (opener?.isConnected && opener.offsetParent !== null) opener.focus({ preventScroll: true }); opener = null; });
   sheet.addEventListener('click', e => {
@@ -85,5 +98,6 @@ export function createDock(app) {
   });
   window.addEventListener('va:dock', open);
 
-  return { open, update() { if (sheet.open) render(); } };
+  sheet.addEventListener('close', () => { current = null; });
+  return { open: () => open(), update() { if (sheet.open) { render(); mark(); } } };
 }

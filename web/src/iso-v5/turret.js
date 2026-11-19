@@ -50,7 +50,19 @@ function levels(zb, zt, ground, ht = 6, step = 13) {
 }
 
 function octagon(K, cx, cy, T, R) {
-  const { r, z0, zt, cone } = T, rot = Math.PI / 8, tex = K.V.turretTex ?? 'plaster', paint = K.st.paint;
+  const { r, zt, cone } = T, rot = Math.PI / 8;
+  octagonBody(K, cx, cy, T);
+  const { mat, base } = R, zs = zt + 1.6;
+  K.prism('Tf', cx, cy, r + 2.1, r + 0.5, zt, zs, 8, K.coneMat(base, mat, zt), rot);
+  K.prism('Tr', cx, cy, r + 0.5, 0, zs, zt + cone, 8, K.coneMat(base, mat, zt), rot);
+  const ap = zt + cone;
+  K.ball(cx, cy, ap + 0.6, 0.9, q => [K.byLight(K.ramp(K.GOLD), q.N, 0.1), 0]);
+  return ap + 1.5;
+}
+
+// The octagon's walls, windows, corbels and eaves band (shared by the witch-hat and the onion caps).
+function octagonBody(K, cx, cy, T) {
+  const { r, z0, zt } = T, rot = Math.PI / 8, tex = K.V.turretTex ?? 'plaster', paint = K.st.paint;
   const stoneP = K.V.heavy === 'stone', post = stoneP ? K.lt(K.st.dressC ?? K.STONE, 0.12) : (K.st.beam ?? K.BEAM);
   const wins = levels(z0, zt, z0 === 0);
   const inWin = zi => wins.some(([a, b]) => zi >= a - 1 && zi <= b + 1);
@@ -65,12 +77,6 @@ function octagon(K, cx, cy, T, R) {
   if (z0 > 0) corbel(K, 'Tc', cx, cy, r, z0, 8, rot, 1);
   // the eaves: a moulded band, a flared skirt, then the tall spire, a ball and the vane
   K.prism('Tk', cx, cy, r + 0.6, r + 0.6, zt - 1.2, zt, 8, (nm, N) => q => [K.shade(Math.floor(q.z) === Math.floor(zt - 1) ? K.TR[3] : K.TR[1], K.shOf(N)), 0], rot);
-  const { mat, base } = R, zs = zt + 1.6;
-  K.prism('Tf', cx, cy, r + 2.1, r + 0.5, zt, zs, 8, K.coneMat(base, mat, zt), rot);
-  K.prism('Tr', cx, cy, r + 0.5, 0, zs, zt + cone, 8, K.coneMat(base, mat, zt), rot);
-  const ap = zt + cone;
-  K.ball(cx, cy, ap + 0.6, 0.9, q => [K.byLight(K.ramp(K.GOLD), q.N, 0.1), 0]);
-  return ap + 1.5;
 }
 
 function campanile(K, cx, cy, T, R) {
@@ -116,11 +122,31 @@ function round(K, cx, cy, T, R) {
   return ap + 1.5;
 }
 
+// onion     : (city-variety) the octagon's body under a copper onion dome drawn up into a gilded spike: the storybook
+//             skyline turret of the tallest core houses. Its apex stays inside the octagon's budget (zt + 2.5 + cone).
+function onion(K, cx, cy, T, R) {
+  const { r, zt, cone } = T;
+  // the body, eaves band and skirt as an octagon, then the cap replaced: draw the octagon with a zero-height spire
+  octagonBody(K, cx, cy, T);
+  const CU = K.V.turretRoof === 'slate' || K.mm(K.st.roof) === 'slate' ? K.rgb('#5f8a86') : K.rgb('#6a9a82'), z1 = zt + 0.6;
+  const cuM = K.coneMat(CU, 'lead', z1);
+  const lathe = (nm, prof, mk = cuM) => { for (let i = 0; i < prof.length - 1; i++) K.prism(`${nm}${i}_`, cx, cy, prof[i][0], prof[i + 1][0], z1 + prof[i][1], z1 + prof[i + 1][1], 8, mk); };
+  const k = Math.max(0.6, Math.min(1, (cone - 2) / (r * 2.6)));   // squeeze the cap into a short budget
+  lathe('Od', [[r + 0.9, 0], [r * 0.8, 1.4 * k]]);                                  // a flared eave ring
+  lathe('Ob', [[r * 0.8, 1.4 * k], [r * 1.05, 2.8 * k], [r * 1.2, 4.2 * k]]);      // the bulb swelling out
+  const bz = z1 + 4.2 * k, br = r * 1.2;
+  K.ball(cx, cy, bz, br, q => { const c = K.byLight(K.ramp(CU), q.N, 0.1); return [Math.floor(q.ang * 16) % 2 ? K.dk(c, 0.07) : c, 0]; });
+  const ap = Math.min(bz + br + r * 1.1, zt + 2.5 + cone - 1.3), sb = bz + br * 0.8;   // the spike, from the bulb's crown
+  if (ap - sb > 1) lathe('Os', [[r * 0.4, sb - z1], [r * 0.16, sb - z1 + (ap - sb) * 0.45], [0, ap - z1]]);
+  K.ball(cx, cy, ap + 0.5, 0.8, q => [K.byLight(K.ramp(K.GOLD), q.N, 0.1), 0]);
+  return ap + 1.3;
+}
+
 /** A corner turret centred at (cx, cy): T = st.tur = { r, z0 (0 = from the ground, > 0 = corbelled out from
  * that height), zt (wall top), cone (roof height) }. Apex must stay <= T.zt + 2.5 + T.cone. Sets K.out.vane. */
 export function turret(K, cx, cy, T) {
-  const kind = K.V.turret ?? 'octagon', R = roofOf(K);
-  const draw = kind === 'campanile' ? campanile : kind === 'round' ? round : octagon;
+  const kind = K.st.tur?.kind ?? K.V.turret ?? 'octagon', R = roofOf(K);
+  const draw = kind === 'campanile' ? campanile : kind === 'round' ? round : kind === 'onion' ? onion : octagon;
   const ap = Math.min(draw(K, cx, cy, T, R), T.zt + 2.5 + T.cone);
   K.out.vane = K.Q(cx, cy, ap);
 }

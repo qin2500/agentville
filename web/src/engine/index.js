@@ -8,6 +8,7 @@ import { store, icon } from '../ui.js';
 import { cityDemo, isDemoId } from '../city-demo.js';
 import { toView, makeView, viewFromFixture } from './snapshot.js';
 import { loadWorld, saveWorld, loadSalt } from './world/persist.js';
+import { cityCapOf } from './world/prune.js';
 import { createBuildCache } from './world/cache.js';
 import { createRulesMemo } from './world/rules-memo.js';
 import { worldSteps } from './world/world-steps.js';
@@ -19,7 +20,7 @@ import { toWorldInput, createInputReuse } from './mod/input.js';
 import { drawGridDebug } from './debug/grid-view.js';
 import { createRenderer } from './render/renderer.js';
 import { runEvents, createEventFx } from './render/event-fx.js';
-import { PANEL_HIT_KINDS, openPrPanel, venueParams, venueDebug } from '../engine-host.js';
+import { PANEL_HIT_KINDS, openPrPanel, venueParams, venueDebug, venueHref } from '../engine-host.js';
 import { createNav } from './nav/index.js';
 import { createSim } from './sim/world-sim.js';
 import { pick as pickHit, imageAlphaAt } from './render/pick.js';
@@ -185,7 +186,9 @@ export function createEngine(app) {
       // Per project, skipped when nothing its hooks read changed (world/rules-memo.js: its project record, agents and PRs,
       // persisted block + held lots, mod, seed, forced tier/style; plus `now` when a hook read the clock last time), so a
       // status flip re-runs only the projects whose agents flipped.
-      const opts = { now: view.now, seed, forcedTier, forcedStyle, serverId, ctxFor };
+      // city cap (Settings -> Advanced, world/prune.js): homes per city; past it long-idle homes retire. Read every poll.
+      const cityCap = cityCapOf(store);
+      const opts = { now: view.now, seed, forcedTier, forcedStyle, serverId, ctxFor, cityCap };
       const { rules, pv, ran } = rulesMemo.run({ input, persisted, mod, opts, cache: buildCache });
       if (!ran.length) reuse.rules++;
       if (!world) yield 'rules';
@@ -201,7 +204,7 @@ export function createEngine(app) {
       // build, nav, sim and the first snapshot (world/world-steps.js). `world` is set only once all of them are done, so a
       // frame drawn between slices of the cold build never sees a world without its sim.
       const out = yield* worldSteps({
-        input, persisted, mod, build: { now: view.now, seed, forcedTier, forcedStyle, serverId, rules, cache: buildCache },
+        input, persisted, mod, build: { now: view.now, seed, forcedTier, forcedStyle, serverId, rules, cache: buildCache, cityCap },
         nav, navMemo, sim, berthCtx: ctxFor(''),
         createNav, createSim: (w, n) => createSim({ world: w, nav: n, seed, mod, serverId, clock: simT != null ? () => (simT / 480) % 1 : undefined }),
         onWorld: (w, ms) => {
@@ -218,6 +221,7 @@ export function createEngine(app) {
       });
       ({ world, nav, sim, berths } = out); navMemo = out.navMemo;
       if (out.navReused) reuse.nav++;
+      for (const r of world.retired || []) sim?.events?.emit?.('retire', { project: r.project, lot: r.lot });   // city cap cue
       pumpEvents();   // P4: the sim read opts.berths in worldSteps' first snapshot
       if (simT != null && !simPinned) {   // ?t pins the clock
         simPinned = true;
@@ -435,14 +439,23 @@ export function createEngine(app) {
       return { name: v.name, accent: renderer?.accents?.().get(v.name) ?? v.accent, x: p.x, y: p.y, ...(counts ? { counts: counts.get(v.name) } : {}) };
     });
     const prs = [];
-    // tags on the hulls at zoom 3 (the PR number of the item a token carries), at the top of its sprite
-    if (z >= 3) for (const hh of hits) {
-      if (!PANEL_HIT_KINDS.has(hh.kind)) continue;
-      const a = sim?.actors.get(hh.id), n = a?.kind === 'token' ? prNumber(a.item) : null;
-      if (n == null) continue;
-      const x = (hh.rect[0] + hh.rect[2]) / 2, y = hh.rect[1];
-      if (x < -60 || y < -60 || x > w + 60 || y > h + 60) continue;
-      prs.push({ id: hh.id, pr: n, x, y });
+    // tags on the hulls at zoom 3 (the PR number of the item a token carries), at the top of its sprite: a hull drawn in
+    // strips (renderer sliceHull) has a hit per strip, so its tag sits over the union of them, one tag per hull
+    if (z >= 3) {
+      const hulls = new Map();
+      for (const hh of hits) {
+        if (!PANEL_HIT_KINDS.has(hh.kind)) continue;
+        const r = hulls.get(hh.id);
+        if (r) { r[0] = Math.min(r[0], hh.rect[0]); r[1] = Math.min(r[1], hh.rect[1]); r[2] = Math.max(r[2], hh.rect[2]); }
+        else hulls.set(hh.id, [hh.rect[0], hh.rect[1], hh.rect[2]]);
+      }
+      for (const [id, r] of hulls) {
+        const a = sim?.actors.get(id), n = a?.kind === 'token' ? prNumber(a.item) : null;
+        if (n == null) continue;
+        const x = (r[0] + r[2]) / 2, y = r[1];
+        if (x < -60 || y < -60 || x > w + 60 || y > h + 60) continue;
+        prs.push({ id, pr: n, x, y });
+      }
     }
     if (z >= 3) for (const o of world.objects.values()) {
       if (o.kind !== 'building' || o.data?.owner !== 'pr') continue;
@@ -496,6 +509,12 @@ export function createEngine(app) {
     if (PANEL_HIT_KINDS.has(p.kind)) return { panel: p.href ? `link:${p.href}` : p.actor ? `${p.kind}:${p.actor}` : p.kind };
     return null;
   }
+  /** The link of the item a token carries, from a host panel key '<kind>:<actor id>' (null: none, or not a token). */
+  function tokenHref(key) {
+    const k = typeof key === 'string' ? key : '', i = k.indexOf(':');
+    const a = i > 0 && !k.startsWith('link:') ? sim?.actors.get(k.slice(i + 1)) : null;
+    return a?.kind === 'token' && typeof a.item === 'string' ? venueHref(view, a.item) : null;
+  }
   const centerOfId = id => {
     const a = sim?.actors.get(toOpaqueId(id));
     if (!a) return null;
@@ -518,7 +537,8 @@ export function createEngine(app) {
     order: () => bucketOrder(view?.agents || [], id => !!sim?.actors.has(toOpaqueId(id))),
     selected: () => selected,
     isDemoId: id => DEMO && isDemoId(id),
-    openPanel: href => openPrPanel(href),
+    // a token's panel key ('<kind>:<actor id>') names no link: the host finds its PR's from the item it carries
+    openPanel: (href, key) => openPrPanel(href ?? tokenHref(key)),
     onChange: s => {
       const vis = s.hover !== hover || s.hoverVil !== hoverVil || s.hoverPanel !== hoverPanel || s.cursor !== cursor;
       ({ hover, hoverVil, hoverPanel, cursor } = s);
@@ -609,6 +629,8 @@ export function createEngine(app) {
       trace(on = true) { const t = trace; trace = on ? [] : null; return t; },
       // keep(false): the renderer always draws the whole view (no kept layers), for A/B checks; keep(true) restores
       keep(on = true) { renderer?.setKeep?.(on); invalidate(); },
+      // atlas(false): Map zoom draws each actor from its own frame (no actor atlas), for A/B checks; atlas(true) restores
+      atlas(on = true) { renderer?.setAtlas?.(on); invalidate(); },
       poll(flip = 0) {
         const list = fixture?.agents ?? [];
         for (let i = 0, k = 0; i < list.length && k < flip; i++) {

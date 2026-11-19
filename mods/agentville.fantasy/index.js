@@ -19,6 +19,7 @@ import { FOLK_PARTS, FOLK_ANIMS } from './art/folk-parts.js';
 import { lookOf as folkLookOf } from './art/looks.js';
 import { ground } from './ground.js';
 import { events } from './events.js';
+import { freeLot } from './greens.js';
 import townsfolk, { spawnTownsfolk } from './ambient/townsfolk.js';
 import cart, { spawnCarts } from './ambient/cart.js';
 import critter, { spawnCritters } from './ambient/critter.js';
@@ -39,7 +40,7 @@ export const AMBIENT = Object.freeze({ behaviours: Object.freeze({ folk: townsfo
 export default {
   id: 'agentville.fantasy', name: 'Agentville Fantasy', version: '1.0.0', apiVersion: 1, extends: 'agentville.base',
   features: ['prs.loading'],   // opt in: open PRs arrive as state 'loading' + live (the venues, level and represent.pr read it)
-  rules: RULES, terrain: TERRAIN_TABLE, objects: OBJECT_TYPES, hooks: { ...HOOKS, layout, scatter },
+  rules: RULES, terrain: TERRAIN_TABLE, objects: OBJECT_TYPES, hooks: { ...HOOKS, layout, scatter, freeLot },
   behaviour: BEHAVIOUR, represent: { ...REPRESENT, poses: POSES, cues: CUES }, venues: VENUES, persist: PERSIST, ambient: AMBIENT, ground,
   actors: ACTORS,
   events,   // M6 P4: world events (merge confetti, found banner + dust, tier-up scaffolds + cheers)

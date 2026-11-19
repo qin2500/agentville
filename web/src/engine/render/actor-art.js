@@ -15,6 +15,8 @@
 //     lookOf(actor) -> string|null      sheet name for an actor (null: not drawn by the sheets, e.g. carts)
 //     lookFor(actor) -> Look|null       the doll look (doll mode), cached per actor
 //     frame(actor, { selected }) -> { img, pivot:{x,y}, head? } | null   pivot = the feet point in img px
+//     frameKey(actor, { selected }) -> number|string|null   that frame's key (equal keys: the same pixels), made without
+//                                       drawing (doll frames: a number while it fits; sheet frames: a string)
 //     noteSeen(ids)                     records first-seen order for a batch (snapshot order), like classic va.seen
 //     stats() -> { frames, looks, mode, doll }
 //   }
@@ -182,11 +184,16 @@ export function createActorArt({ mod, styleOf = null, store = localStore, folk, 
   function lookFor(a) {
     if (!doll || broken || !a) return null;
     const style = typeof styleOf === 'function' ? (styleOf(a.project ?? a.input?.project ?? null) ?? null) : null;
+    // fast path: the very records the last look was worked out from (an agent's input and status records are replaced,
+    // never edited, when it changes), so its signature below would be the same: no signature string per actor per frame
+    const id0 = String(a.id), last = looks.get(id0);
+    if (last && last.input === a.input && last.status === a.status && last.kind === a.kind && last.project === a.project && last.role === a.role
+      && last.parent === a.parent && last.species === a.species && last.lk === a.look && last.seed === a.look?.seed && last.style === style) return last.look;
     const sn = seenOf(a);
     const sig = `${a.kind}|${roleOf(a)}|${parentOf(a)}|${!!a.input?.crown}|${!!a.input?.important}|${a.project ?? ''}|${a.species ?? ''}|${a.look?.seed ?? ''}|${sn}|${styleId(style)}|${a.status}`;
-    const id = String(a.id);
-    const hit = looks.get(id);
-    if (hit && hit.sig === sig) return hit.look;
+    const id = id0, hit = last;
+    const refs = { input: a.input, status: a.status, kind: a.kind, project: a.project, role: a.role, parent: a.parent, species: a.species, lk: a.look, seed: a.look?.seed, style };
+    if (hit && hit.sig === sig) { Object.assign(hit, refs); return hit.look; }
     let look = null;
     try { look = actors.lookOf(viewOf(a, sn), style, ctx); }
     catch (e) {
@@ -195,7 +202,7 @@ export function createActorArt({ mod, styleOf = null, store = localStore, folk, 
       return null;
     }
     if (!look || typeof look !== 'object' || !Array.isArray(look.parts)) look = null;
-    looks.delete(id); looks.set(id, { sig, look });
+    looks.delete(id); looks.set(id, { sig, look, ...refs });
     if (looks.size > LOOK_CACHE_MAX) looks.delete(looks.keys().next().value);
     return look;
   }
@@ -233,19 +240,39 @@ export function createActorArt({ mod, styleOf = null, store = localStore, folk, 
     return { img: c2, pivot: { x: Math.round(10 * k), y: Math.round(18 * k) } };   // feet: frame bottom centre
   }
 
+  /** The sheet cell of an actor's frame: column, row, mirrored. */
+  function cellOf(a, look) {
+    if (critterSheets.has(look)) {
+      // strips face right; SW / NW are mirrored
+      return { col: a.anim === 'idle' || a.anim === 'sit' || a.anim === 'sleep' ? 0 : (a.frame | 0) % 2, row: 0, flip: (a.face | 0) === 1 || (a.face | 0) === 2 };
+    }
+    return { col: colOf(a), row: rowOf(a), flip: false };
+  }
+
   function sheetFrame(a, selected) {
     if (!ready) return null;
     const look = lookOf(a, fb, seenOf(a));
     if (!look || !IMG[look]) return null;
-    let col, row, flip = false;
-    if (critterSheets.has(look)) {
-      col = a.anim === 'idle' || a.anim === 'sit' || a.anim === 'sleep' ? 0 : (a.frame | 0) % 2; row = 0;
-      flip = (a.face | 0) === 1 || (a.face | 0) === 2;   // strips face right; SW / NW are mirrored
-    } else { col = colOf(a); row = rowOf(a); }
+    const { col, row, flip } = cellOf(a, look);
     const k = `${look}|${col}|${row}|${flip ? 1 : 0}|${selected ? 1 : 0}`;
     let f = frames.get(k);
     if (!f) { f = sticker(look, col, row, selected, flip); frames.set(k, f); }
     return f;
+  }
+
+  /** The key of the frame frame(a, { selected }) returns (equal keys: the same pixels), without making it; null when
+   *  frame() would return null. */
+  function frameKey(a, { selected = false } = {}) {
+    if (!a) return null;
+    if (doll && !broken) {
+      const look = lookFor(a);
+      if (look) { const k = doll.frameKey(look, a.face | 0, a.anim, a.frame | 0, { selected }); return typeof k === 'number' ? k : 'd|' + k; }
+    }
+    if (!ready) return null;
+    const look = lookOf(a, fb, seenOf(a));
+    if (!look || !IMG[look]) return null;
+    const { col, row, flip } = cellOf(a, look);
+    return `s|${look}|${col}|${row}|${flip ? 1 : 0}|${selected ? 1 : 0}`;
   }
 
   function frame(a, { selected = false } = {}) {
@@ -258,7 +285,7 @@ export function createActorArt({ mod, styleOf = null, store = localStore, folk, 
   }
 
   return {
-    load, frame, lookFor,
+    load, frame, frameKey, lookFor,
     lookOf: a => lookOf(a, fb, seenOf(a)),
     noteSeen: ids => seen.note(ids),
     get ready() { return ready; },

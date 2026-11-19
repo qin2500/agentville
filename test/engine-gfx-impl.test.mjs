@@ -31,13 +31,15 @@ test('begin sizes the canvas to device px and maps world to CSS like worldToCss'
   }
 });
 
-test('translation is integer at integer zoom, exact at fractional zoom', () => {
+test('translation is integer at integer zoom and at Map zoom, exact at other fractional zooms', () => {
   const v = { cssW: 801, cssH: 601, dpr: 1.5 };
   const t = worldToDevice({ x: 1.3, y: 0.7, z: 3 }, v);
   assert.ok(Number.isInteger(t.tx) && Number.isInteger(t.ty));
   assert.equal(t.scale, 4.5);
-  const u = worldToDevice({ x: 1.3, y: 0.7, z: 0.25 }, v);
+  const u = worldToDevice({ x: 1.3, y: 0.7, z: 0.5 }, v);
   assert.ok(!Number.isInteger(u.tx) || !Number.isInteger(u.ty));
+  // Map zoom: the tiles are baked at the device scale, so they blit whole-px (no seams between tiles)
+  for (const z of [0.25, 0.125]) { const m = worldToDevice({ x: 1.3, y: 0.7, z }, v); assert.ok(Number.isInteger(m.tx) && Number.isInteger(m.ty)); }
 });
 
 test('view centre lands on the device centre', () => {

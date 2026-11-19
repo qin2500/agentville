@@ -273,9 +273,15 @@ function stampCore(grid, objects, plan, origin, ctx, rec) {
 
   // 2. buildings: lots and civic landmarks (geometry independent of who lives there)
   const foot = new Uint8Array(W * H), protect = new Uint8Array(W * H);
+  // Optional mod hook hooks.lotVariants(lots, projectKey, { w, h, nest }) -> Map<lotId, 0..63>: how each lot is DRAWN (art only;
+  // footprints and positions never change). A throwing hook or a bad answer keeps hash(id) % 16.
+  let lotVariant = null;
+  try { const m = mod.hooks?.lotVariants?.(plan.lots, proj, { w: W, h: H, nest: plan.nest ?? null }); if (m instanceof Map) lotVariant = m; } catch { lotVariant = null; }
   const building = (id, look, b, extra) => {
     const obj = { id, kind: 'building', model: look, tx: OX + b.x, ty: OY + b.y, w: b.w, h: b.h, z: mod.objects.buildings?.[look]?.z ?? 40, walk: 'block',
       project: proj, styleKey: `${look}|${styleKey}`, variant: hash(id) % 16, ...extra };
+    const lv = extra?.lot != null && id.startsWith('lot:') ? lotVariant?.get(String(extra.lot)) : undefined;
+    if (Number.isInteger(lv) && lv >= 0 && lv < 64) obj.variant = lv;
     if (b.doorX != null) {
       obj.door = { tx: OX + b.x + Math.floor(b.doorX / 16), ty: OY + b.y + b.h, face: 'S' };
       for (const [dx, dy] of [[0, 0], [1, 1], [2, 2]]) { const px = obj.door.tx - OX + dx, py = obj.door.ty - OY + dy; if (inPlan(px, py)) protect[py * W + px] = 1; }

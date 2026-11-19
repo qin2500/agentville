@@ -43,6 +43,21 @@ export function pierTiles(world, venueId) {
   m.set(venueId, set);
   return set;
 }
+const SOLID = new WeakMap();
+/** Every tile a venue's own objects stand on (piers, quay, breakwater, lighthouse, beacon, buoys...): Set of "x,y". A
+ *  boat never crosses one. The breakwater is a walk-floor prop over water, so the grid alone does not show it. */
+export function venueTiles(world, venueId) {
+  let m = SOLID.get(world);
+  if (!m) { m = new Map(); if (world && typeof world === 'object') SOLID.set(world, m); }
+  if (m.has(venueId)) return m.get(venueId);
+  const set = new Set();
+  for (const o of world?.objects?.values?.() ?? []) {
+    if (o?.data?.venue !== venueId) continue;
+    for (let y = o.ty; y < o.ty + (o.h || 1); y++) for (let x = o.tx; x < o.tx + (o.w || 1); x++) set.add(`${x},${y}`);
+  }
+  m.set(venueId, set);
+  return set;
+}
 /** Which side of its pier a berth lies on: -1 west of it, +1 east of it; `deck` = the pier tile beside the ship's middle. */
 export function berthSide(world, venue, b) {
   const mid = b.ty + (SHIP_LEN >> 1), piers = pierTiles(world, venue?.id);
@@ -68,15 +83,25 @@ function edgePoint(world, x, y, dir) {
   if (dir.dy < 0) return { x, y: y0 + 0.5 };
   return { x, y: y0 + h - 0.5 };
 }
-/** Hull centre of a ship moored at berth b. */
-export const mooring = b => ({ x: b.tx + 0.5, y: b.ty + SHIP_LEN / 2 });
+/** Hull length in tiles per class (classic dock-art SHIPS L, 16 px a tile): a brig is longer than its berth. */
+export const HULL_TILES = Object.freeze({ dinghy: 26 / 16, cutter: 46 / 16, brig: 72 / 16 });
+const PIER_BERTH = /^p\d/;
+// parity: har.brig-takes-two-berths
+/** Hull centre of a ship moored at berth b ({ tx, ty, berth?, model? }): the middle of the berth, except a hull longer than
+ *  its berth on a pier (a brig, which venues.js assign gave the berth inside this one too), whose bow sits at the berth's
+ *  sea end and whose stern lies over the inner berth. */
+export function mooring(b) {
+  const len = HULL_TILES[b?.model] ?? 0;
+  const y = len > SHIP_LEN && PIER_BERTH.test(String(b?.berth ?? '')) ? b.ty + SHIP_LEN - len / 2 : b.ty + SHIP_LEN / 2;
+  return { x: b.tx + 0.5, y };
+}
 
 // ---- the ship (token) -------------------------------------------------------------------------------------------------
 function moor(a, ctx) {
   const m = mooring(a);
-  a.warp = m; a.moor = { x: m.x, y: m.y, berth: a.berth, tx: a.tx, ty: a.ty };
+  a.warp = m; a.moor = { x: m.x, y: m.y, berth: a.berth, tx: a.tx, ty: a.ty, model: a.model };
   a.path = undefined; a.state = 'moored'; a.sailing = false; a.anim = 'idle';
-  a.face = a.berthFace ?? 2;
+  a.face = a.berthFace ?? 1;   // along the pier, bow out to sea (venues.js MOOR_FACE)
 }
 
 /** Cast-off times for every departing ship without one, in departure order: CAST_STAGGER s apart, never before `since`. */
@@ -99,10 +124,27 @@ function castOff(a, ctx) {
   const p = here(a);
   // back off sideways (away from the pier, across the sea direction), then straight out to the edge
   const off = dir.dy ? { x: p.x + side * BACK_OFF, y: p.y } : { x: p.x, y: p.y + side * BACK_OFF };
-  const end = edgePoint(ctx.world, off.x, off.y, dir);
   a.depart.locked = true;
   a.state = 'sailing'; a.sailing = true; a.speed = SAIL_SPEED; a.escort = a.escort ?? null;
-  setPath(a, [off.x, off.y, end.x, end.y]);
+  setPath(a, [off.x, off.y, ...seaCourse(ctx.world, v, off, dir)]);
+}
+
+// parity: har.sail-out-through-the-mouth
+/** The course out to sea from `off` (after backing off the berth), as flat x,y pairs: straight out to the map edge when
+ *  that run is open water, else (a breakwater across it) down the fairway to the row just inside the harbour mouth,
+ *  across to the mouth (the venue's `mouth` node), out through it and on to the edge. The straight course is kept
+ *  whenever the way through the mouth is not clear either (never worse than sailing straight). */
+export function seaCourse(world, v, off, dir) {
+  const end = edgePoint(world, off.x, off.y, dir), straight = [end.x, end.y];
+  const m = v?.nodes?.mouth;
+  if (!m || !v?.rect || !world?.grid || clearRun(world, v, off, end)) return straight;
+  const mx = m.tx + 0.5, my = m.ty + 0.5, inside = 2;   // the row (or column) two tiles inside the mouth
+  const turn = dir.dy ? { x: off.x, y: my - dir.dy * inside } : { x: mx - dir.dx * inside, y: off.y };
+  const cross = dir.dy ? { x: mx, y: turn.y } : { x: turn.x, y: my };
+  const out = edgePoint(world, mx, my, dir);
+  const legs = [off, turn, cross, { x: mx, y: my }, out];
+  for (let i = 1; i < legs.length; i++) if (!clearRun(world, v, legs[i - 1], legs[i])) return straight;
+  return [turn.x, turn.y, cross.x, cross.y, mx, my, out.x, out.y];
 }
 
 function initShip(a, ctx) {
@@ -129,7 +171,7 @@ function updateShip(a, dt, ctx) {
     return;
   }
   // moored (or back at its berth after a departure was called off): follow a berth change
-  if (a.state !== 'moored' || !a.moor || a.moor.berth !== a.berth || a.moor.tx !== a.tx || a.moor.ty !== a.ty) moor(a, ctx);
+  if (a.state !== 'moored' || !a.moor || a.moor.berth !== a.berth || a.moor.tx !== a.tx || a.moor.ty !== a.ty || a.moor.model !== a.model) moor(a, ctx);
 }
 
 export const ship = { init: initShip, update: updateShip };
@@ -137,18 +179,18 @@ export default ship;
 
 // ---- harbour life specs -----------------------------------------------------------------------------------------------
 const isWater = (g, x, y) => !g || (g.inBounds(x, y) && g.get('cost', x, y) >= 255 && g.get('occ', x, y) === 0);
-/** A water tile of the venue rect (deterministic draws), clear of piers; null after a few misses. */
+/** A water tile of the venue rect (deterministic draws), clear of the venue's objects; null after a few misses. */
 function waterIn(world, v, draw, avoid = null) {
-  const r = v.rect, g = world?.grid, piers = pierTiles(world, v.id);
+  const r = v.rect, g = world?.grid, piers = venueTiles(world, v.id);
   for (let k = 0; k < 12; k++) {
     const x = r.x + Math.floor(draw(k, 'x') * r.w), y = r.y + Math.floor(draw(k, 'y') * r.h);
     if (isWater(g, x, y) && !piers.has(`${x},${y}`) && !(avoid && avoid(x, y))) return { x: x + 0.5, y: y + 0.5 };
   }
   return null;
 }
-/** Is every tile a straight run a->b enters open water off the piers? */
+/** Is every tile a straight run a->b enters open water, off the venue's objects (piers, breakwater, buoys...)? */
 function clearRun(world, v, a, b) {
-  const g = world?.grid, piers = pierTiles(world, v.id);
+  const g = world?.grid, piers = venueTiles(world, v.id);
   const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.25));
   for (let i = 1; i <= n; i++) {
     const x = Math.floor(a.x + (b.x - a.x) * i / n), y = Math.floor(a.y + (b.y - a.y) * i / n);

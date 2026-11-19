@@ -66,7 +66,20 @@ export function classicToggleHtml(store) {
   const classic = storedEngine(store) === 1;
   return `<details class="settings-advanced"><summary>Advanced</summary>
         <label><input type="checkbox" data-set="engine"${classic ? ' checked' : ''}>Use classic village (old engine)</label>
-        <p class="helper">The old village. It will be removed in a later version.</p></details>`;
+        <p class="helper">The old village. It will be removed in a later version.</p>
+        <label>Most homes in one city <input type="number" min="0" max="500" step="1" data-set="citycap" value="${cityCapValue(store)}" style="width:4.5em"></label>
+        <p class="helper">Past this, the homes of agents nobody has touched for 14 days retire from the village, oldest first, a few at a time; the lot becomes a garden until someone new moves in. Live, waiting, Important and PR-carrying agents always keep theirs. Your sessions are never touched. 0 = no limit. New village only.</p></details>`;
+}
+/** City cap setting (engine/world/prune.js reads it every poll): unset = the default; 0 = no cap. */
+// kept in step with engine/world/prune.js CITY_CAP_KEY / DEFAULT_CITY_CAP (classic never imports the engine; a test checks)
+export const CITY_CAP_KEY = 'va.cityCap', CITY_CAP_DEFAULT = 40;
+export function cityCapValue(store) {
+  const n = Math.floor(Number(store.get(CITY_CAP_KEY, CITY_CAP_DEFAULT)));
+  return Number.isFinite(n) && n >= 0 ? n : CITY_CAP_DEFAULT;
+}
+export function applyCityCap(value, store) {
+  const n = Math.floor(Number(value));
+  if (Number.isFinite(n) && n >= 0 && n <= 500) store.set(CITY_CAP_KEY, n);
 }
 /** Persist the choice (1 | 2) and reload without ?engine. */
 export function applyEngine(value, store, reload = engineReload) {
