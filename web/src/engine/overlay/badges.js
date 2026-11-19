@@ -2,7 +2,7 @@
 // only drawing is drawBadges(ctx2d, ...) in screen (device) space, so badges stay crisp at max(2, zoom) css px per
 // badge pixel whatever the camera zoom.
 //
-//   badgeKind(agent) -> 'need'|'error'|'click'|'build'|'wait'|null
+//   badgeKind(agent) -> 'note'|'need'|'error'|'click'|'build'|'wait'|null
 //   layoutBadges(hits, byId, { zoom, bubbles, keep:Set, frame }) -> [{ id, kind, l, t, r, b, f }]   css px
 //   drawBadges(ctx, badges, { dpr, zoom, createCanvas })
 //   badgeSprite(kind, frame, createCanvas) -> canvas   (cached per factory)
@@ -10,6 +10,9 @@
 export const BADGE_W = 19, BADGE_H = 23;   // sprite px: 17x17 disc + 2 for the shadow, tail down to 23
 
 const SPECS = {
+  note: { fill: '#3fe0d6', ink: '#0a2a2d', frames: [
+    ['#######', '##...##', '#.#.#.#', '#..#..#', '#.....#', '#######'],
+    ['.......', '#######', '##...##', '#.#.#.#', '#..#..#', '#######']] },
   need: { fill: '#f5a623', ink: '#140f1c', frames: [['...##..', '...##..', '...##..', '...##..', '...##..', '.......', '...##..', '...##..']] },
   error: { fill: '#e5383b', ink: '#ffffff', frames: [['.......', '##...##', '.##.##.', '..###..', '.##.##.', '##...##']] },
   click: { fill: '#9b5de5', ink: '#ffffff', frames: [['#......', '##.....', '###....', '####...', '#####..', '######.', '###....', '#.##...', '...##..']] },
@@ -27,6 +30,7 @@ const val = (a, k) => a?.[k] ?? a?.status?.[k] ?? a?.input?.[k];
 // parity: vil.status-badges
 export function badgeKind(agent) {
   if (!agent) return null;
+  if (val(agent, 'notice')) return 'note';   // a notice the agent pushed trumps every status badge
   const bucket = val(agent, 'bucket') ?? (val(agent, 'state') === 'stalled' ? 'stalled' : null);
   if (bucket === 'stalled') return val(agent, 'severity') === 'error' ? 'error' : val(agent, 'prompt') ? 'click' : 'need';
   if (bucket === 'waiting') return 'wait';

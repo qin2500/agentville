@@ -59,10 +59,11 @@ const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? '⌘' : 'Ctrl+';
 const token = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-export function createTermView(app, { termName, terminal, onClose, onFocus = () => {}, termBlock = () => null }) {
+export function createTermView(app, { termName, terminal, onClose, onFocus = () => {}, termBlock = () => null, plain = null }) {
   const { S } = app;
   const stage = document.getElementById('stage');
   const live = new Map(); // agentId -> session, least recently shown first
+  const names = new Map(); // id -> name of a pane that is not an agent (a plain terminal), until it is live
   let cur = null; // the focused session (the header, Stop, find and the overlays are its)
   let layout = null; // the split tree of agent ids on screen (mux-model.js), kept while the view is closed
   let open = false; // the view is showing
@@ -159,7 +160,8 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     jump.classList.toggle('fresh', !!c?.unseen);
   }
 
-  const agentOf = id => S.byId.get(id) || S.data?.agents?.find(x => x.id === id);
+  // A plain terminal (plain-term.js) shows the agent running in it, if any: its name and state.
+  const agentOf = id => S.byId.get(id) || S.data?.agents?.find(x => x.id === id) || plain?.agentOf(id) || null;
   /** A pane's own bar (shown once there are two or more): its name, and its state unless attached. */
   function paintBar(c) {
     if (!c.bar) return;
@@ -691,7 +693,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
   /** Show the layout with `focusId` focused: start what is new, redraw what was hidden, hide what left. */
   function place(focusId) {
     const ids = Mux.leaves(layout);
-    const placed = ids.map(id => ensure(agentOf(id) || { id, name: live.get(id)?.name || id }));
+    const placed = ids.map(id => ensure(agentOf(id) || { id, name: live.get(id)?.name || names.get(id) || id }));
     for (const c of [...live.values()]) if (!ids.includes(c.id) && !c.pane.hidden) hide(c);
     renderLayout();
     focusPane(live.get(focusId) || live.get(ids[0]));
@@ -762,6 +764,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
    * layout it was left with comes back when it holds this agent; otherwise `a` opens alone.
    */
   function attach(a) {
+    if (!agentOf(a.id) && a.name) names.set(a.id, a.name);
     if (open && cur?.id === a.id && onScreen(cur)) { cur.term.focus(); return; }
     if (!open) {
       open = true;
@@ -788,6 +791,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
   /** × on a pane: it leaves the layout (its session kept live, as Close keeps it); its sibling takes the space. */
   function closePane(c) {
     if (!c || !Mux.has(layout, c.id)) return;
+    plain?.paneClosed(c.id); // a plain terminal's shell ends with its pane
     const rest = Mux.remove(layout, c.id);
     if (!rest) return close();
     // The pane that takes its place gets the focus when the focused one closes.
@@ -816,7 +820,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     cur = null;
   }
 
-  function close() { onClose(); }
+  function close() { plain?.viewClosed(Mux.leaves(layout)); onClose(); }
 
   // ---------- dividers ----------
   mux.addEventListener('pointerdown', e => {
@@ -936,6 +940,66 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     endDrag();
     if (t && id) split(id, t.id, t.side);
   });
+
+  // ---------- drag a pane by its title bar onto another pane: the two swap places ----------
+  // Pointer events (HTML5 drag-and-drop misbehaves over xterm canvases and in Electron). The bar is the
+  // only handle, so selecting and typing in the terminal are untouched. The panes' DOM nodes are moved,
+  // never recreated, so each xterm keeps its scrollback and its PTY connection.
+  let pdrag = null;
+  mux.addEventListener('pointerdown', e => {
+    const bar = e.target.closest?.('.tpbar');
+    if (!bar || e.button !== 0 || e.target.closest('button') || panes() < 2 || pdrag) return;
+    const c = live.get(bar.parentElement.dataset.id);
+    if (!c) return;
+    pdrag = { c, bar, pid: e.pointerId, x0: e.clientX, y0: e.clientY, on: false, over: null, ghost: null };
+    try { bar.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+  });
+  function paneDragEnd(commit) {
+    const d = pdrag;
+    if (!d) return;
+    pdrag = null;
+    try { d.bar.releasePointerCapture(d.pid); } catch { /* already released */ }
+    d.ghost?.remove();
+    drop.hidden = true; drop.removeAttribute('data-side');
+    stage.classList.remove('mux-panedrag');
+    d.c.pane.classList.remove('dragging');
+    if (!d.on) return;
+    if (commit && d.over && d.over !== d.c.id && Mux.has(layout, d.over)) {
+      layout = Mux.swap(layout, d.c.id, d.over);
+      renderLayout(); // moves the existing pane nodes; nothing is recreated
+      focusPane(d.c);
+      fitAll();
+    }
+  }
+  mux.addEventListener('pointermove', e => {
+    const d = pdrag;
+    if (!d || e.pointerId !== d.pid) return;
+    if (!d.on) {
+      if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 5) return;
+      d.on = true;
+      d.ghost = document.createElement('div');
+      d.ghost.className = 'mghost';
+      d.ghost.textContent = d.c.bar.querySelector('.tpname')?.textContent || d.c.id;
+      wrap.append(d.ghost);
+      stage.classList.add('mux-panedrag');
+      d.c.pane.classList.add('dragging');
+    }
+    const w = wrap.getBoundingClientRect();
+    d.ghost.style.transform = `translate(${e.clientX - w.left + 12}px, ${e.clientY - w.top + 12}px)`;
+    const t = dropTarget(e.clientX, e.clientY);
+    d.over = t && t.id !== d.c.id ? t.id : null;
+    if (!d.over) { drop.hidden = true; return; }
+    Object.assign(drop.style, { left: `${t.r.left - w.left}px`, top: `${t.r.top - w.top}px`, width: `${t.r.width}px`, height: `${t.r.height}px` });
+    drop.classList.remove('no');
+    drop.dataset.side = 'swap'; drop.dataset.target = t.id;
+    drop.firstElementChild.textContent = `Swap with ${live.get(t.id)?.bar.querySelector('.tpname')?.textContent || t.id}`;
+    drop.hidden = false;
+  });
+  mux.addEventListener('pointerup', e => { if (pdrag && e.pointerId === pdrag.pid) paneDragEnd(e.button === 0 && inside(e)); });
+  mux.addEventListener('pointercancel', () => paneDragEnd(false));
+  /** A drop outside the grid cancels. */
+  const inside = e => { const r = mux.getBoundingClientRect(); return e.clientX >= r.left && e.clientX < r.right && e.clientY >= r.top && e.clientY < r.bottom; };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && pdrag) { e.preventDefault(); e.stopPropagation(); paneDragEnd(false); } }, true);
 
   // A click anywhere in the terminal area that isn't a control gives the keyboard to the terminal.
   stage.addEventListener('mouseup', e => {

@@ -75,6 +75,16 @@ export function replace(tree, prev, next) {
   return rec(tree);
 }
 
+/**
+ * Drag-to-rearrange: the panes showing `a` and `b` trade places. The tree's shape and every ratio
+ * stay as they are, so only the two leaves change. Unknown ids or a == b leave the tree as is.
+ */
+export function swap(tree, a, b) {
+  if (!tree || a === b || !has(tree, a) || !has(tree, b)) return tree;
+  const rec = n => (isLeaf(n) ? (n.id === a ? leaf(b) : n.id === b ? leaf(a) : n) : { ...n, a: rec(n.a), b: rec(n.b) });
+  return rec(tree);
+}
+
 /** The split at `path` ('' is the root; 'a'/'b' steps down), or null. */
 export function at(tree, path) {
   let n = tree;

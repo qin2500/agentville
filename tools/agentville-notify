@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs tools/notify.mjs from anywhere (follows symlinks, so it can be linked onto PATH).
+src="$0"
+while [ -L "$src" ]; do
+  dir=$(cd "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+exec node "$(cd "$(dirname "$src")" && pwd)/notify.mjs" "$@"

@@ -11,13 +11,12 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { isLocalRequest } from './local-request.mjs'
 import { defaultDataDir } from './datadir.mjs'
+import { createNotifications, parseNotify, resolveSession } from './notify.mjs'
 import { createWorldPlan, worldPlanRoute } from './world-plan.mjs'
 import { build, dropQuiet, QUIET_REMOVE_MS } from './classify.mjs'
 import { createStore } from './overrides.mjs'
 import { createLoops } from './loops.mjs'
-import { createTasks } from './tasks.mjs'
 import { createHelper } from './helper.mjs'
-import { createTaskNamer } from './task-names.mjs'
 import { ACTIONS, createFleetStore, currentPending, preview, continuable } from './fleet.mjs'
 import { awaitReceipts, deliver, dryRun, inboxProblem, sendingBlocked, wrap } from './inbox.mjs'
 import { actionsBlocked, display, forkPlan, knownProjects, MODELS, EFFORTS, MODES, PROMPT_MAX, NAME_MAX, run as runPlan, startPlan, stopPlan } from './actions.mjs'
@@ -42,6 +41,7 @@ import { createNetwork } from './network.mjs'
 import { detectTerminal, findExecutable, openInTerminal, runAppleScript } from './terminal.mjs'
 import { normalizeLayout, layoutLeaves, ghosttyLayoutLaunch } from './ghostty-layout.mjs'
 import { createTerminals } from './pty.mjs'
+import { createPlainTerms } from './plain-term.mjs'
 import { canRestartSelf, createUpdater, restartSelf } from './update.mjs'
 import * as claude from './claude-code.mjs'
 import * as codex from './codex.mjs'
@@ -86,13 +86,13 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const store = createStore(dataDir)
   const worldPlan = worldPlanRoute(createWorldPlan(dataDir)) // D5: GET/PUT /api/world-plan
   const loops = createLoops(dataDir)
-  const tasks = createTasks(dataDir)
+  const notifications = createNotifications(dataDir)
   const helper = createHelper({ dir: dataDir, claudeHome: claude.home })
-  // transcriptOf (below) maps agent id -> transcript .jsonl path; the namer reads it lazily.
-  const namer = createTaskNamer({ helper, tasks, transcriptFor: (agentId) => transcriptOf.get(agentId) || null })
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
   const terms = createTerminals({ idleMs: termIdleMs, endWaitMs: termEndWaitMs })
   const termActs = []
+  // Plain terminals (plain-term.mjs): a shell or an interactive CLI with no agent; the kind and folder are the page's only say.
+  const plain = createPlainTerms({ findBin: (name) => findExecutable(name, name === 'codex' ? CODEX_DIRS : CLAUDE_DIRS) })
   // A person opens a handful of terminals a minute. The shared e2e server opens many more, so a test
   // run (and only a test run) may raise the cap with AGENTVILLE_TERM_PER_MINUTE.
   const termTesting = process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
@@ -207,6 +207,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const { kept: facts, removed } = dropQuiet(scanned, overrides, now)
     quietIds = removed
     const agents = build(facts, overrides, now, pending)
+    const notices = await notifications.load()
+    await notifications.prune(new Set(agents.map((a) => a.id))).catch(logSafely)
+    for (const a of agents) { const n = Object.hasOwn(notices, a.id) ? notices[a.id] : null; a.notice = n ? { message: n.message, title: n.title, at: n.at, count: n.count } : null }
     const counts = { building: 0, stalled: 0, waiting: 0, resting: 0, errors: 0, prompts: 0, continuable: 0 }
     for (const a of agents) {
       const prev = since.get(a.id)
@@ -254,11 +257,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Which terminal "Open" would use (nothing is opened here); null hides the button.
     const open = { terminal: (await detectTerminal())?.name ?? null }
     const projects = await projectStore.update(agents, now, removed)
-    const taskStore = await tasks.sync(agents, now)
-    // The task-name helper calls Claude: nothing to call while every account is out.
-    if (!usagePause.holding()) try { Promise.resolve(namer.kick()).catch(() => {}) } catch {}
-    const taskList = Object.entries(taskStore.items).map(([id, e]) => ({ id, ...e }))
-    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), tasks: taskList, helper: { enabled: (await helper.status()).enabled } }
+    return { serverTime: now, counts, agents, sources, warnings, fleet, open, projects, dock: dockState, loops: await loops.load(), helper: { enabled: (await helper.status()).enabled } }
   }
 
   function messageProblem(a) {
@@ -370,7 +369,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
    */
   async function popout(id) {
     const running = terms.get(id)
-    const { argv, cwd } = running || await openCommand((await snapshot()).agents.find((a) => a.id === id))
+    const { argv, cwd } = running || plain.get(id) || await openCommand((await snapshot()).agents.find((a) => a.id === id))
     const term = await detectTerminal()
     if (!term) return [501, { error: 'No supported terminal' }] // checked first: the embedded one stays
     if (running && !(await terms.end(id, 'popout'))) {
@@ -400,6 +399,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       const live = terms.get(id)
       if (live) { running.push(id); commands.set(id, { argv: live.argv, cwd: live.cwd }); continue }
       const a = agents.find((x) => x.id === id)
+      const own = plain.get(id)
+      if (own) { commands.set(id, own); continue }
       try {
         commands.set(id, await openCommand(a))
       } catch (err) {
@@ -429,7 +430,32 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         return await serveStatic(req, res, url)
       }
       if (!isLocalRequest(req)) return send(res, 403, { error: 'Local requests only' })
-      if (url.pathname === '/api/agents' && req.method === 'GET') return send(res, 200, { ...(await snapshot()), term: terms.info() })
+      if (url.pathname === '/api/agents' && req.method === 'GET') {
+        const snap = await snapshot()
+        const info = terms.info()
+        // A plain terminal with an agent inside it: that agent counts as "in the built-in terminal" too.
+        const plainList = await plain.status(terms, snap.agents)
+        return send(res, 200, { ...snap, term: { ...info, plain: plainList, running: [...info.running, ...plainList.map((p) => p.agentId).filter(Boolean)] } })
+      }
+      if (url.pathname === '/api/notify' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        let input
+        try { input = parseNotify(await readBody(req)) } catch (err) { return send(res, err.status || 400, { ok: false, error: err.message }) }
+        const agents = (await snapshot()).agents
+        const id = resolveSession(input.session, agents, (x) => forks.get(x)?.sid || null)
+        if (!id) return send(res, 404, { ok: false, error: 'no agent with that session' })
+        if (!notifications.allow(id)) return send(res, 429, { ok: false, error: 'Too many notifications for this agent; wait a minute' })
+        const notice = await notifications.add(id, input)
+        cached = null // the next poll shows it
+        return send(res, 200, { ok: true, id, notice })
+      }
+      if (url.pathname === '/api/notify/clear' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        if (!body || typeof body.id !== 'string' || !body.id || body.id.length > 300) return send(res, 400, { ok: false, error: 'id is required' })
+        if (await notifications.clear(body.id)) cached = null
+        return send(res, 200, { ok: true })
+      }
       if (url.pathname === '/api/world-plan' && await worldPlan(req, res, send)) return
       if (url.pathname === '/api/termlayout/popout' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
@@ -440,6 +466,18 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (termActs.length >= termPerMinute) return send(res, 429, { error: 'Too many terminal requests; wait a minute' })
         termActs.push(now)
         return send(res, ...await popoutLayout(body))
+      }
+      if (url.pathname === '/api/term-plain' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        const now = Date.now()
+        while (termActs.length && now - termActs[0] > 60_000) termActs.shift()
+        if (termActs.length >= termPerMinute) return send(res, 429, { error: 'Too many terminal requests; wait a minute' })
+        termActs.push(now)
+        if (!terms.available()) return send(res, 501, { error: 'Built-in terminal unavailable (node-pty did not load). Run npm install.' })
+        // Only the kind (shell | claude | codex) and a folder from the allowed set are read; the command is ours.
+        const e = await plain.create({ kind: body?.kind, cwd: body?.cwd, projects: knownProjects((await snapshot()).agents) })
+        return send(res, 200, { id: e.id, kind: e.kind, name: e.title, cwd: e.cwd })
       }
       const tm = /^\/api\/term\/([^/]+)(\/popout)?$/.exec(url.pathname)
       if (tm && (req.method === 'POST' || (req.method === 'DELETE' && !tm[2]))) {
@@ -456,6 +494,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (req.method === 'DELETE') {
           const was = !!terms.get(id)
           const ended = await terms.end(id, 'stop')
+          if (ended) plain.forget(id)
           cached = null
           return ended ? send(res, 200, { stopped: was }) : send(res, 504, { error: "The terminal's process did not exit" })
         }
@@ -472,8 +511,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const running = terms.get(id)
         const agent = (await snapshot()).agents.find((a) => a.id === id)
         // An agent already in our PTY is re-attached; otherwise openCommand decides (and refuses).
-        const { argv, cwd } = running || await openCommand(agent)
-        const out = terms.open(id, { argv, cwd, kind: argv[1] === 'attach' ? 'attach' : 'resume', name: agent?.name || running?.name || id, size })
+        const own = plain.get(id) // a plain terminal: its command was fixed when it was created
+        const { argv, cwd } = running || own || await openCommand(agent)
+        const out = terms.open(id, { argv, cwd, kind: own ? 'shell' : argv[1] === 'attach' ? 'attach' : 'resume', name: own?.title || agent?.name || running?.name || id, size })
         cached = null
         return send(res, 200, out)
       }
@@ -500,20 +540,6 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       if (lm && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         const entry = await loops.patch(decodeURIComponent(lm[1]), await readBody(req))
-        cached = null
-        return send(res, 200, entry)
-      }
-      if (url.pathname === '/api/tasks' && req.method === 'POST') {
-        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
-        const body = await readBody(req)
-        const entry = await tasks.addIdea(body?.text)
-        cached = null
-        return send(res, 200, entry)
-      }
-      const tkm = /^\/api\/tasks\/(.+)$/.exec(url.pathname)
-      if (tkm && req.method === 'POST') {
-        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
-        const entry = await tasks.patch(decodeURIComponent(tkm[1]), await readBody(req))
         cached = null
         return send(res, 200, entry)
       }

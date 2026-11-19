@@ -8,6 +8,23 @@ export const isError = a => a.bucket === 'stalled' && a.severity === 'error';
 export const isPrompt = a => a.bucket === 'stalled' && !!a.prompt && !isError(a);
 export const PROMPT_NAME = { permission: 'Permission prompt', question: 'Pick an option', plan: 'Approve the plan', dialog: 'A dialog is open' };
 export const bucketIcon = a => (isError(a) ? 'error' : isPrompt(a) ? 'prompt' : a.bucket);
+// A notice an agent pushed for the user (`a.notice`, see server/notify): a display state ABOVE the bucket
+// (it trumps stalled/error/prompt in the panel and on the villager) that never changes `a.bucket`.
+export const hasNotice = a => !!a?.notice;
+export const noticeLine = n => String(n?.title || n?.message || '').split('\n').find(l => l.trim())?.trim() || 'Notification';
+/** What the row/villager shows: 'notice' above everything, else the real bucket (a.bucket itself is never changed). */
+export const displayState = a => (hasNotice(a) ? 'notice' : a?.bucket ?? a?.state);
+/** Sort rank where a notice sits above stalled (-1); everything else is BUCKET_RANK. */
+export const displayRank = a => (hasNotice(a) ? -1 : BUCKET_RANK[a?.bucket] ?? 4);
+/** Comparator: notice agents first, then the bucket order (stable for equal ranks). */
+export const byDisplayRank = (x, y) => displayRank(x) - displayRank(y);
+/** POST /api/notify/clear for one agent; fetchImpl is injectable. Resolves true on 200, never throws. */
+export async function clearNotice(id, fetchImpl = globalThis.fetch) {
+  try {
+    const res = await fetchImpl('/api/notify/clear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+    return !!res?.ok;
+  } catch { return false; }
+}
 export const BUCKET_NAME = { stalled: 'Stalled', waiting: 'Waiting', building: 'Building', resting: 'Resting' };
 export const ROLE_NAME = { boss: 'Boss', lead: 'Lead', sub: 'Subagent', solo: 'Solo' };
 export const HARNESS_NAME = { 'claude-code': 'Claude Code', codex: 'Codex' };
@@ -28,6 +45,7 @@ const MAPS = {
   solo: ['............', '............', '..xxxxxxxx..', '..x......x..', '..x......x..', '..x......x..', '..x......x..', '..x......x..', '..x......x..', '..xxxxxxxx..', '............', '............'],
   error: ['............', '.xx......xx.', '.xxx....xxx.', '..xxx..xxx..', '...xxxxxx...', '....xxxx....', '....xxxx....', '...xxxxxx...', '..xxx..xxx..', '.xxx....xxx.', '.xx......xx.', '............'],
   prompt: ['x...........', 'xx..........', 'xxx.........', 'xxxx........', 'xxxxx.......', 'xxxxxx......', 'xxxxxxx.....', 'xxxxxxxx....', 'xxxx........', 'xx.xx.......', 'x...xx......', '....xx......'],
+  note: ['............', '............', '.xxxxxxxxxx.', '.xx......xx.', '.x.x....x.x.', '.x..x..x..x.', '.x...xx...x.', '.x........x.', '.x........x.', '.xxxxxxxxxx.', '............', '............'],
   check: ['............', '............', '..........xx', '.........xx.', '........xx..', '.......xx...', 'xx....xx....', '.xx..xx.....', '..xxxx......', '...xx.......', '............', '............'],
 };
 const PATHS = Object.fromEntries(Object.entries(MAPS).map(([k, rows]) => {

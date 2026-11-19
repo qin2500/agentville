@@ -3,7 +3,7 @@
   color-scheme: dark;
   --bg: #0f1115; --surface: #161920; --surface-2: #1d212a; --surface-3: #262b36; --line: #2a2f3a;
   --text: #ecebe7; --text-muted: #a3a7b3; --text-dim: #767b88;
-  --stalled: #f2b84b; --stalled-bg: #2e2410; --error: #ff7262; --error-bg: #3a1a18; --waiting: #8ea6d8; --building: #6cc98a; --resting: #8a8f9c; --prompt: #c39bff; --prompt-bg: #261c38;
+  --stalled: #f2b84b; --stalled-bg: #2e2410; --error: #ff7262; --error-bg: #3a1a18; --waiting: #8ea6d8; --building: #6cc98a; --resting: #8a8f9c; --prompt: #c39bff; --prompt-bg: #261c38; --notice: #3fe0d6; --notice-bg: #0b2e31;
   --focus: #eaf2ff; --accent: #c96442; /* focus/selection: blue-white, never mistaken for amber stalled */
   --radius: 6px; --radius-pill: 999px;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px;
@@ -641,6 +641,13 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
 .tpbar .tpstat { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .tpbar .tpclose { margin-left: auto; width: 20px; height: 20px; font-size: 14px; line-height: 1; }
 .mux.single .tpbar { display: none; }
+.mux:not(.single) .tpbar { cursor: grab; touch-action: none; user-select: none; }
+.mux:not(.single) .tpbar .tpclose { cursor: pointer; }
+.mux-panedrag, .mux-panedrag .tpbar { cursor: grabbing !important; }
+.mux-panedrag .termhost { pointer-events: none; }
+.tpane.dragging { opacity: .6; }
+.mghost { position: absolute; left: 0; top: 0; z-index: 7; pointer-events: none; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: var(--surface-2); color: var(--text); box-shadow: 0 4px 14px rgb(0 0 0 / .35); border: 1px solid var(--focus); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The focused pane: its bar lit, an accent line along its top (Ghostty dims the others; this stays readable). */
 .mux:not(.single) .tpane.focused .tpbar { color: var(--text); background: var(--surface-2); box-shadow: inset 0 2px 0 var(--focus); }
 .mux:not(.single) .tpane:not(.focused) .termhost { opacity: .82; }
@@ -731,6 +738,7 @@ pre.msg, pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.
 .convrow .cm { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* New agent sheet (launch.js). */
 .ghost.newbtn { margin-left: auto; }
+.ghost.newbtn ~ .ghost.newbtn { margin-left: 0; } /* only the first of the + buttons pushes right; the rest sit beside it */
 .naform { display: grid; gap: var(--space-3); }
 .naform label { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); }
 .naform label.check { display: flex; gap: var(--space-2); align-items: center; color: var(--text); }
@@ -879,35 +887,12 @@ body.village-only .main > .village { position: fixed !important; inset: 0 !impor
 @media (prefers-reduced-motion: reduce) { .zenpill { transition: none; } }
 body:has(.app.reduce-motion) .zenpill { transition: none; }
 
-/* Tasks list and unseen dots */
-.udot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent, var(--focus)); display: inline-block; }
-.tk-strip { border-bottom: 1px solid var(--line); padding-bottom: var(--space-1); }
-.tk-row { position: relative; display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 var(--space-3); cursor: pointer; font-size: 12px; border-left: 3px solid transparent; color: var(--text); }
-.tk-row:hover, .tk-row:focus-within { background: var(--surface-2); }
-.tk-row.cur { background: var(--surface-3); border-left-color: var(--agent-color, var(--focus)); }
-.tk-row.idea .tk-t { font-style: italic; color: var(--text-muted); }
-.tk-row.gone .tk-t { text-decoration: line-through; opacity: .6; }
-.tk-row.done .tk-t { color: var(--text-dim); text-decoration: line-through; }
-.tk-chk { flex: none; box-sizing: border-box; width: 13px; height: 13px; padding: 0; border: 1.5px solid var(--text-dim); border-radius: 3px; background: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; color: var(--bg); }
-.tk-chk:hover { border-color: var(--building); background: var(--surface-3); }
-.tk-chk.on { background: var(--text-dim); border-color: var(--text-dim); cursor: default; }
-.tk-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tk-st { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
-.tk-st.tone-needs { color: var(--prompt); }
-.tk-st.tone-error { color: var(--error); }
-.tk-st.tone-working, .tk-st.tone-finished { color: var(--building); }
-.tk-st.tone-merged { color: var(--waiting); }
-.tk-acts { display: none; flex: none; gap: 2px; }
-.tk-row:hover .tk-acts, .tk-row:focus-within .tk-acts { display: inline-flex; }
-.tk-b { font: inherit; font-size: 11px; line-height: 1; padding: 2px 4px; border-radius: var(--radius); background: none; color: var(--text-muted); border: 0; cursor: pointer; }
-.tk-b:hover { background: var(--surface-3); color: var(--text); }
-.tk-re { text-decoration: underline; }
-.tk-in { flex: 1; min-width: 0; font-size: 12px; padding: 1px 4px; background: var(--bg); border: 1px solid var(--focus); border-radius: var(--radius); color: var(--text); }
-.tk-add { display: flex; padding: 2px var(--space-3); }
-.tk-head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 6px; width: 100%; cursor: pointer; }
-.tk-head:focus-visible { outline: 1px solid var(--focus); }
-.tk-car { width: 10px; color: var(--text-muted); }
-.tk-sum { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tk-more, .tk-addb, .tk-donehead { display: block; margin: 0 var(--space-3); padding: 2px 0; font-size: 11px; text-decoration: none; }
-.tk-addb:hover, .tk-donehead:hover { color: var(--text); }
-@media (hover: none) { .tk-acts { display: inline-flex; } }
+/* A notice the agent pushed for you: teal letter, above every status (never red, amber, purple, blue or green). */
+.row.has-notice, .row.has-notice[aria-current="true"] { background: var(--notice-bg); border-left-color: var(--notice); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--notice) 55%, transparent); }
+.row.has-notice .l2, .row.has-notice .l2 svg, .row.read-notice .l2 svg { color: var(--notice); }
+.row.has-notice .l2 { font-weight: 600; }
+.row.has-color.has-notice { background: linear-gradient(to right, var(--notice-bg) 35%, transparent 55%), var(--notice-bg); }
+.card .row.has-notice { border-left-color: var(--notice); }
+.row .nbody { grid-column: 2 / 4; margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-left: 2px solid var(--notice); background: var(--notice-bg); color: var(--text); font-size: 12px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
+@media (prefers-reduced-motion: no-preference) { .row.has-notice .l2 svg { animation: notice-nudge 2.4s ease-in-out infinite; } }
+@keyframes notice-nudge { 0%, 80%, 100% { transform: translateY(0); } 90% { transform: translateY(-2px); } }

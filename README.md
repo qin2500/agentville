@@ -338,6 +338,23 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
   On that network quarantine accounts are never used, and Agentville moves off one straight away.
   Anywhere else they're preferred when they have room. Being offline never counts as leaving.
 
+## Notifications from agents
+
+An agent can push a note into Agentville, for example "done with X". Its row in the left panel
+then shows in a notification colour that beats every other status (including stalled), and the
+note goes away when you open that agent.
+
+- API: `POST /api/notify` with `{ "session": "<agent id, Claude Code session id or Codex thread id>", "message": "1-500 chars", "title"?: "up to 80 chars" }`
+  returns `{ ok: true, id, notice }` (404 if no agent matches, 429 past 30 a minute per agent).
+  `POST /api/notify/clear` with `{ "id": "<agent id>" }` clears it. Each agent in `GET /api/agents`
+  has `notice: { message, title, at, count } | null`. Stored in `notifications.json` in the data folder.
+- Local only: like every POST, the request needs an `Origin` matching the server (the CLI sets it).
+- CLI: `node tools/notify.mjs "message" [--title "t"] [--session <id>] [--port 5275]`. Without
+  `--session` it uses `CLAUDE_CODE_SESSION_ID`, then `CODEX_THREAD_ID`. `tools/agentville-notify`
+  is a shell wrapper that works from anywhere (link it onto your PATH if you like).
+- Example instruction for an agent: "When you finish this, run
+  `node /path/to/agentville/tools/notify.mjs "done with X" --title "X"` so I get a notification."
+
 ## Acting on one agent
 
 Everything here starts in an agent's menu (or, for a new agent, the **+ New agent** button in

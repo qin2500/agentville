@@ -83,6 +83,7 @@ export function createLaunch(app) {
         <label class="check"><input type="checkbox" name="worktree" ${f.worktree ? 'checked' : ''}><span>Work in a new git worktree (<code>--worktree</code>)</span></label>
       </form>
       <footer><p class="err" id="na-err" role="alert" ${L.err ? '' : 'hidden'}>${esc(L.err)}</p><span class="spacer"></span>
+        <button class="ghost" type="button" data-na="plain" data-kind="shell" title="Open a plain terminal in this project">Terminal here</button><button class="ghost" type="button" data-na="plain" data-kind="claude" title="Start an interactive Claude Code session in this project, no prompt">Claude here</button>
         <button class="ghost" type="button" data-na="close">Cancel</button><button class="primary" type="button" data-na="review">Review…</button></footer>${live}`;
   }
   const post = async (url, body) => {
@@ -133,6 +134,7 @@ export function createLaunch(app) {
     if (!t) return;
     switch (t.dataset.na) {
       case 'close': return sheet.close();
+      case 'plain': read(); sheet.close(); return app.openPlain(t.dataset.kind, L.form.cwd);
       case 'review': return review();
       case 'back': L.view = 'form'; L.err = ''; render(); return sheet.querySelector('[name="prompt"]')?.focus();
       case 'start': return start();
