@@ -102,33 +102,47 @@ export function createAccount(app, { open: openAgent, termName }) {
   setInterval(() => { if (!document.hidden && pop.hidden) loadList().then(() => loadUsage(false, true)); }, 120000);
 
   // ---------- menu (in #pop-account, opened and closed by main.js) ----------
-  function bar(name, w) {
-    if (!w) return `<div class="ubar"><span class="ubar-k">${name}</span><span class="ubar-v">No data</span></div>`;
-    if (w.none) return `<div class="ubar"><span class="ubar-k">${name}</span><span class="ubar-v">No limit</span></div>`;
+  function bar(name, short, w) {
+    if (!w) return `<span class="ubar um" title="${name}: no data"><span class="um-k">${short}</span><span class="um-v">–</span></span>`;
+    if (w.none) return `<span class="ubar um" title="${name}: no limit"><span class="um-k">${short}</span><span class="um-v">no limit</span></span>`;
     const used = Math.round(w.used), level = used >= 90 ? 'hi' : used >= 70 ? 'mid' : 'lo';
     const resets = w.resetsAt ? `resets in ${until(w.resetsAt)}` : '';
-    return `<div class="ubar ${level}"><span class="ubar-k">${name}</span>
-      <span class="ubar-track" role="meter" aria-label="${name} usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}" aria-valuetext="${used}% used${resets ? `, ${resets}` : ''}"><i style="width:${used}%"></i></span>
-      <span class="ubar-v num">${used}%${resets ? ` · ${resets}` : ''}</span></div>`;
+    const tip = `${name}: ${used}% used${resets ? `, ${resets}` : ''}`;
+    return `<span class="ubar um ${level}" title="${esc(tip)}"><span class="um-k">${short}</span>
+      <span class="um-t" role="meter" aria-label="${name} usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}" aria-valuetext="${esc(`${used}% used${resets ? `, ${resets}` : ''}`)}"><i style="width:${used}%"></i></span>
+      <span class="um-v num">${used}%</span></span>`;
   }
   const ago = at => { const m = Math.max(0, Math.round((Date.now() - at) / 60e3)); return m < 1 ? 'just now' : `${m} min ago`; };
+  /** Extra usage groups the server may send (e.g. "Claude and GPT models"): shown only in the row's tooltip. */
+  function extraTip(u) {
+    const ex = Array.isArray(u?.extra) ? u.extra : [];
+    return ex.map(g => {
+      const w = g.window || g, name = g.name || g.label || g.id || 'Other';
+      return w && !w.none && Number.isFinite(Number(w.used)) ? `${name}: ${Math.round(w.used)}% used${w.resetsAt ? `, resets in ${until(w.resetsAt)}` : ''}` : '';
+    }).filter(Boolean).join('\n');
+  }
   function usageHTML(id) {
     const u = A.usage.get(id);
-    if (!u) return `<p class="acct-note">${A.usageBusy ? 'Checking usage…' : 'Usage not checked'}</p>`;
+    if (!u) return `<span class="acct-note">${A.usageBusy ? 'Checking usage…' : 'Usage not checked'}</span>`;
     if (u.error) {
       const a = accountOf(id);
-      const again = isLoginExpired(u) && a ? `<button class="ghost" type="button" ${k('relogin', id)} ${A.working || A.view === 'busy' || A.list?.adding ? 'disabled' : ''} aria-label="Sign in again as ${esc(a.email || a.label)}">Sign in again</button>` : '';
-      return `<p class="acct-note bad">${esc(u.error)}</p>${again}`;
+      const again = isLoginExpired(u) && a ? `<button class="linkbtn" type="button" ${k('relogin', id)} ${A.working || A.view === 'busy' || A.list?.adding ? 'disabled' : ''} aria-label="Sign in again as ${esc(a.email || a.label)}">Sign in again</button>` : '';
+      const msg = String(u.error), short = msg.length > 60 ? `${msg.slice(0, 57)}…` : msg;
+      return `<span class="acct-err" title="${esc(msg)}">${esc(short)}</span>${again}`;
     }
-    const stale = u.stale ? `<p class="acct-note">As of ${esc(ago(u.asOf))} · ${esc(u.note || 'not refreshed')}</p>` : '';
-    return bar('5-hour', u.fiveHour) + bar('Weekly', u.weekly) + stale;
+    const stale = u.stale ? `<span class="acct-note" title="${esc(u.note || 'not refreshed')}">as of ${esc(ago(u.asOf))}</span>` : '';
+    return bar('5-hour', '5h', u.fiveHour) + bar('Weekly', 'wk', u.weekly) + stale;
   }
   const k = (act, id = '') => `data-am="${act}" data-id="${esc(id)}" data-key="${act}:${esc(id)}"`;
-  function rowHTML({ id, name, sub, active, actions, usage, edit, quarantine, lowPriority, menu }) {
-    return `<li class="acct-row${active ? ' on' : ''}" data-row="${esc(id)}"${menu ? ` data-acct-menu tabindex="0" data-key="row:${esc(id)}" aria-label="${esc(name)}: press the context menu key or Shift+F10 for actions"` : ''}>
-      <div class="acct-main"><b>${esc(name)}</b>${active ? '<span class="acct-badge">Active</span>' : ''}${quarantine ? '<span class="acct-badge q" title="Never used on the work Wi-Fi; preferred everywhere else">Quarantine</span>' : ''}${lowPriority ? `<span class="acct-badge lp" title="${esc(LOW_PRIORITY_TIP)}">Low priority</span>` : ''}${sub ? `<span class="acct-sub">${esc(sub)}</span>` : ''}${menu ? `<button class="acct-more" type="button" data-more="${esc(id)}" data-key="more:${esc(id)}" aria-haspopup="menu" aria-label="Actions for ${esc(name)}" title="Rename, quarantine, low priority, remove (or right-click)">⋯</button>` : ''}</div>
-      ${usage ? `<div class="acct-usage" data-usage="${esc(id)}">${usageHTML(id)}</div>` : ''}
-      ${edit || (actions ? `<div class="acct-acts">${actions}</div>` : '')}</li>`;
+  const PILL_Q = 'Never used on the work Wi-Fi; preferred everywhere else';
+  function rowHTML({ id, name, tip, plan, active, switchBtn, actions, usage, edit, quarantine, lowPriority, menu, sub }) {
+    const pills = `${plan ? `<span class="acct-pill">${esc(plan)}</span>` : ''}${lowPriority ? `<span class="acct-pill lp" title="${esc(LOW_PRIORITY_TIP)}">Low priority</span>` : ''}${quarantine ? `<span class="acct-pill q" title="${PILL_Q}">Quarantine</span>` : ''}`;
+    const more = menu ? `<button class="acct-more" type="button" data-more="${esc(id)}" data-key="more:${esc(id)}" aria-haspopup="menu" aria-label="Actions for ${esc(name)}" title="Rename, quarantine, low priority, remove (or right-click)">⋯</button>` : '';
+    const l2 = usage ? `<div class="acct-l2" data-usage="${esc(id)}">${usageHTML(id)}</div>` : sub || actions ? `<div class="acct-l2">${sub ? `<span class="acct-note">${esc(sub)}</span>` : ''}${actions || ''}</div>` : '';
+    const label = menu ? ` data-acct-menu tabindex="0" data-key="row:${esc(id)}" aria-label="${esc(name)}${active ? ' (active)' : ''}: press the context menu key or Shift+F10 for actions"` : '';
+    return `<li class="acct-row${active ? ' on' : ''}${switchBtn ? ' sw' : ''}" data-row="${esc(id)}"${label}>
+      <div class="acct-l1"><span class="acct-dot${active ? ' on' : ''}" role="img" aria-label="${active ? 'Active' : 'Not active'}" title="${active ? 'Active' : 'Not active'}"></span><b class="acct-nm" title="${esc(tip || name)}">${esc(name)}</b>${pills}<span class="acct-ctl">${switchBtn || ''}${more}</span></div>
+      ${l2}${edit || ''}</li>`;
   }
   function editHTML(a) {
     if (A.edit?.id !== a.id) return '';
@@ -140,28 +154,41 @@ export function createAccount(app, { open: openAgent, termName }) {
     return `<div class="acct-edit confirm"><p>Remove ${esc(a.label)}? Agentville forgets its saved login; the account itself isn't affected.</p>
       <button class="primary danger" type="button" ${k('remove-confirm', a.id)}>Remove</button><button class="ghost" type="button" ${k('edit-cancel', a.id)}>Cancel</button></div>`;
   }
+  const SEC_KEY = 'agentville.acct.collapsed';
+  const loadSec = () => { try { return JSON.parse(localStorage.getItem(SEC_KEY)) || {}; } catch { return {}; } };
+  const saveSec = () => { try { localStorage.setItem(SEC_KEY, JSON.stringify(A.sec)); } catch { /* private mode */ } };
+  A.sec = loadSec(); A.footMore = false; A.hoOpen = false;
+  const chev = open => `<svg class="acct-chev${open ? ' open' : ''}" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M3 2l4 3-4 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  /** A provider section: a small header with a chevron, then its rows (omitted while collapsed). */
+  function sectionHTML(id, title, extra, body) {
+    const open = !A.sec[id];
+    return `<div class="acct-sec" data-provider="${id}"><button class="acct-sh" type="button" ${k('toggle-sec', id)} aria-expanded="${open}" aria-label="${esc(title)} accounts, ${open ? 'collapse' : 'expand'}">${chev(open)}<span>${esc(title)}</span>${extra ? `<span class="acct-sh-x">${extra}</span>` : ''}</button>${open ? body : ''}</div>`;
+  }
   function menuHTML() {
     const L = A.list, cur = current(), busy = A.view === 'busy' || !!A.working;
-    const sw = (to, name) => `<button class="ghost" type="button" ${k('switch', to)} ${busy ? 'disabled' : ''} aria-label="Switch to ${esc(name)}">Switch</button>`;
+    const sw = (to, name) => `<button class="acct-sw" type="button" ${k('switch', to)} ${busy ? 'disabled' : ''} aria-label="Switch to ${esc(name)}">Switch</button>`;
     let rows = '';
     if (L) {
-      // The pool only shows while it is set up (or running).
-      if (L.pool.available || cur === 'pool') rows += rowHTML({ id: 'pool', name: 'Pool', sub: 'Shared gateway', active: cur === 'pool', actions: cur !== 'pool' && L.pool.available ? sw('pool', 'the pool') : '' });
+      // The pool only shows while it is set up (or running): one compact row, no meters.
+      if (L.pool.available || cur === 'pool') rows += rowHTML({ id: 'pool', name: 'Pool', sub: 'Shared gateway', active: cur === 'pool', switchBtn: cur !== 'pool' && L.pool.available ? sw('pool', 'the pool') : '' });
       // Claude's stored login when it isn't a saved account yet: switch to it as "personal", or save it.
       if (!L.login.id && (L.login.present || cur === 'pool' || cur === 'personal')) {
         rows += rowHTML({
           id: 'personal', name: 'Claude login', sub: L.login.present ? 'Not saved yet — save it to see its usage' : 'Signed in with claude auth login',
           active: cur === 'personal',
-          actions: (cur === 'pool' ? sw('personal', 'your personal account') : '') + (L.login.present ? `<button class="ghost" type="button" ${k('capture')} ${busy ? 'disabled' : ''}>Save</button>` : ''),
+          switchBtn: cur === 'pool' ? sw('personal', 'your personal account') : '',
+          actions: L.login.present ? `<button class="linkbtn" type="button" ${k('capture')} ${busy ? 'disabled' : ''}>Save</button>` : '',
         });
       }
       const onWork = !!L.network?.current.work;
       for (const a of L.accounts) {
         const plan = PLAN[a.subscriptionType] || a.subscriptionType || '';
         const banned = onWork && a.quarantine;
+        const name = a.email || a.label;
         rows += rowHTML({
-          id: a.id, name: a.label, sub: [a.email !== a.label && a.email, plan].filter(Boolean).join(' · '), active: cur === a.id, usage: true, edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true,
-          actions: (cur === a.id ? '' : banned ? '<span class="acct-note">Not on the work Wi-Fi</span>' : sw(a.id, a.label))
+          id: a.id, name: a.label, tip: a.email && a.email !== a.label ? `${a.label} (${a.email})` : name, plan, active: cur === a.id, usage: true, edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true,
+          switchBtn: cur === a.id || banned ? '' : sw(a.id, a.label),
+          sub: banned ? 'Not on the work Wi-Fi' : '',
         });
       }
     }
@@ -172,7 +199,9 @@ export function createAccount(app, { open: openAgent, termName }) {
     const gemHint = gemOff && !gemOff.available ? esc(!gemOff.why || /not found/i.test(gemOff.why) ? GEMINI_HINT : gemOff.why) : '';
     let gemRows = '';
     for (const a of gem) {
-      gemRows += rowHTML({ id: a.id, name: a.label, sub: a.email && a.email !== a.label ? a.email : '', active: !!(a.signedIn || G.active === a.id), edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true });
+      const gname = a.email && a.email !== a.label ? `${a.label} (${a.email})` : a.label;
+      const gu = A.usage.get(a.id), ex = extraTip(gu), gact = !!(a.signedIn || G.active === a.id);
+      gemRows += rowHTML({ id: a.id, name: a.label, tip: ex ? `${gname}\n${ex}` : gname, active: gact, usage: true, edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true });
     }
     const gemAdding = L?.adding && A.addProvider === 'gemini';
     const gemAdd = gemAdding
@@ -182,9 +211,11 @@ export function createAccount(app, { open: openAgent, termName }) {
           <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="Google account" value="${esc(A.addLabel)}" data-key="add-label">
           <div class="acts"><button class="primary" type="button" ${k('finish')} ${A.working ? 'disabled' : ''}>${A.working === 'finish' ? 'Saving…' : "I've signed in"}</button>
           <button class="ghost" type="button" ${k('add-cancel')} ${A.working ? 'disabled' : ''}>Cancel</button></div></div>`
-      : `<button class="menuitem" type="button" ${k('add-gemini')} ${busy || !L || L?.adding ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening sign-in…' : (gem.length ? 'Sign in to Gemini again…' : 'Add Gemini account…')}</b><span>Opens agy in a terminal. ${GEMINI_SIGNIN} One Google account for now.</span></button>`;
-    const gemSection = G
-      ? `<div class="acct-group" data-provider="gemini"><p class="acct-note"><b>Gemini (Antigravity)</b>${G.exhausted ? ' · out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}</p>${gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>` : `<p class="acct-note">Not signed in to Antigravity yet</p>${gemHint ? `<p class="acct-note">${gemHint}</p>` : ''}`}</div>` : '';
+      : '';
+    const addDis = busy || !L || L?.adding ? 'disabled aria-disabled="true"' : '';
+    const gemBody = gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>`
+      : `<p class="acct-empty">Not signed in · <button class="linkbtn" type="button" ${k('add-gemini')} ${addDis}>Add</button></p>${gemHint ? `<p class="acct-note acct-hint">${gemHint}</p>` : ''}`;
+    const gemSection = G ? sectionHTML('gemini', `Gemini (Antigravity) · ${gem.length}`, G.exhausted ? 'out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : '', gemBody) : '';
     const relogin = A.reloginId ? accountOf(A.reloginId) : null;
     const add = L?.adding && A.addProvider !== 'gemini'
       ? `<div class="acct-add" role="group" aria-labelledby="acct-add-h"><p id="acct-add-h"><b>${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} · step 2 of 2` : 'Add account · step 2 of 2'}</b></p>
@@ -195,19 +226,26 @@ export function createAccount(app, { open: openAgent, termName }) {
           <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. Work" value="${esc(A.addLabel)}" data-key="add-label">`}
           <div class="acts"><button class="primary" type="button" ${k('finish')} ${A.working ? 'disabled' : ''}>${A.working === 'finish' ? 'Saving…' : "I've logged in"}</button>
           <button class="ghost" type="button" ${k('add-cancel')} ${A.working ? 'disabled' : ''}>Cancel</button></div></div>`
-      : `<button class="menuitem" type="button" ${k('add')} ${busy || !L ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening a terminal…' : 'Add account…'}</b><span>Sign in to another Claude account in a terminal. What's running doesn't change.</span></button>`;
+      : '';
+    const claudeBody = rows ? `<ul class="acct-rows" aria-labelledby="acct-menu-h">${rows}</ul>`
+      : `<p class="acct-empty">Not signed in · <button class="linkbtn" type="button" ${k('add')} ${addDis}>Add</button></p>`;
+    const pause = pauseToggleHTML();
+    const foot = `<div class="acct-foot">
+        <button class="ghost sm" type="button" ${k('add')} ${addDis} aria-label="Add account (Claude)" title="Sign in to another Claude account in a terminal. What's running doesn't change.">${A.working === 'add' && A.addProvider !== 'gemini' ? 'Opening…' : '+ Claude'}</button>
+        ${G ? `<button class="ghost sm" type="button" ${k('add-gemini')} ${addDis} aria-label="${gem.length ? 'Sign in to Gemini again' : 'Add Gemini account'}" title="Opens agy in a terminal. ${esc(GEMINI_SIGNIN)} One Google account for now.">${A.working === 'add' && A.addProvider === 'gemini' ? 'Opening…' : '+ Gemini'}</button>` : ''}
+        <button class="ghost sm acct-ovf" type="button" ${k('toggle-more')} aria-expanded="${A.footMore}" aria-label="More account settings" title="More settings">⋯</button></div>
+      ${A.footMore ? `<div class="acct-ovf-panel">${pause || '<p class="acct-note">No more settings available.</p>'}</div>` : ''}`;
     return `<div class="acctmenu">
       <div class="acct-head"><h4 id="acct-menu-h">Accounts</h4><button class="linkbtn" type="button" ${k('refresh')} ${A.usageBusy ? 'disabled aria-busy="true"' : ''} aria-label="Refresh usage">${A.usageBusy ? 'Checking…' : '↻ Refresh'}</button></div>
       ${L?.network ? networkHTML(L.network, busy) : ''}
       ${L?.network?.current.work && accountOf(cur)?.quarantine ? `<p class="acct-warn" role="alert"><b>${esc(nameOf(cur))} is a quarantine account and you're on the work Wi-Fi.</b> No regular account has room to switch to. Switch to one as soon as it frees up, or add one.</p>` : ''}
       ${headroomHTML()}
-      ${L ? `<p class="acct-note" data-provider-h="claude"><b>Claude</b></p><ul class="acct-rows" aria-labelledby="acct-menu-h">${rows}</ul>` : `<p class="helper">${esc(A.listErr || 'Loading…')}</p>`}
+      ${L ? sectionHTML('claude', `Claude · ${L.accounts.length}`, '', claudeBody) : `<p class="helper">${esc(A.listErr || 'Loading…')}</p>`}
       ${A.view === 'busy' ? `<button class="ghost" type="button" ${k('show')}>Switching… show progress</button>` : ''}
       ${gemSection}
-      ${handoffsHTML(A.handoffs, { busy })}
-      ${pauseToggleHTML()}
-      <hr>${add}
-      ${G ? gemAdd : ''}
+      ${handoffsHTML(A.handoffs, { busy, open: A.hoOpen })}
+      ${add}${gemAdding ? gemAdd : ''}
+      ${foot}
       <p class="err" role="alert" ${A.menuErr ? '' : 'hidden'}>${esc(A.menuErr)}</p></div>`;
   }
   // Which network this is, and the one-time "this is the work Wi-Fi" mark (server/network.mjs).
@@ -228,7 +266,7 @@ export function createAccount(app, { open: openAgent, termName }) {
   }
   /** `quiet`: a background update while the menu is open, with no busy state and no announcement. */
   async function loadUsage(fresh = false, quiet = false) {
-    if (!A.list?.accounts.length) return;
+    if (!A.list?.accounts.length && !geminiOf().length) return;
     if (!quiet) { A.usageBusy = true; renderMenu(); }
     try {
       const r = await json(`/api/accounts/usage${fresh ? '?fresh=1' : ''}`);
@@ -285,6 +323,9 @@ export function createAccount(app, { open: openAgent, termName }) {
     const id = t.dataset.id;
     switch (t.dataset.am) {
       case 'refresh': return loadUsage(true);
+      case 'toggle-sec': A.sec[id] = !A.sec[id]; saveSec(); return renderMenu();
+      case 'toggle-more': A.footMore = !A.footMore; return renderMenu();
+      case 'toggle-handoffs': A.hoOpen = !A.hoOpen; return renderMenu();
       case 'switch': app.closePops(); return openSheet(id);
       case 'show': app.closePops(); sheet.showModal(); return focusTitle();
       case 'capture': return act('save', () => send('POST', '/api/accounts/capture', {}), 'Login saved').then(() => loadUsage(false));
@@ -322,6 +363,16 @@ export function createAccount(app, { open: openAgent, termName }) {
       case 'remove-confirm': return act('remove', async () => { await send('DELETE', `/api/accounts/${encodeURIComponent(id)}`); A.edit = null; A.usage.delete(id); }, 'Account removed')
         .then(() => pop.querySelector('[data-am="refresh"]')?.focus());
     }
+  });
+  // A click (or Enter/Space) on a non-active row runs the row's Switch button: same handler, same confirmation.
+  const rowSwitch = e => {
+    const row = e.target.closest?.('.acct-row.sw');
+    if (!row || e.target.closest('button, a, input, textarea, form')) return null;
+    return row.querySelector('.acct-sw:not([disabled])');
+  };
+  pop.addEventListener('click', e => rowSwitch(e)?.click());
+  pop.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.acct-row.sw')) { e.preventDefault(); rowSwitch(e)?.click(); }
   });
   // ---------- the row menu (right-click, ContextMenu key, Shift+F10, or the row's "⋯") ----------
   const focusRow = id => (pop.querySelector(`[data-key="more:${CSS.escape(id)}"]`) || pop.querySelector(`.acct-row[data-row="${CSS.escape(id)}"]`))?.focus();

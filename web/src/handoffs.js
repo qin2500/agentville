@@ -30,17 +30,18 @@ export function handoffRowHTML(h, { busy = false } = {}) {
   const to = h.to ? `${esc(agentName(h.to))}${provName(h.to) ? ` (${esc(provName(h.to))})` : ''}` : '…';
   const link = h.noteUrl ? `<a href="${esc(h.noteUrl)}" target="_blank" rel="noopener">Note</a>` : h.notePath ? `<code title="Handoff note">${esc(h.notePath)}</code>` : '';
   const extra = [h.warning, h.note].filter(Boolean).map(esc).join(' · ');
-  const btns = handoffActions(h).map(b => `<button class="ghost" type="button" data-am="handoff-${b.act}" data-id="${esc(h.id)}" data-key="handoff-${b.act}:${esc(h.id)}" ${busy ? 'disabled' : ''}>${b.label}</button>`).join('');
+  const btns = handoffActions(h).map(b => `<button class="ghost sm" type="button" data-am="handoff-${b.act}" data-id="${esc(h.id)}" data-key="handoff-${b.act}:${esc(h.id)}" ${busy ? 'disabled' : ''}>${b.label}</button>`).join('');
   return `<li class="acct-row handoff" data-handoff="${esc(h.id)}">
-    <div class="acct-main"><b>${from} → ${to}</b><span class="acct-badge">${esc(handoffStateLabel(h.state))}</span></div>
-    ${link || extra ? `<p class="acct-note">${link}${link && extra ? ' · ' : ''}${extra}</p>` : ''}
-    ${btns ? `<div class="acct-acts">${btns}</div>` : ''}</li>`;
+    <div class="acct-l1"><b class="acct-nm" title="${from} → ${to}">${from} → ${to}</b><span class="acct-pill">${esc(handoffStateLabel(h.state))}</span></div>
+    ${link || extra ? `<p class="acct-note acct-l2">${link}${link && extra ? ' · ' : ''}${extra}</p>` : ''}
+    ${btns ? `<div class="acct-l2 acct-acts">${btns}</div>` : ''}</li>`;
 }
 
-/** The section, or '' when there is nothing to show. */
+/** The section, or '' when there is nothing to show. A one-line summary; the rows show once `open` (the list stays in the markup either way). */
 export function handoffsHTML(list, opts = {}) {
   if (!Array.isArray(list) || !list.length) return '';
-  return `<div class="acct-handoffs"><p class="acct-note"><b>Handoffs</b></p><ul class="acct-rows" aria-label="Handoffs">${list.map(h => handoffRowHTML(h, opts)).join('')}</ul></div>`;
+  const open = !!opts.open;
+  return `<div class="acct-handoffs acct-sec"><button class="acct-sh" type="button" data-am="toggle-handoffs" data-id="" data-key="toggle-handoffs:" aria-expanded="${open}" aria-label="Handoffs, ${list.length}, ${open ? 'collapse' : 'expand'}"><svg class="acct-chev${open ? ' open' : ''}" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M3 2l4 3-4 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Handoffs · ${list.length}</span></button><ul class="acct-rows" aria-label="Handoffs"${open ? '' : ' hidden'}>${list.map(h => handoffRowHTML(h, opts)).join('')}</ul></div>`;
 }
 
 /** Fetch the list. A 404 (endpoint not built yet) or a network failure gives []. */
