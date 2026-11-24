@@ -45,7 +45,7 @@ export function createAccount(app, { open: openAgent, termName }) {
   async function json(path, init) {
     const res = await fetch(path, { cache: 'no-store', ...init });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(body.error || `Server returned ${res.status}`), { code: body.code, size: body.size, max: body.max });
+    if (!res.ok) throw Object.assign(new Error(body.message || body.error || `Server returned ${res.status}`), { code: body.code, size: body.size, max: body.max });
     return body;
   }
   const send = (method, path, body) => json(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
@@ -87,10 +87,12 @@ export function createAccount(app, { open: openAgent, termName }) {
     btn.setAttribute('aria-label', `Account: ${name}. Switch account${warn ? `. Warning: ${warn}` : ''}`);
     if (warn) btn.title = warn; else btn.removeAttribute('title');
   }
+  const GEMINI_HINT = 'Gemini CLI not found. Install it with: npm install -g @google/gemini-cli, then try again.';
   async function loadList() {
     try { A.list = await json('/api/accounts'); A.listErr = ''; } catch (e) { A.listErr = `Couldn't load accounts: ${why(e)}`; }
     // An older server, or accounts unavailable here: fall back to the pool/personal profile.
     if (!A.list) A.status = await json('/api/account').catch(() => A.status);
+    A.providers = (await json('/api/providers').catch(() => null))?.providers || A.providers;
     A.handoffs = await loadHandoffs();
     label();
   }
@@ -165,6 +167,8 @@ export function createAccount(app, { open: openAgent, termName }) {
     const info = A.addInfo;
     // Gemini group (after Claude's): only when the server reports the provider.
     const G = L?.byProvider?.gemini, gem = G ? G.accounts || [] : [];
+    const gemOff = A.providers?.find(x => x.id === 'gemini');
+    const gemHint = gemOff && !gemOff.available ? esc(!gemOff.why || /not found/i.test(gemOff.why) ? GEMINI_HINT : gemOff.why) : '';
     let gemRows = '';
     for (const a of gem) {
       gemRows += rowHTML({ id: a.id, name: a.label, sub: a.email && a.email !== a.label ? a.email : '', active: !!(a.signedIn || G.active === a.id), edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true });
@@ -179,7 +183,7 @@ export function createAccount(app, { open: openAgent, termName }) {
           <button class="ghost" type="button" ${k('add-cancel')} ${A.working ? 'disabled' : ''}>Cancel</button></div></div>`
       : `<button class="menuitem" type="button" ${k('add-gemini')} ${busy || !L || L?.adding ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening sign-in…' : 'Add a Gemini account…'}</b><span>Sign in to a Google account for Gemini CLI.</span></button>`;
     const gemSection = G
-      ? `<div class="acct-group" data-provider="gemini"><p class="acct-note"><b>Gemini</b>${G.exhausted ? ' · out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}</p>${gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>` : '<p class="acct-note">No Gemini accounts yet</p>'}</div>` : '';
+      ? `<div class="acct-group" data-provider="gemini"><p class="acct-note"><b>Gemini</b>${G.exhausted ? ' · out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}</p>${gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>` : `<p class="acct-note">No Gemini accounts yet</p>${gemHint ? `<p class="acct-note">${gemHint}</p>` : ''}`}</div>` : '';
     const relogin = A.reloginId ? accountOf(A.reloginId) : null;
     const add = L?.adding && A.addProvider !== 'gemini'
       ? `<div class="acct-add" role="group" aria-labelledby="acct-add-h"><p id="acct-add-h"><b>${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} · step 2 of 2` : 'Add account · step 2 of 2'}</b></p>

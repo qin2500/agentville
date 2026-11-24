@@ -49,6 +49,7 @@ async function readSmall(file) {
     return bytesRead > READ_MAX ? null : buf.subarray(0, bytesRead).toString('utf8')
   } catch { return null } finally { await fh?.close().catch(() => {}) }
 }
+export const GEMINI_MISSING_MESSAGE = 'Gemini CLI not found. Install it with: npm install -g @google/gemini-cli, then try again.'
 const fail = (status, message, extra) => Object.assign(new Error(message), { status }, extra)
 
 /** Stable account id for a Google account: `gemini-` + 16 hex of sha256(lowercased email). */
@@ -268,6 +269,8 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
    * -> `{ command, argv|null, env, home }`. A previous unfinished add is discarded first.
    */
   const addStart = (opts = {}) => exclusive(async () => {
+    // The caller resolved the bin and found nothing (`bin` named but empty): refuse before any pending state exists.
+    if ('bin' in opts && !opts.bin) throw fail(409, GEMINI_MISSING_MESSAGE, { code: 'gemini_missing', body: { error: 'gemini_missing', message: GEMINI_MISSING_MESSAGE } })
     const old = await readJsonFile(pendingFile)
     if (homePath(old?.home) && !opts.force && Number.isFinite(old.at) && now() - old.at >= 0 && now() - old.at < PENDING_FRESH_MS) {
       throw fail(409, 'A Gemini sign-in is already in progress. Finish or cancel it first.', { code: 'add_in_progress' })

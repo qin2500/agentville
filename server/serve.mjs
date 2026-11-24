@@ -793,11 +793,13 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
           const force = body?.force === true && req.headers['x-agentville-ui'] === '1'
           let out
           try { out = typeof p.addStart === 'function' ? await p.addStart({ force }) : await p.accounts.addStart({ bin: await p.bin(), force }) }
-          catch (e) { if (e.status) return send(res, e.status, { error: e.message, ...(typeof e.code === 'string' && { code: e.code }) }); throw e }
+          catch (e) { if (e.body) return send(res, e.status, e.body); if (e.status) return send(res, e.status, { error: e.message, ...(typeof e.code === 'string' && { code: e.code }) }); throw e }
           const { argv, env: _env, home: _home, ...shown } = out || {}
           const term = Array.isArray(argv) && argv.length && await detectTerminal()
           if (!term) return send(res, 200, { ...shown, opened: false, ...(!argv && { error: `${p.label} CLI not found` }) })
           const r = await openInTerminal(term, argv, os.homedir())
+          // The terminal would not open: drop the pending add we just made so the next click starts clean.
+          if (!r.ok) { await p.accounts.addCancel().catch(() => {}); return send(res, 500, { error: r.error || `Couldn't open a terminal for the ${p.label} sign-in` }) }
           return send(res, 200, { ...shown, opened: r.ok, terminal: term.name, ...(!r.ok && { error: r.error }) })
         }
         const accounts = account.accounts
