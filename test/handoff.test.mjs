@@ -453,3 +453,68 @@ test('dismiss: a failed record stays failed and is not retried', async () => {
   assert.equal(w.starts().length, 1)
   assert.equal(h.list()[0].dismissed, true)
 })
+
+// ---- Keystone r1 regressions ----
+
+test('regression: an episode flap never hands off the same agent twice', async () => {
+  const w = world()
+  w.agents.push(job('claude:j1', { limitStop: { at: 1_000_000 - 60_000, kind: 'limit' } }))
+  const h = w.make()
+  await run(h)
+  assert.equal(h.list()[0].state, 'done')
+  // The old job was stopped (live:false) but still carries a fresh limit stop. The episode flaps to a new id.
+  w.t += 60_000
+  w.state.claude.exhausted = { since: w.t, until: null }
+  w.agents.find((a) => a.id === 'claude:j1').limitStop = { at: w.t - 30_000, kind: 'limit' }
+  await run(h); await run(h)
+  assert.equal(h.list().length, 1, 'no second record for the same agent')
+  assert.equal(w.starts().length, 1)
+  // Same if the stop failed and the old agent is still live.
+  w.agents.find((a) => a.id === 'claude:j1').live = true
+  w.t += 60_000
+  w.state.claude.exhausted = { since: w.t, until: null }
+  await run(h)
+  assert.equal(h.list().length, 1)
+  assert.equal(w.starts().length, 1)
+})
+
+test('regression: problem() rejects an agent that was already handed off, even by limit grace', () => {
+  const ctx = { provider: 'claude', since: 1_000_000 }
+  const stopped = { ...job('claude:a'), live: false, limitStop: { at: 1_000_000 - 60_000, kind: 'limit' } }
+  assert.equal(problem(stopped, ctx), '')
+  assert.equal(problem(stopped, { ...ctx, handedOff: true }), 'handed off')
+  assert.equal(problem({ ...stopped, handoff: { state: 'done' } }, ctx), 'handed off')
+  assert.equal(problem({ ...job('claude:a'), handoff: { state: 'stopping' } }, ctx), 'handed off')
+  assert.equal(problem({ ...stopped, handoff: { state: 'undone' } }, ctx), '', 'an undone handoff frees the agent')
+})
+
+test('regression: undo refuses while a later hop from the new agent stands', async () => {
+  const w = world({ maxHops: 2 })
+  w.agents.push(job('claude:j1'))
+  const h = w.make()
+  await run(h)
+  const r1 = h.list()[0]
+  assert.equal(r1.to.agentId, 'gemini:run1')
+  // Gemini runs out too: B (gemini:run1) goes on to Claude as C.
+  w.state = { claude: { usable: true, exhausted: null }, gemini: { usable: false, exhausted: { since: w.t, until: null } } }
+  await run(h)
+  const r2 = h.list().find((r) => r.from.agentId === 'gemini:run1')
+  assert.equal(r2.state, 'done')
+  await assert.rejects(h.undo(r1.id), (e) => e.status === 409 && /undo the later handoff first/.test(e.message) && e.laterId === r2.id)
+  assert.equal(w.calls.filter((c) => c.kind === 'resume').length, 0, 'nothing resumed')
+  await h.undo(r2.id)
+  const u = await h.undo(r1.id)
+  assert.equal(u.state, 'undone')
+})
+
+test('regression: an async settings.get() is awaited (mode off is not read as auto)', async () => {
+  const w = world({ mode: 'off' })
+  w.agents.push(job('claude:j1'))
+  const h = w.make({ settings: { get: async () => w.settings } })
+  await run(h)
+  assert.equal(h.list().length, 0)
+  w.settings.handoff.mode = 'ask'
+  await run(h)
+  assert.equal(h.list()[0].awaiting, 'approval')
+  assert.equal(w.calls.length, 0)
+})

@@ -30,6 +30,8 @@ export const STATES = ['planned', 'waiting_idle', 'noted', 'starting', 'started'
 export const TERMINAL = new Set(['done', 'failed', 'undone', 'cancelled'])
 const PRE_START = new Set(['planned', 'waiting_idle', 'noted'])
 const SUB_KINDS = new Set(['subagent', 'teammate', 'thread'])
+/** Record states that mean the agent was (or is being) handed off: it must not be picked again in any episode. */
+const HANDED_OFF = new Set(['started', 'stopping', 'done'])
 const HARNESS_PROVIDER = { 'claude-code': 'claude', 'gemini-cli': 'gemini', codex: 'codex' }
 
 export const POLL_MS = 3000
@@ -64,14 +66,20 @@ const isSub = (a) => a?.role === 'sub' || SUB_KINDS.has(a?.kind) || String(a?.id
 const err = (message, status) => Object.assign(new Error(message), { status })
 const refOf = (r) => (r && typeof r === 'object' ? r.jobId || r.sessionId || r.runId || null : typeof r === 'string' ? r : null)
 
-/** Why `a` can't be handed off automatically in this episode ('' = it can). Pure. */
-export function problem(a, { provider, since, selfId, providerOf = providerOfAgentLocal } = {}) {
+/**
+ * Why `a` can't be handed off automatically in this episode ('' = it can). Pure.
+ * `handedOff`: true when `a` already has a started/stopping/done record that wasn't undone (any episode); the
+ * classify annotation `a.handoff.state` counts too. Such an agent is never a candidate again, so a stopped job
+ * that was handed off can't come back in through the limit-grace rule.
+ */
+export function problem(a, { provider, since, selfId, providerOf = providerOfAgentLocal, handedOff = false } = {}) {
   if (!a || typeof a.id !== 'string' || !a.id) return 'unknown'
   if (providerOf(a) !== provider) return 'other provider'
   if (isSub(a)) return 'sub-agent'
   if (a.hidden) return 'hidden'
   if (a.self || (selfId && a.id === selfId)) return 'self'
   if (a.neverStarted) return 'never started'
+  if (handedOff || HANDED_OFF.has(a.handoff?.state)) return 'handed off'
   if (a.live) return ''
   const ls = a.limitStop
   if (ls && ls.kind !== 'api' && Number(ls.at) >= Number(since || 0) - LIMIT_GRACE_MS) return ''
@@ -91,8 +99,10 @@ export function orderChildrenFirst(list) {
 
 /**
  * Options:
- * - `dataDir`; `getProvider(id)` -> adapter (§1.2); `settings.get()` -> providers.json shape (§2.3);
- * - `agents()` -> the classified agent list; `providerState()` -> `{ [id]: { usable, why, exhausted: {since, until}|null } }`;
+ * - `dataDir`; `getProvider(id)` -> adapter (§1.2); `settings.get()` -> providers.json shape (§2.3), sync or async;
+ * - `agents()` -> the classified agent list; `providerState()` -> `{ [id]: { usable, why, exhausted: {since, until}|null } }`.
+ *   `providerState` is a read-only status call: pass `providerSwitch.status`, NOT `providerSwitch.tick`. The provider
+ *   switch runs its own tick loop; calling `tick` from here would advance its confirm/clear counters on every poll;
  * - `buildNote(events, changes, meta)` / `notePrompt(note, max, { notePath })` (handoff-note.mjs);
  * - `readChanges(cwd)` (changes.mjs); `launches` (launches.mjs: `record`, `reparent`), optional;
  * - `fallbackTarget` (provider-switch.mjs), `providerOfAgent` (providers/index.mjs), optional;
@@ -138,9 +148,10 @@ export function createHandoffs({
     return run
   }
   const safeLog = (e) => { try { Promise.resolve(log(e)).catch(() => {}) } catch { /* never break the flow */ } }
-  const cfg = () => {
+  /** Settings now. Awaited, so an async `settings.get()` never reads as `{}` (which would mean mode 'auto'). */
+  const cfg = async () => {
     let s = {}
-    try { s = settings?.get?.() || {} } catch { s = {} }
+    try { s = (await settings?.get?.()) || {} } catch { s = {} }
     const h = s.handoff || {}
     return {
       defaultProvider: s.defaultProvider || 'claude', providerOrder: Array.isArray(s.providerOrder) ? s.providerOrder : ['claude'],
@@ -184,6 +195,8 @@ export function createHandoffs({
     await set(rec, { state: 'failed', error: why, attempts: (rec.attempts || 0) + 1, failedAt: now() })
   }
 
+  /** True when `agentId` was handed off (started/stopping/done, not undone) in any episode. */
+  const handedOff = (agentId) => Object.values(db.records).some((r) => r.from.agentId === agentId && HANDED_OFF.has(r.state))
   /** Lineage: the record that created `agentId`, if any. */
   const parentRecordOf = (agentId) => Object.values(db.records)
     .filter((r) => r.to?.agentId === agentId && !['undone', 'cancelled', 'failed'].includes(r.state))
@@ -272,7 +285,7 @@ export function createHandoffs({
       if (PRE_START.has(rec.state)) {
         await stateNow()
         if (recovered(rec)) return cancel(rec, 'source recovered')
-        if (!rec.manual && cfg().mode === 'off') return cancel(rec, 'handoff turned off')
+        if (!rec.manual && (await cfg()).mode === 'off') return cancel(rec, 'handoff turned off')
       }
       if (rec.state === 'planned') { await set(rec, { state: 'waiting_idle', waitSince: now() }); resumed = false; continue }
       if (rec.state === 'waiting_idle') { await waitAndNote(rec); resumed = false; continue }
@@ -336,7 +349,7 @@ export function createHandoffs({
     const st = await stateNow()
     let to = rec.to.provider
     if (!st[to]?.usable) {
-      to = rec.manual && rec.to.fixed ? null : fallbackTarget(rec.from.provider, cfg(), st)
+      to = rec.manual && rec.to.fixed ? null : fallbackTarget(rec.from.provider, await cfg(), st)
       if (!to) return cancel(rec, 'no provider has room')
       rec.to = { ...rec.to, provider: to }
       rec.chain = [...rec.chain.slice(0, -1), to]
@@ -411,7 +424,7 @@ export function createHandoffs({
   // ---- tick: episodes, new candidates, resumes, the one automatic retry ----
   async function tickOnce() {
     const st = await stateNow()
-    const c = cfg()
+    const c = await cfg()
     const t = now()
     // Episodes that ended cancel the records that hadn't started yet (the runners also check this).
     for (const r of Object.values(db.records)) {
@@ -421,7 +434,7 @@ export function createHandoffs({
       const all = await list()
       for (const [p, ep] of Object.entries(db.episodes)) {
         if (!st[p]?.exhausted) continue
-        const cands = orderChildrenFirst(all.filter((a) => !problem(a, { provider: p, since: ep.since, selfId, providerOf: providerOfAgent })))
+        const cands = orderChildrenFirst(all.filter((a) => !problem(a, { provider: p, since: ep.since, selfId, providerOf: providerOfAgent, handedOff: handedOff(a.id) })))
         for (const a of cands) {
           const hid = handoffId(a.id, ep.id)
           if (db.records[hid]) continue
@@ -470,7 +483,7 @@ export function createHandoffs({
     if (a.neverStarted) throw err('this agent never started', 409)
     const provider = providerOfAgent(a)
     const st = await stateNow()
-    const c = cfg()
+    const c = await cfg()
     const target = to || fallbackTarget(provider, c, st)
     if (!target || target === provider || target === 'codex') throw err('no provider to hand this agent to', 409)
     if (!st[target]?.usable) throw err(`${target} has no room or is not available`, 409)
@@ -526,6 +539,12 @@ export function createHandoffs({
     if (active.has(id)) await active.get(id)
     r = need(id)
     if (!['started', 'done'].includes(r.state)) throw err(`handoff is ${r.state}`, 409)
+    // A later hop from the new agent (A->B, then B->C): undoing A->B now would resume A while C still runs.
+    // Cancelled and failed hops never got that far (and can't be undone), so they don't block.
+    const isNew = (id) => Boolean(id) && (id === r.to.agentId || (r.to.ref && (id === r.to.ref || id.endsWith(`:${r.to.ref}`))))
+    const later = Object.values(db.records)
+      .find((x) => x.id !== r.id && isNew(x.from.agentId) && !['undone', 'cancelled', 'failed'].includes(x.state))
+    if (later) throw Object.assign(err(`undo the later handoff first (${later.id}: ${later.from.provider} -> ${later.to.provider}, ${later.state})`, 409), { laterId: later.id })
     const source = adapter(r.from.provider)
     const target = adapter(r.to.provider)
     if (!source?.capabilities?.resume || typeof source.resumePlan !== 'function') throw err(`${source?.label || r.from.provider} agents can't be resumed`, 409)

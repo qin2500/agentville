@@ -15,7 +15,11 @@ export const EXHAUST_CONFIRM_MS = 2 * 60 * 1000
 export const EXHAUST_CONFIRM_TICKS = 2
 export const LIMIT_WINDOW_MS = 10 * 60 * 1000
 export const DEFAULT_MIN_WAIT_MS = 30 * 60 * 1000
+/** Clear ticks in a row before an episode ends, so one bad reading can't end it and start a fresh episode id. */
+export const CLEAR_CONFIRM_TICKS = 2
 const BLOCKED_WHY = 'all accounts low'
+/** outSignal() result when the reading failed: keep the last signal rather than treat it as "not out". */
+const UNKNOWN = Symbol('unknown')
 const NEVER_TARGET = new Set(['codex'])
 
 /**
@@ -69,30 +73,35 @@ export function createProviderSwitch({ settings, providers, samplers = {}, agent
     return { defaultProvider, providerOrder: [defaultProvider, ...order.filter((p) => p !== defaultProvider)], minWaitMs }
   }
 
-  /** The raw "out" signal for one adapter right now: { until } or null. */
+  /** The raw "out" signal for one adapter right now: { until }, null, or UNKNOWN when the reading failed. */
   async function outSignal(adapter, t) {
     if (adapter.capabilities?.accounts) {
       const sampler = samplerOf(adapter.id)
       if (!sampler?.info) return null
       let info
-      try { info = await sampler.info() } catch { return null }
+      try { info = await sampler.info() } catch { return UNKNOWN }
       const b = info?.blocked
       return b && b.why === BLOCKED_WHY ? { until: typeof b.until === 'number' ? b.until : null } : null
     }
     let list
-    try { list = await agents(adapter.id) } catch { list = [] }
+    try { list = await agents(adapter.id) } catch { return UNKNOWN }
     const out = limitStopsOut(list, t)
     return out ? { until: out.until } : null
   }
 
-  function step(id, signal, t, minWaitMs) {
+  function step(id, signal, t, minWaitMs, { force = false } = {}) {
     const prev = track.get(id)
+    if (signal === UNKNOWN) return !!prev?.exhausted // a failed reading changes nothing
     if (!signal) {
-      if (prev?.episode) onEpisode({ type: 'end', provider: id, episode: { ...prev.episode } })
+      if (!prev) return false
+      prev.clear = (prev.clear || 0) + 1
+      if (!force && prev.clear < CLEAR_CONFIRM_TICKS) return !!prev.exhausted // hold the episode until it is clearly over
+      if (prev.episode) onEpisode({ type: 'end', provider: id, episode: { ...prev.episode } })
       track.delete(id)
       return false
     }
     const cur = prev || { since: t, ticks: 0, episode: null }
+    cur.clear = 0
     cur.ticks += 1
     cur.until = signal.until
     if (!cur.episode) {
@@ -106,8 +115,10 @@ export function createProviderSwitch({ settings, providers, samplers = {}, agent
     return cur.exhausted
   }
 
-  /** One pass over every provider. Returns status(). */
-  async function tick() {
+  /** One pass over every provider. Returns status(). Single-flight: a call during a pass joins that pass. */
+  let ticking = null
+  const tick = () => (ticking ??= tickOnce().finally(() => { ticking = null }))
+  async function tickOnce() {
     const t = now()
     let s
     try { s = await settings?.get?.() } catch { s = null }
@@ -118,10 +129,11 @@ export function createProviderSwitch({ settings, providers, samplers = {}, agent
     for (const adapter of list) {
       if (!adapter?.id) continue
       seen.add(adapter.id)
-      const out = step(adapter.id, await outSignal(adapter, t), t, lastSettings.minWaitMs)
-      next[adapter.id] = await usableOf(adapter, out)
+      step(adapter.id, await outSignal(adapter, t), t, lastSettings.minWaitMs)
+      // Unusable as a target while any raw "out" signal stands, confirmed or not.
+      next[adapter.id] = await usableOf(adapter, track.has(adapter.id))
     }
-    for (const id of [...track.keys()]) if (!seen.has(id)) step(id, null, t, 0)
+    for (const id of [...track.keys()]) if (!seen.has(id)) step(id, null, t, 0, { force: true })
     usableState = next
     return status()
   }

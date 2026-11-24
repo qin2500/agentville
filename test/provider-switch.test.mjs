@@ -52,9 +52,70 @@ test('exhaustion needs 2 ticks and EXHAUST_CONFIRM_MS', async () => {
   assert.equal(r.sw.usable('claude'), false)
   assert.deepEqual(r.sw.status().claude.exhausted, { since: 1_000_000, until: null })
   r.box.blocked = null; await r.sw.tick()
+  assert.equal(r.sw.exhausted('claude'), true, 'one clear tick is not enough to end the episode')
+  await r.sw.tick()
   assert.equal(r.sw.exhausted('claude'), false)
   assert.equal(r.sw.episode('claude'), null)
   assert.deepEqual(r.events.map((e) => e.type), ['start', 'end'])
+})
+
+test('regression: an info() error keeps the last signal; a one-tick flap keeps the same episode id', async () => {
+  const r = rig({ blocked: { why: 'all accounts low', until: null } })
+  const sampler = { info: async () => ({ blocked: r.box.blocked }) }
+  let fail = false
+  sampler.info = async () => { if (fail) throw new Error('keychain busy'); return { blocked: r.box.blocked } }
+  const sw = createProviderSwitch({
+    settings: { get: () => S }, providers: () => [{ id: 'claude', capabilities: { accounts: true, start: true, handoffTarget: true }, available: async () => ({ ok: true }) }],
+    samplers: { claude: sampler }, now: r.now, onEpisode: (e) => r.events.push(e),
+  })
+  await sw.tick(); r.adv(EXHAUST_CONFIRM_MS); await sw.tick()
+  assert.equal(sw.exhausted('claude'), true)
+  const id = sw.episode('claude').id
+  fail = true; r.adv(30e3); await sw.tick()
+  assert.equal(sw.exhausted('claude'), true, 'a failed reading is not "not out"')
+  assert.equal(sw.episode('claude').id, id)
+  fail = false; r.box.blocked = null; r.adv(30e3); await sw.tick()
+  assert.equal(sw.episode('claude').id, id, 'one clear tick holds the episode')
+  r.box.blocked = { why: 'all accounts low', until: null }; r.adv(30e3); await sw.tick()
+  assert.equal(sw.episode('claude').id, id, 'out again: same episode, so the same handoff ids')
+  assert.equal(sw.exhausted('claude'), true)
+  assert.deepEqual(r.events.map((e) => e.type), ['start'])
+})
+
+test('regression: a provider with an unconfirmed out signal is not a usable target', async () => {
+  const r = rig({ blocked: null })
+  const sw = createProviderSwitch({
+    settings: { get: () => S },
+    providers: () => [
+      { id: 'claude', capabilities: { accounts: true, start: true, handoffTarget: true }, available: async () => ({ ok: true }) },
+      { id: 'gemini', capabilities: { accounts: true, start: true, handoffTarget: true }, available: async () => ({ ok: true }) },
+    ],
+    samplers: { claude: { info: async () => ({ blocked: { why: 'all accounts low', until: null } }) }, gemini: { info: async () => ({ blocked: { why: 'all accounts low', until: null } }) } },
+    now: r.now,
+  })
+  await sw.tick()
+  assert.equal(sw.exhausted('gemini'), false, 'not confirmed yet')
+  assert.equal(sw.usable('gemini'), false, 'but already unusable')
+  r.adv(EXHAUST_CONFIRM_MS); await sw.tick()
+  assert.equal(sw.exhausted('claude'), true)
+  assert.equal(sw.target('claude'), null)
+})
+
+test('regression: tick() is single-flight', async () => {
+  let calls = 0
+  let release
+  const gate = new Promise((res) => { release = res })
+  const sw = createProviderSwitch({
+    settings: { get: () => S },
+    providers: () => [{ id: 'claude', capabilities: { accounts: true, start: true, handoffTarget: true }, available: async () => ({ ok: true }) }],
+    samplers: { claude: { info: async () => { calls++; await gate; return { blocked: null } } } },
+  })
+  const a = sw.tick(); const b = sw.tick()
+  assert.equal(a, b)
+  release(); await Promise.all([a, b])
+  assert.equal(calls, 1)
+  await sw.tick()
+  assert.equal(calls, 2, 'a new pass after the first one settles')
 })
 
 test('other blocked reasons do not count', async () => {
