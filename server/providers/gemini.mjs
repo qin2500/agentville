@@ -230,10 +230,11 @@ export default {
     const model = pick(body.model, MODELS, 'model')
     const mode = pick(body.permissionMode, MODES, 'permission mode')
     const args = runnerMod?.startArgs ? runnerMod.startArgs({ prompt: body.prompt, model, mode }) : ['-p', body.prompt]
-    const env = body.env && typeof body.env === 'object' ? body.env : undefined
+    // body.env is never forwarded (security review). Only the handoff id the engine sets is kept, as a field.
+    const hid = typeof body.env?.AGENTVILLE_HANDOFF_ID === 'string' && /^[0-9a-f]{16}$/.test(body.env.AGENTVILLE_HANDOFF_ID) ? body.env.AGENTVILLE_HANDOFF_ID : null
     return stamp({ kind: 'start', args, cwd: project.dir, name, project: project.name, prompt: body.prompt, model, mode,
-      ...(env && { env }), ...(typeof body.parentAgentId === 'string' && { parentAgentId: body.parentAgentId }),
-      ...(typeof body.handoffId === 'string' && { handoffId: body.handoffId }) })
+      ...(typeof body.parentAgentId === 'string' && { parentAgentId: body.parentAgentId }),
+      ...(hid && { handoffId: hid }) })
   },
   /** A follow-up turn on a run Agentville started (`-r <sessionId> -p`). */
   resumePlan(agent, { prompt } = {}) {
@@ -261,9 +262,11 @@ export default {
       if (plan.kind === 'start') {
         let env = null
         if (HAS_ACCOUNTS) env = await accountsPart().envFor() // null: no saved account, the CLI's own home
-        const rr = env ? await getRunner(env) : r
+        const port = /^[0-9]{1,5}$/.test(plan.env?.AGENTVILLE_PORT || '') ? plan.env.AGENTVILLE_PORT : null
+        const extra = env || port ? { ...env, ...(port && { AGENTVILLE_PORT: port }) } : null
+        const rr = extra ? await getRunner(extra) : r
         const st = rr.start({ home: env?.GEMINI_CLI_HOME || undefined, cwd: plan.cwd, prompt: plan.prompt, model: plan.model || undefined, mode: plan.mode || undefined, name: plan.name,
-          parentAgentId: plan.parentAgentId || plan.env?.AGENTVILLE_PARENT_ID || null, handoffId: plan.handoffId || plan.env?.AGENTVILLE_HANDOFF_ID || null })
+          parentAgentId: plan.parentAgentId || null, handoffId: plan.handoffId || null })
         return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } }
       }
       if (plan.kind === 'resume') { const st = r.resume(plan.runId, plan.prompt); return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } } }

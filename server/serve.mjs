@@ -62,6 +62,15 @@ const handoffMod = await import('./handoff.mjs').catch((e) => {
 })
 const SCAN_LABEL = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' }
 const SUB_KIND = new Set(['subagent', 'teammate', 'thread'])
+/** A page or API body never sets env, lineage or handoff fields: only the server does (handoffs, agent starts). */
+const fromPage = (body) => {
+  if (!body || typeof body !== 'object') return body
+  const { env: _e, parentAgentId: _p, handoffId: _h, args: _a, bin: _b, home: _ho, account: _ac, accountEnv: _ae, ...rest } = body
+  return rest
+}
+/** Hard ceilings for agent starts, whatever providers.json says (security review). */
+export const AGENT_STARTS_MAX_PER_HOUR = 60
+export const AGENT_STARTS_MAX_DEPTH = 3
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.join(ROOT, 'web', 'dist')
@@ -196,7 +205,13 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     agents: async (id) => (await agentsOf(id)).map((a) => (a.limitStop && !a.live ? { ...a, live: true } : a)),
     onEpisode: (ev) => { logFleet({ at: Date.now(), action: 'provider-episode', type: ev.type, provider: ev.provider, episode: ev.episode?.id }) } })
   const handoffs = handoffMod?.createHandoffs ? handoffMod.createHandoffs({
-    dataDir, getProvider: handoffRefs.wrap(getProvider), settings: providerSettings,
+    dataDir, getProvider: handoffRefs.wrap((id) => {
+      const a = getProvider(id)
+      if (!a) return a
+      const w = Object.create(a)
+      w.run = (plan, ...rest) => a.run(withPort(plan), ...rest)
+      return w
+    }), settings: providerSettings,
     agents: () => agentsOf(null), providerState: () => providerSwitch.status(), buildNote, notePrompt, readChanges,
     launches, fallbackTarget, providerOfAgent, selfId: selfId(),
     projects: async () => knownProjects((await snapshot()).agents),
@@ -232,6 +247,11 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const a = getProvider(provider || 'claude')
     if (!a) throw Object.assign(new Error(`Unknown provider ${provider}`), { status: 400 })
     return a
+  }
+  /** Every agent Agentville starts gets AGENTVILLE_PORT (§5), so it can call back. */
+  const withPort = (plan) => {
+    const port = server.address()?.port
+    return plan?.kind === 'start' && port ? { ...plan, env: { ...plan.env, AGENTVILLE_PORT: String(port) } } : plan
   }
   /** Why starting/stopping on this provider can't run here ('' = it can). Claude keeps actionsBlocked()'s exact text. */
   async function blockedFor(provider) {
@@ -946,13 +966,24 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       if (url.pathname === '/api/providers/settings' && req.method === 'PUT') {
         json()
         const body = await readBody(req)
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Body must be a JSON object' })
+        const starts = body.agentStarts && typeof body.agentStarts === 'object' ? { ...body.agentStarts } : null
+        // Agents may call this API too: only the page (X-Agentville-UI: 1) may turn agent starts on.
+        if (starts?.enabled === true && !providerSettings.get().agentStarts?.enabled && req.headers['x-agentville-ui'] !== '1') {
+          return send(res, 403, { error: 'Turn agent starts on from Settings in Agentville' })
+        }
+        if (starts) {
+          if (Number.isFinite(Number(starts.perHour))) starts.perHour = Math.min(Number(starts.perHour), AGENT_STARTS_MAX_PER_HOUR)
+          if (Number.isFinite(Number(starts.maxDepth))) starts.maxDepth = Math.min(Number(starts.maxDepth), AGENT_STARTS_MAX_DEPTH)
+        }
         let next
-        try { next = providerSettings.set(body) } catch (e) { return send(res, e.status || 400, { error: e.message }) }
+        try { next = providerSettings.set(starts ? { ...body, agentStarts: starts } : body) } catch (e) { return send(res, e.status || 400, { error: e.message }) }
         return send(res, 200, { ok: true, settings: next })
       }
       // An agent starts an agent (§5). Same guard as /api/notify: local only (above) and a JSON body.
       if (url.pathname === '/api/agents/start' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        if (typeof req.headers.origin !== 'string') return send(res, 403, { ok: false, error: 'Origin required' }) // isLocalRequest checked it matches
         const parsed = parseAgentStart(await readBody(req))
         if (!parsed.ok) return send(res, parsed.status || 400, { ok: false, error: parsed.error })
         const input = parsed.value
@@ -1029,11 +1060,11 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const ad = body?.kind === 'start' || body?.kind === 'stop' ? adapterOf(provider) : null
         if (body?.kind === 'start' && !ad.capabilities?.start) return send(res, 409, { error: `${ad.label} agents can't be started from here` })
         const plan = provider === 'claude' || body?.kind === 'fork'
-          ? (body?.kind === 'start' ? startPlan(body, knownProjects(snap.agents))
+          ? (body?.kind === 'start' ? startPlan(fromPage(body), knownProjects(snap.agents))
             : body?.kind === 'stop' ? stopPlan(a)
             : body?.kind === 'fork' ? forkPlan(a, a && forks.get(a.id), body.name)
             : null)
-          : body?.kind === 'start' ? ad.startPlan(body, knownProjects(snap.agents))
+          : body?.kind === 'start' ? ad.startPlan(fromPage(body), knownProjects(snap.agents))
           : body?.kind === 'stop' ? ad.stopPlan(withPrivate(a))
           : null
         if (!plan) return send(res, 400, { error: 'Unknown action' })
@@ -1050,7 +1081,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (blocked) return send(res, 501, { error: blocked })
         const plan = redeem(body?.confirm, ['start', 'stop', 'fork'])
         limit(runs, 10, 'starts and stops')
-        const r = provider === 'claude' ? await runPlan(plan) : await adapterOf(provider).run(plan)
+        const r = provider === 'claude' ? await runPlan(withPort(plan)) : await adapterOf(provider).run(withPort(plan))
         const ref = r.ref?.runId || r.jobId || r.ref?.jobId || null
         if (r.ok && plan.kind === 'start' && ref) { try { launches.record({ ref, parentAgentId: null, provider, via: 'ui' }) } catch (e) { logSafely(e) } }
         // Ids and outcomes only: never the prompt.
