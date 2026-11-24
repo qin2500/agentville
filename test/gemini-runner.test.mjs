@@ -3,17 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { createRunner, parseEvents, startArgs, runEnv, isQuotaText } from '../server/gemini/runner.mjs'
+import { createRunner, parseEvents, startArgs, runEnv, isQuotaText, scrub } from '../server/gemini/runner.mjs'
 
-// A fake `gemini`: records argv + env to $FAKE_LOG, then behaves per $FAKE_MODE.
+// A fake `gemini`: records argv + env to $AGENTVILLE_FAKE_LOG, then behaves per $AGENTVILLE_FAKE_MODE.
 function fakeBin(dir) {
   const f = path.join(dir, 'gemini')
   fs.writeFileSync(f, `#!/usr/bin/env node
 const fs = require('fs')
 const a = process.argv.slice(2)
-fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ a, home: process.env.GEMINI_CLI_HOME, norelaunch: process.env.GEMINI_CLI_NO_RELAUNCH, agent: process.env.AGENTVILLE_AGENT_ID, cwd: process.cwd() }) + '\\n')
-const sid = a[a.indexOf('--session-id') + 1] || a[a.indexOf('-r') + 1]
-const mode = process.env.FAKE_MODE || 'ok'
+fs.appendFileSync(process.env.AGENTVILLE_FAKE_LOG, JSON.stringify({ a, home: process.env.GEMINI_CLI_HOME, norelaunch: process.env.GEMINI_CLI_NO_RELAUNCH, agent: process.env.AGENTVILLE_AGENT_ID, handoff: process.env.AGENTVILLE_HANDOFF_ID, port: process.env.AGENTVILLE_PORT, secret: process.env.GEMINI_API_KEY, goog: process.env.GOOGLE_APPLICATION_CREDENTIALS, enc: process.env.GEMINI_FORCE_ENCRYPTED_FILE_STORAGE, cwd: process.cwd() }) + '\\n')
+const flag = (n) => (a.find((x) => x.startsWith(n + '=')) || '').slice(n.length + 1)
+const sid = flag('--session-id') || flag('--resume')
+const mode = process.env.AGENTVILLE_FAKE_MODE || 'ok'
 const out = (o) => console.log(JSON.stringify(o))
 out({ type: 'init', session_id: sid, model: 'gemini-2.5-flash' })
 if (mode === 'hang') setInterval(() => {}, 1000)
@@ -33,16 +34,16 @@ function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gemrun-'))
   const log = path.join(dir, 'calls.log')
   const bin = fakeBin(dir)
-  const env = { ...process.env, FAKE_LOG: log }
+  const env = { ...process.env, AGENTVILLE_FAKE_LOG: log }
   const runner = createRunner({ dataDir: dir, bin, env, killGraceMs: 300 })
-  const calls = () => fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim() : '').split('\n').filter(Boolean).map((l) => JSON.parse(l))
   return { dir, runner, env, calls, log }
 }
 
 test('startArgs builds the documented command, resume swaps the flag', () => {
-  assert.deepEqual(startArgs({ prompt: 'x', model: 'm', mode: 'yolo', sessionId: 'S' }), ['-p', 'x', '-o', 'stream-json', '--skip-trust', '--approval-mode', 'yolo', '-m', 'm', '--session-id', 'S'])
+  assert.deepEqual(startArgs({ prompt: 'x', model: 'm', mode: 'yolo', sessionId: 'S', allowYolo: true }), ['--prompt=x', '-o', 'stream-json', '--skip-trust', '--approval-mode=yolo', '--model=m', '--session-id=S'])
   const r = startArgs({ prompt: 'y', mode: 'bogus', sessionId: 'S', resume: 'R' })
-  assert.deepEqual(r, ['-p', 'y', '-o', 'stream-json', '--skip-trust', '--approval-mode', 'default', '-r', 'R'])
+  assert.deepEqual(r, ['--prompt=y', '-o', 'stream-json', '--skip-trust', '--approval-mode=default', '--resume=R'])
   assert.equal(runEnv({ base: {}, home: '/h', agentId: 'a' }).GEMINI_CLI_NO_RELAUNCH, 'true')
 })
 
@@ -54,7 +55,7 @@ test('parseEvents tolerates junk and finds session, result, error', () => {
 
 test('start runs a turn, records state, then resume reuses the session id', async () => {
   const { dir, runner, calls } = setup()
-  const st = runner.start({ cwd: dir, prompt: 'hello', mode: 'yolo', model: 'gemini-2.5-flash', home: '/acct/home', name: 'n' })
+  const st = runner.start({ cwd: dir, prompt: 'hello', mode: 'yolo', allowYolo: true, model: 'gemini-2.5-flash', home: '/acct/home', name: 'n' })
   assert.equal(st.state, 'running'); assert.ok(st.pid)
   const mode = fs.statSync(path.join(runner.dirOf(st.runId), 'state.json')).mode & 0o777
   assert.equal(mode, 0o600)
@@ -62,19 +63,19 @@ test('start runs a turn, records state, then resume reuses the session id', asyn
   assert.equal(done.lastMessage, 'hi'); assert.equal(done.exitCode, 0)
   const first = calls()[0]
   assert.equal(first.home, '/acct/home'); assert.equal(first.norelaunch, 'true'); assert.equal(first.agent, `gemini:${st.runId}`)
-  assert.ok(first.a.includes('--session-id') && first.a.includes('yolo'))
-  runner.resume(st.runId, 'again')
+  assert.ok(first.a.some((x) => x.startsWith('--session-id=')) && first.a.includes('--approval-mode=yolo'))
+  runner.resume(st.runId, 'again', { allowYolo: true })
   await waitFor(() => calls().length === 2)
   const second = calls()[1].a
-  assert.equal(second[second.indexOf('-r') + 1], st.sessionId)
-  assert.ok(!second.includes('--session-id'))
+  assert.ok(second.includes(`--resume=${st.sessionId}`))
+  assert.ok(!second.some((x) => x.startsWith('--session-id')))
   await waitFor(() => runner.refresh(st.runId).state === 'idle' && runner.get(st.runId).turn === 2)
   assert.equal(runner.list().length, 1)
 })
 
 test('quota error (exit 173 + result.error) records a limitStop', async () => {
   const { dir, env, runner } = setup()
-  env.FAKE_MODE = 'quota'
+  env.AGENTVILLE_FAKE_MODE = 'quota'
   const st = runner.start({ cwd: dir, prompt: 'q' })
   const s = await waitFor(() => { const r = runner.refresh(st.runId); return r.state === 'limit' && r })
   assert.equal(s.limitStop.kind, 'limit'); assert.ok(s.limitStop.at > 0); assert.match(s.limitStop.text, /daily quota/)
@@ -83,7 +84,7 @@ test('quota error (exit 173 + result.error) records a limitStop', async () => {
 
 test('stop terminates a hung run', async () => {
   const { dir, env, runner } = setup()
-  env.FAKE_MODE = 'hang'
+  env.AGENTVILLE_FAKE_MODE = 'hang'
   const st = runner.start({ cwd: dir, prompt: 'h' })
   await new Promise((r) => setTimeout(r, 300))
   const s = await runner.stop(st.runId)
@@ -99,4 +100,65 @@ test('stop on win32 uses taskkill', async () => {
   const st = runner.start({ cwd: dir, prompt: 'p' })
   await runner.stop(st.runId)
   assert.deepEqual(hits, [4242])
+})
+
+test('F1: model is validated and flag-shaped values stay inert', () => {
+  assert.throws(() => startArgs({ prompt: 'x', model: '--approval-mode=yolo' }), /invalid model/)
+  assert.throws(() => startArgs({ prompt: 'x', model: 'a b' }), /invalid model/)
+  assert.throws(() => startArgs({ prompt: 'x', resume: '--x' }), /invalid session/)
+  const a = startArgs({ prompt: '--approval-mode=yolo', model: 'gemini-2.5-pro' })
+  assert.equal(a[0], '--prompt=--approval-mode=yolo') // one inert token
+  assert.equal(a.filter((x) => x.startsWith('--approval-mode')).length, 1)
+  assert.ok(a.includes('--approval-mode=default'))
+  const { dir, runner } = setup()
+  assert.throws(() => runner.start({ cwd: dir, prompt: 'p', model: '--approval-mode=yolo' }), /invalid model/)
+  assert.deepEqual(runner.list(), [])
+})
+
+test('F2: yolo needs explicit allowYolo', () => {
+  assert.throws(() => startArgs({ prompt: 'x', mode: 'yolo' }), /allowYolo/)
+  assert.throws(() => startArgs({ prompt: 'x', mode: 'yolo', allowYolo: 'true' }), /allowYolo/)
+  const { dir, runner } = setup()
+  assert.throws(() => runner.start({ cwd: dir, prompt: 'p', mode: 'yolo' }), /allowYolo/)
+})
+
+test('F7: env is an allowlist, account env merged whole, handoff recorded', async () => {
+  const e = runEnv({ base: { PATH: '/bin', HOME: '/h', LC_ALL: 'C', HTTPS_PROXY: 'p', AGENTVILLE_X: '1', GEMINI_API_KEY: 'k', GOOGLE_APPLICATION_CREDENTIALS: 'g', GEMINI_CLI_HOME: '/old', AWS_SECRET: 's', OPENAI_API_KEY: 'o' },
+    accountEnv: { GEMINI_CLI_HOME: '/acct', GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'true' }, port: 4321, handoffId: 'H1' })
+  assert.equal(e.PATH, '/bin'); assert.equal(e.LC_ALL, 'C'); assert.equal(e.HTTPS_PROXY, 'p'); assert.equal(e.AGENTVILLE_X, '1')
+  assert.equal(e.GEMINI_API_KEY, undefined); assert.equal(e.GOOGLE_APPLICATION_CREDENTIALS, undefined)
+  assert.equal(e.AWS_SECRET, undefined); assert.equal(e.OPENAI_API_KEY, undefined)
+  assert.equal(e.GEMINI_CLI_HOME, '/acct'); assert.equal(e.GEMINI_FORCE_ENCRYPTED_FILE_STORAGE, 'true')
+  assert.equal(e.AGENTVILLE_PORT, '4321'); assert.equal(e.AGENTVILLE_HANDOFF_ID, 'H1')
+  assert.equal(runEnv({ base: { GEMINI_CLI_HOME: '/old' } }).GEMINI_CLI_HOME, undefined)
+  assert.equal(runEnv({ base: { AGENTVILLE_HANDOFF_ID: 'keep' } }).AGENTVILLE_HANDOFF_ID, 'keep')
+
+  const { dir, runner, env, calls } = setup()
+  env.GEMINI_API_KEY = 'leak'; env.GOOGLE_APPLICATION_CREDENTIALS = 'leak2'
+  const st = runner.start({ cwd: dir, prompt: 'p', handoffId: 'H2', accountEnv: { GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'true' } })
+  assert.equal(st.handoffId, 'H2')
+  await waitFor(() => calls().length === 1)
+  const c = calls()[0]
+  assert.equal(c.handoff, 'H2'); assert.equal(c.enc, 'true'); assert.equal(c.secret, undefined); assert.equal(c.goog, undefined)
+})
+
+test('F10: 0700 dirs, no prompt text in state, capped + redacted errors, prune', async () => {
+  const { dir, runner, env } = setup()
+  env.AGENTVILLE_FAKE_MODE = 'quota'
+  const secretPrompt = 'my secret instructions '.repeat(20)
+  const st = runner.start({ cwd: dir, prompt: secretPrompt })
+  assert.equal(fs.statSync(path.join(dir, 'gemini-runs')).mode & 0o777, 0o700)
+  assert.equal(fs.statSync(runner.dirOf(st.runId)).mode & 0o777, 0o700)
+  assert.ok(st.title.length <= 80); assert.equal(st.prompt, undefined)
+  await waitFor(() => runner.refresh(st.runId).state === 'limit')
+  assert.ok(!fs.readFileSync(path.join(runner.dirOf(st.runId), 'state.json'), 'utf8').includes('secret instructions secret instructions'))
+
+  const t = scrub('failed key=AIzaSyA1234567890abcdefghijk Bearer abcdefgh12345678 ' + 'x'.repeat(500))
+  assert.ok(t.length <= 200); assert.ok(!/AIza|abcdefgh12345678/.test(t)); assert.match(t, /redacted/)
+
+  const old = path.join(dir, 'gemini-runs', 'old-run')
+  fs.mkdirSync(old, { recursive: true }); fs.writeFileSync(path.join(old, 'state.json'), '{"state":"idle"}')
+  const past = new Date(Date.now() - 30 * 86_400_000); fs.utimesSync(old, past, past)
+  assert.deepEqual(runner.prune(14), ['old-run'])
+  assert.ok(!fs.existsSync(old)); assert.ok(fs.existsSync(runner.dirOf(st.runId)))
 })
