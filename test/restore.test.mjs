@@ -1,6 +1,7 @@
 // Restore after crash (server/restore.mjs). Fixture homes and the stub `claude`
 // (test/fixtures/bin/claude-bg) only: nothing here can reach a real session, ~/.claude or the network.
-import test from 'node:test'
+import baseTest from 'node:test'
+import { posixTest, shortTmp, stubBin } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -8,11 +9,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeHome, IDS, ENV_SECRET } from './fixtures/make-home.mjs'
+const test = posixTest(baseTest, 'fixtures/bin/claude-bg is a node-shebang script and the Fleet inbox is a unix socket; neither runs on Windows')
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'va-restore-'))
-const sockRoot = fs.mkdtempSync('/tmp/vre-') // short: unix socket paths are limited to ~104 bytes
+const sockRoot = shortTmp('vre-') // short: unix socket paths are limited to ~104 bytes
 const env = makeHome(root)
-const STUB = fileURLToPath(new URL('./fixtures/bin/claude-bg', import.meta.url))
+const STUB = stubBin('claude-bg')
 const log = path.join(root, 'claude-bg.log')
 const BOOT1 = Date.parse('2026-11-01T08:00:00Z')
 const BOOT2 = BOOT1 + 3 * 86_400_000
@@ -95,7 +97,7 @@ test('snapshot: written atomically only on change, kept across a boot, role as o
   assert.equal(snap.running.find((e) => e.id === C('leadBlocked')).important, true)
   assert.doesNotMatch(first, new RegExp(ENV_SECRET), 'no provider env')
   assert.doesNotMatch(first, /Coordinate the release|Build the API/, 'no conversation text')
-  assert.equal((fs.statSync(file).mode & 0o777).toString(8), '600')
+  process.platform !== 'win32' && assert.equal((fs.statSync(file).mode & 0o777).toString(8), '600')
   assert.ok(!fs.readdirSync(dataDir).some((f) => f.endsWith('.tmp')), 'no temp file left')
 
   // The crash: new boot, nothing live. The first scan after it moves the list to `previous`...
@@ -206,13 +208,13 @@ test('API: Important persists; restore previews, confirms once, restores one at 
   await sleep(2100) // past the scan cache
   list = await agents()
   const summary = (await (await req('/api/agents')).json()).fleet.restore
-  assert.deepEqual({ lost: summary.lost, sessions: summary.sessions, dismissed: summary.dismissed }, { lost: 2, sessions: 1, dismissed: false })
+  assert.deepEqual({ lost: summary.lost, sessions: summary.sessions, dismissed: summary.dismissed }, { lost: 3, sessions: 1, dismissed: false }) // every background job, Important or not
 
   const st = await (await req('/api/restore')).json()
-  assert.deepEqual(st.jobs.map((j) => [j.id, j.crown, j.important]).sort(), [[C('boss'), true, false], [C('leadBlocked'), false, true]].sort())
+  assert.deepEqual(st.jobs.map((j) => [j.id, j.crown, j.important]).sort(), [[C('boss'), true, false], [C('leadBuilding'), false, false], [C('leadBlocked'), false, true]].sort())
   assert.deepEqual(st.sessions.map((s) => s.id), [C('soloTurn')])
   assert.match(st.sessions[0].command, new RegExp(`claude --resume ${IDS.soloTurn}$`))
-  assert.deepEqual(st.excluded, { running: 2, 'not-chosen': 2 }) // CI Lead and the running Codex thread; API Lead and Research
+  assert.deepEqual(st.excluded, { running: 2, 'not-chosen': 1 }) // CI Lead and the running Codex thread; Research (an unmarked terminal session)
   assert.deepEqual(st.codex, [])
   assert.equal(st.message, R.MESSAGE)
 
@@ -276,13 +278,13 @@ test('API: Important persists; restore previews, confirms once, restores one at 
     peer.close()
   }
 
-  // Both back: nothing left to restore.
-  assert.equal((await (await req('/api/restore')).json()).jobs.length, 0)
+  // Both back: only the unpicked API Lead is left to restore.
+  assert.deepEqual((await (await req('/api/restore')).json()).jobs.map((j) => j.id), [C('leadBuilding')])
 
   // Already running vs failed: a fresh lost pair, previewed, then one comes back before the confirm.
   kill('boss'); fs.rmSync(path.join(claudeHome, 'sessions', `${short('leadBlocked')}.json`), { force: true })
   const pv2 = await (await req('/api/restore/preview', 'POST', {})).json()
-  assert.deepEqual(pv2.jobs.map((j) => j.id).sort(), [C('boss'), C('leadBlocked')].sort())
+  assert.deepEqual(pv2.jobs.map((j) => j.id).sort(), [C('boss'), C('leadBuilding'), C('leadBlocked')].sort()) // plus the never-restored API Lead
   fs.writeFileSync(path.join(claudeHome, 'sessions', `${short('boss')}.json`), JSON.stringify({ pid: process.pid, sessionId: IDS.boss, kind: 'bg' }))
   Object.assign(process.env, { FAKE_RESPAWN_FAIL: '1', FAKE_RESUME_FAIL: '1' })
   try {

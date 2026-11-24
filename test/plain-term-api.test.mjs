@@ -4,7 +4,8 @@
  * and ends with DELETE, and that an interactive Claude session in the CLI's registry is a normal,
  * visible agent. The "shell" and "claude" are test/fixtures/bin's fakes; HOME is a temp dir.
  */
-import test from 'node:test'
+import baseTest from 'node:test'
+import { posixTest, shortTmp } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -12,6 +13,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import { createServer } from '../server/serve.mjs'
+const test = posixTest(baseTest, 'fixtures/bin fake CLIs and the fake terminal are node-shebang scripts that Windows cannot exec; Windows PTY coverage is in plain-term-win.test.mjs')
 
 const FAKES = fileURLToPath(new URL('./fixtures/bin', import.meta.url))
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'village-plainapi-'))

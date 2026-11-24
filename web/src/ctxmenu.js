@@ -9,6 +9,7 @@
 import { AGENT_COLOR, BUCKET_NAME, ROLE_NAME, HARNESS_NAME, isError, bucketIcon, icon, ago, esc, safeHref, agentColor } from './ui.js';
 import { prTone } from './prs.js';
 import { stoppedNote } from './important.js';
+import { itemHTML, placeMenu } from './menu-kit.js';
 
 const SUBS = ['subagent', 'teammate', 'thread'];
 const LONG_PRESS_MS = 500;
@@ -81,10 +82,6 @@ export function createMenu(app, deps) {
       ${prs ? `<p class="cm-prs" aria-label="Pull requests">${prs}</p>` : ''}
     </div>`;
   }
-  function itemHTML(it, i) {
-    const why = it.why ? `<span class="cm-note" id="cm-why-${i}">${esc(it.why)}</span>` : '';
-    return `<button type="button" role="menuitem" class="cm-item${it.danger ? ' danger' : ''}" data-cm="${it.act}" tabindex="-1"${it.why ? ` aria-disabled="true" aria-describedby="cm-why-${i}"` : ''}${it.popup ? ' aria-haspopup="dialog"' : ''}${it.pressed ? ' aria-current="true"' : ''}${it.title ? ` title="${esc(it.title)}"` : ''}><span class="cm-label">${esc(it.label)}</span>${why}</button>`;
-  }
   const cap = s => s[0].toUpperCase() + s.slice(1);
   /** The Colour row: a radio group of swatches (arrow keys move, Enter/Space picks); "None" clears the override. */
   function colorHTML(a) {
@@ -129,25 +126,7 @@ export function createMenu(app, deps) {
     place(at);
     first()?.focus({ preventScroll: true });
   }
-  function anchorOf(at) {
-    if (at.el?.isConnected) {
-      const r = at.el.getBoundingClientRect();
-      const btn = at.el.matches('.menubtn');
-      return { x: btn ? r.right : Math.min(r.left + 24, r.right), y: r.bottom + 2, alignRight: btn, above: r.top - 2 };
-    }
-    return { x: at.x ?? innerWidth / 2, y: at.y ?? innerHeight / 3, above: at.y };
-  }
-  function place(at) {
-    const m = 8, vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
-    el.style.maxHeight = `${vh - 2 * m}px`;
-    el.style.left = '0px'; el.style.top = '0px';
-    const w = el.offsetWidth, hgt = el.offsetHeight, p = anchorOf(at);
-    let x = p.alignRight ? p.x - w : p.x, y = p.y;
-    if (y + hgt > vh - m) y = p.above != null && p.above - hgt >= m ? p.above - hgt : vh - m - hgt;
-    x = Math.max(m, Math.min(x, vw - m - w));
-    y = Math.max(m, y);
-    el.style.left = `${Math.round(x)}px`; el.style.top = `${Math.round(y)}px`;
-  }
+  const place = at => placeMenu(el, at);
   /** The thing the menu is for gets a ring while it is open. */
   function mark(on) {
     for (const x of document.querySelectorAll('.cm-target')) x.classList.remove('cm-target');

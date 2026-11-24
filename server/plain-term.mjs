@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { home as claudeHome } from './claude-code.mjs'
+import { execTarget as platformExecTarget } from './platform.mjs'
 
 export const PLAIN_PREFIX = 'shell:'
 export const KINDS = ['shell', 'claude', 'codex']
@@ -26,8 +27,27 @@ const refuse = (status, message) => Object.assign(new Error(message), { status }
 const isDir = (p) => !!p && path.isAbsolute(p) && fs.statSync(p, { throwIfNoEntry: false })?.isDirectory()
 const real = (p) => { try { return fs.realpathSync(p) } catch { return p } }
 
+/** A path as compared on `platform`: on win32, forward slashes, no trailing slash, case-folded. */
+export function normPath(p, platform = process.platform) {
+  if (platform !== 'win32') return p
+  const n = path.win32.normalize(String(p)).replace(/\\/g, '/')
+  return (n.length > 3 ? n.replace(/\/+$/, '') : n).toLowerCase()
+}
+
 /** `~/code/x` for a folder under home, else the full path. */
-export const tilde = (dir, home = os.homedir()) => (dir === home ? '~' : dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir)
+export function tilde(dir, home = os.homedir(), platform = process.platform) {
+  if (platform !== 'win32') return dir === home ? '~' : dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir
+  const d = normPath(dir, platform)
+  const h = normPath(home, platform)
+  if (d === h) return '~'
+  return d.startsWith(h.replace(/\/$/, '') + '/') ? `~${dir.slice(h.replace(/\/$/, '').length).replace(/\\/g, '/')}` : dir
+}
+
+/** A process name without its Windows executable extension, lower-cased on win32. */
+const exeName = (command, platform = process.platform) => {
+  if (platform !== 'win32') return path.basename(command)
+  return path.win32.basename(String(command)).replace(/\.(exe|cmd|bat|com)$/i, '').toLowerCase()
+}
 
 /** pid and every process below it in a `{ pid, ppid }` table (the root included). */
 export function descendants(rootPid, procs) {
@@ -39,16 +59,28 @@ export function descendants(rootPid, procs) {
   return [...out.values()]
 }
 
-const run = (cmd, args) => new Promise((resolve) => {
-  execFile(cmd, args, { timeout: 3000, maxBuffer: 4 << 20 }, (err, stdout) => resolve(err ? '' : String(stdout)))
+const run = (cmd, args, opts = {}) => new Promise((resolve) => {
+  execFile(cmd, args, { timeout: 3000, maxBuffer: 4 << 20, ...opts }, (err, stdout) => resolve(err ? '' : String(stdout)))
 })
-/** All processes: `{ pid, ppid, command }` (command is the executable's path as ps shows it). */
-export async function listProcesses() {
-  const out = await run('/bin/ps', ['-axo', 'pid=,ppid=,comm='])
+const WIN_PS = ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress']
+/** Parse `ConvertTo-Json` output: an array, or a bare object when there is exactly one process. */
+export function parseWinProcesses(out) {
+  let j
+  try { j = JSON.parse(String(out).replace(/^\uFEFF/, '')) } catch { return [] }
+  return (Array.isArray(j) ? j : [j]).filter((r) => r && Number.isInteger(r.ProcessId))
+    .map((r) => ({ pid: r.ProcessId, ppid: Number.isInteger(r.ParentProcessId) ? r.ParentProcessId : 0, command: String(r.Name || '') }))
+}
+/** All processes: `{ pid, ppid, command }` (command is the executable's path as ps shows it; on Windows its name). */
+export async function listProcesses({ platform = process.platform, exec = run } = {}) {
+  if (platform === 'win32') {
+    return parseWinProcesses(await exec('powershell.exe', WIN_PS, { windowsHide: true, timeout: 15000 }))
+  }
+  const out = await exec('/bin/ps', ['-axo', 'pid=,ppid=,comm='])
   return out.split('\n').map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l)).filter(Boolean).map((m) => ({ pid: +m[1], ppid: +m[2], command: m[3].trim() }))
 }
-/** A process's working folder, or null (macOS and Linux with lsof). */
-export async function cwdOf(pid) {
+/** A process's working folder, or null (macOS and Linux with lsof; always null on Windows). */
+export async function cwdOf(pid, { platform = process.platform } = {}) {
+  if (platform === 'win32') return null
   const out = await run('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
   return out.split('\n').find((l) => l.startsWith('n'))?.slice(1) || null
 }
@@ -71,9 +103,33 @@ export async function readRegistry(dir = path.join(claudeHome(), 'sessions')) {
  * @param {() => string|null} [o.shell]  the login shell (default $SHELL when absolute)
  * @param {(name: string) => Promise<string|null>} o.findBin  absolute path of `claude` / `codex`
  */
-export function createPlainTerms({ home = os.homedir(), shell = () => process.env.SHELL, findBin, procs = listProcesses, cwd = cwdOf, registry = readRegistry } = {}) {
+/** Is `p` an existing file? */
+const isFile = (p) => !!fs.statSync(p, { throwIfNoEntry: false })?.isFile()
+
+/** The default Windows shell: pwsh on PATH, else Windows PowerShell, else %ComSpec%. */
+export function winShell({ env = process.env, exists = isFile } = {}) {
+  const get = (k) => env[k] ?? env[Object.keys(env).find((x) => x.toLowerCase() === k.toLowerCase())]
+  for (const d of String(get('PATH') || '').split(';').filter(Boolean)) {
+    const f = path.win32.join(d.replace(/^"|"$/g, ''), 'pwsh.exe')
+    if (exists(f)) return f
+  }
+  const root = get('SystemRoot') || get('windir') || 'C:\\Windows'
+  const ps = path.win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  if (exists(ps)) return ps
+  return get('ComSpec') || path.win32.join(root, 'System32', 'cmd.exe')
+}
+
+export function createPlainTerms({
+  home = os.homedir(), shell = () => process.env.SHELL, findBin, procs = () => listProcesses(), cwd = cwdOf, registry = readRegistry,
+  platform = process.platform, env = process.env, exists = isFile, execTarget = platformExecTarget,
+} = {}) {
+  const win = platform === 'win32'
   const entries = new Map() // id -> { id, kind, argv, cwd, title, at }
 
+  const shellArgv = () => {
+    const f = winShell({ env, exists })
+    return /(^|[\\/])(pwsh|powershell)\.exe$/i.test(f) ? [f, '-NoLogo'] : [f]
+  }
   const shellPath = () => {
     const s = shell()
     return typeof s === 'string' && path.isAbsolute(s) && fs.statSync(s, { throwIfNoEntry: false })?.isFile() ? s : '/bin/zsh'
@@ -85,16 +141,20 @@ export function createPlainTerms({ home = os.homedir(), shell = () => process.en
     const dir = want == null || want === '' ? home : want
     if (typeof dir !== 'string') throw refuse(400, 'The folder must be text')
     const allowed = [home, ...projects.map((p) => p.dir)]
-    if (!allowed.includes(dir) || !isDir(dir)) throw refuse(400, 'Pick your home folder or one of the listed projects')
+    const same = (a) => normPath(a, platform) === normPath(dir, platform)
+    if (!allowed.some(same) || !isDir(dir)) throw refuse(400, 'Pick your home folder or one of the listed projects')
     let argv
-    if (kind === 'shell') argv = [shellPath(), '-l']
+    if (kind === 'shell') argv = win ? shellArgv() : [shellPath(), '-l']
     else {
       const bin = await findBin(kind)
       if (!bin) throw refuse(409, `${LABEL[kind]} CLI not found`)
       argv = [bin] // a fixed command: the CLI's own interactive mode, no flags
+      if (win && /\.(cmd|bat)$/i.test(bin)) {
+        try { const t = execTarget(bin, [], { platform, env }); argv = [t.file, ...t.args] } catch { throw refuse(409, `${LABEL[kind]} CLI path cannot be launched`) }
+      } // ConPTY cannot run a .cmd directly
     }
     const id = `${PLAIN_PREFIX}${crypto.randomBytes(12).toString('base64url')}`
-    const entry = { id, kind, argv, cwd: dir, title: `${LABEL[kind]} — ${tilde(dir, home)}`, at: Date.now() }
+    const entry = { id, kind, argv, cwd: dir, title: `${LABEL[kind]} — ${tilde(dir, home, platform)}`, at: Date.now() }
     entries.set(id, entry)
     while (entries.size > MAX_ENTRIES) entries.delete(entries.keys().next().value)
     return entry
@@ -126,10 +186,12 @@ export function createPlainTerms({ home = os.homedir(), shell = () => process.en
       }
       // Codex: no registry. A codex process here + the one live Codex agent in its folder.
       if (!agentId) {
-        const proc = tree.find((p) => path.basename(p.command) === 'codex')
-        const dir = proc && await cwd(proc.pid)
+        const proc = tree.find((p) => exeName(p.command, platform) === 'codex')
+        // Windows cannot read another process's folder: use the folder the terminal was opened in.
+        const dir = proc && ((await cwd(proc.pid)) || (win ? e.cwd : null))
         if (dir) {
-          const cands = agents.filter((a) => a.harness === 'codex' && a.live && a.cwd && real(a.cwd) === real(dir) && !claimed.has(a.id))
+          const same = (a, b) => (win ? normPath(a, platform) === normPath(b, platform) : real(a) === real(b))
+          const cands = agents.filter((a) => a.harness === 'codex' && a.live && a.cwd && same(a.cwd, dir) && !claimed.has(a.id))
           cands.sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0))
           agentId = cands[0]?.id || null
         }

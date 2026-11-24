@@ -127,3 +127,24 @@ export function projectOf(cwd) {
 export function logSafely(...args) {
   try { console.error(...args) } catch { /* nowhere left to say it */ }
 }
+
+/** Rename errors that mean "another process has the file open" (Windows), worth a retry. */
+const BUSY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+/** Waits between rename attempts: 10 attempts over about 1 s. */
+export const RENAME_BACKOFF_MS = [10, 20, 40, 60, 100, 120, 150, 200, 300]
+
+/**
+ * `fsp.rename(from, to)`, retried while it fails with EPERM / EBUSY / EACCES. On Windows a rename
+ * over a file another process holds open (Claude Code reading `.credentials.json`, an editor, a
+ * virus scanner) fails with one of those for a moment. A rename either happens whole or not at
+ * all, so `to` keeps its old content until one succeeds; after the last attempt the error is thrown.
+ * `rename` and `wait` are injectable for tests.
+ */
+export async function renameRetry(from, to, { rename = (a, b) => fsp.rename(a, b), wait = (ms) => new Promise((r) => setTimeout(r, ms)), backoff = RENAME_BACKOFF_MS } = {}) {
+  for (let i = 0; ; i++) {
+    try { return await rename(from, to) } catch (e) {
+      if (!BUSY_CODES.has(e?.code) || i >= backoff.length) throw e
+      await wait(backoff[i])
+    }
+  }
+}

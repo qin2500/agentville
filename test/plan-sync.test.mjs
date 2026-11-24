@@ -3,10 +3,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '../web/src/plan-sync.js')
-const mod = fs.existsSync(file) ? await import(file) : null
+const mod = fs.existsSync(file) ? await import(pathToFileURL(file).href) : null
 const skip = mod ? false : 'web/src/plan-sync.js is absent (activates on P2 merge)'
 const K = 'va.engine2.world'
 

@@ -154,7 +154,7 @@ function rig({ log = [], state = null, accounts = ['A', 'B'], failSwitch = false
     },
   }
   const network = { status: async () => ({ current: { id: 'net', work: env.onWork }, work: env.onWork ? ['net'] : [] }) }
-  const sampler = createSampler({ dataDir, account, network, agents: async () => env.agents, nudge: nudge ? async (ids) => { nudges.push(ids); return ids } : null, now: () => clock })
+  const sampler = createSampler({ dataDir, account, network, agents: async () => env.agents, nudge: nudge ? async (ids) => { nudges.push(ids); return ids } : null, now: () => clock, sleep: async (ms) => { clock += ms } })
   return { sampler, env, calls, nudges, dataDir, writeLog, list, tick: () => sampler.tick(), at: (t) => { clock = t }, advance: (ms) => { clock += ms }, now: () => clock,
     done: () => fs.rmSync(dataDir, { recursive: true, force: true }) }
 }

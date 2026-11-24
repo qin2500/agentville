@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { adoptLegacyEnv, defaultDataDir, legacyDataDir, migrateDataDir, resolveDataDir } from '../server/datadir.mjs'
 
+const WIN = process.platform === 'win32' && 'file modes and a POSIX fake npm do not apply on Windows'
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-datadir-'))
 /** An old folder shaped like a real one: saved logins (0600, in a 0700 folder), backups, plain files. */
 function oldFolder(root) {
@@ -30,7 +31,7 @@ test('paths: AGENTVILLE_DATA_DIR wins, then XDG_CONFIG_HOME, then ~/.config', ()
   assert.equal(defaultDataDir({}), path.join(os.homedir(), '.config', 'agentville'))
 })
 
-test('migrate: renames the old folder when the new one is missing, keeping every file and mode', () => {
+test('migrate: renames the old folder when the new one is missing, keeping every file and mode', { skip: WIN }, () => {
   const root = tmp()
   const from = oldFolder(root), to = path.join(root, 'agentville')
   const before = tree(from)
@@ -40,7 +41,7 @@ test('migrate: renames the old folder when the new one is missing, keeping every
   assert.equal(fs.statSync(to).mode & 0o777, 0o700)
 })
 
-test('migrate: if the rename fails it copies, completely, and leaves the old folder alone', () => {
+test('migrate: if the rename fails it copies, completely, and leaves the old folder alone', { skip: WIN }, () => {
   const root = tmp()
   const from = oldFolder(root), to = path.join(root, 'agentville')
   const before = tree(from)

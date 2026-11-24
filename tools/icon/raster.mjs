@@ -177,3 +177,23 @@ export function encodeICNS(pngs) {
   head.write('icns', 0, 'ascii'); head.writeUInt32BE(8 + parts.reduce((n, p) => n + p.length, 0), 4)
   return Buffer.concat([head, ...parts])
 }
+
+/**
+ * A Windows .ico: a 6-byte header, one 16-byte directory entry per image, then the PNG files
+ * themselves (Vista and later read PNG entries; 0 in the width/height byte means 256).
+ * `pngs` maps size -> PNG buffer.
+ */
+export function encodeICO(pngs) {
+  const sizes = Object.keys(pngs).map(Number).sort((a, b) => a - b)
+  const head = Buffer.alloc(6 + 16 * sizes.length)
+  head.writeUInt16LE(1, 2); head.writeUInt16LE(sizes.length, 4)
+  let off = head.length
+  sizes.forEach((s, i) => {
+    const e = 6 + 16 * i, data = pngs[s]
+    head[e] = s >= 256 ? 0 : s; head[e + 1] = s >= 256 ? 0 : s
+    head.writeUInt16LE(1, e + 4); head.writeUInt16LE(32, e + 6)
+    head.writeUInt32LE(data.length, e + 8); head.writeUInt32LE(off, e + 12)
+    off += data.length
+  })
+  return Buffer.concat([head, ...sizes.map((s) => pngs[s])])
+}

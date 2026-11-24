@@ -24,6 +24,7 @@ export async function withServer(fn, { dataDir, env = {} } = {}) {
     await new Promise((r) => server.close(r))
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
     Object.assign(process.env, saved)
-    fs.rmSync(root, { recursive: true, force: true })
+    // Windows: a git child that outlives the server can still hold a project folder as its cwd; the temp dir is not worth failing over.
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch (e) { if (process.platform !== 'win32') throw e }
   }
 }

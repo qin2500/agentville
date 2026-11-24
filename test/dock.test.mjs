@@ -60,7 +60,7 @@ test('persists across a new createDock on the same dir', async () => {
   const r3 = await createDock({ dataDir: dir, now: c.now }).update([])
   assert.equal(r3.sailed.length, 1)
   assert.equal(r3.total, 2)
-  assert.equal(fs.statSync(path.join(dir, 'dock.json')).mode & 0o777, 0o600)
+  process.platform !== 'win32' && assert.equal(fs.statSync(path.join(dir, 'dock.json')).mode & 0o777, 0o600)
 })
 
 test('sailed keeps 24 h and 12, newest first', async () => {

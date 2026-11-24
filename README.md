@@ -129,6 +129,20 @@ npm run app:build -- --install   # builds Agentville.app and copies it to ~/Appl
 Then open **Agentville** from `~/Applications`. `./setup.sh` is safe to re-run (`npm run setup` does
 the same).
 
+**Windows** (PowerShell; Node 22.13+ and Git on `PATH`):
+
+```powershell
+git clone https://github.com/qin2500/agentville.git
+cd agentville
+npm install
+npm run app:build -- --install   # copies the app to %LOCALAPPDATA%\Programs\Agentville and adds a Start Menu shortcut
+```
+
+Open **Agentville** from the Start Menu. Windows warns that the app is unsigned: choose **More info**,
+then **Run anyway**. `Start.cmd` and `Stop.cmd` in the checkout start and stop it. If account switching
+misbehaves, start with `$env:AGENTVILLE_WINDOWS_ACTIONS="off"` to turn it (and start/stop and restore) off.
+More in [Windows details](#windows-details).
+
 ## Desktop app
 
 The app is a thin Electron shell around a local server: it reuses a server already answering on
@@ -189,7 +203,7 @@ To turn it off, set `AGENTVILLE_UPDATE_CHECK=0`. A fork checks its own `origin`.
   with `brew install node`, or with `nvm install 22`.
 - **Claude Code and/or Codex**, used on this machine. Either one is enough. With neither, Agentville
   still starts and tells you where it looked.
-- **macOS** gets everything. **Linux** runs the app with `npm run app`, the village and every view.
+- **macOS** gets everything. **Windows 10 and 11** runs the app too (see [Windows details](#windows-details)). **Linux** runs the app with `npm run app`, the village and every view.
   Keychain-backed accounts and the work-Wi-Fi rule are macOS-only. On Linux, Claude's login
   is read from `~/.claude/.credentials.json`.
 - Optional: [Ghostty](https://ghostty.org) 1.3+ if you'd rather **Open** used it than Terminal.app.
@@ -201,6 +215,61 @@ seconds while the app is open, reading only bounded pieces of each file. It turn
 one record per agent, sorts them into buckets and a hierarchy, and serves that to the web app (`web/`,
 vanilla JS and Canvas, built with Vite) on `127.0.0.1:5275`. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 has the details.
+
+## Windows details
+
+Agentville also runs on Windows 10 and 11 (x64 and arm64). Several parts are new on Windows and
+have had less use than on macOS; see "Not yet on Windows" below.
+
+**Prerequisites**
+
+- Node 22.13 or later and Git, both on `PATH`.
+- The `claude` and/or `codex` CLIs on `PATH` (for example `npm install -g @anthropic-ai/claude-code`).
+- `node-pty` (the built-in terminal) ships prebuilt for win32 x64 and arm64, so `npm install` needs no
+  compiler. Only if those prebuilds fail to load do you need the Visual Studio Build Tools
+  ("Desktop development with C++").
+
+**Run it**
+
+```bat
+git clone https://github.com/qin2500/agentville.git
+cd agentville
+npm install
+npm start          rem the server only; then open http://127.0.0.1:5275
+npm run app        rem the desktop app from this checkout (development)
+npm run app:build  rem dist-app\win-unpacked\Agentville.exe and the installer dist-app\Agentville-Setup-<version>.exe
+npm run app:build -- --install   rem copies win-unpacked to %LOCALAPPDATA%\Programs\Agentville and adds a Start Menu shortcut
+```
+
+`Start.cmd` opens the built app (`dist-app\win-unpacked\Agentville.exe`) or, if there is none, runs
+`npm run app`. `Stop.cmd` closes the app and any server still listening on the port (`AGENTVILLE_PORT`, default
+5275). `--install` is a plain copy, with no installer window and no admin rights; the NSIS installer
+(per user, you choose the folder) is the alternative when you want an entry in Apps and features.
+As on macOS the app only holds the shell and runs the server and page from your checkout, so keep the
+checkout where it is (or set `"repo"` in the config below).
+
+- **SmartScreen:** the app and installer are unsigned, so Windows shows "Windows protected your PC".
+  Choose **More info**, then **Run anyway**.
+- **Data:** `%USERPROFILE%\.config\agentville` (settings, notes, usage log). The app's own profile
+  (window position, `server.log`, `app.log`, `config.json`) is `%APPDATA%\Agentville`.
+- **Node lookup:** the app finds Node in `%ProgramFiles%\nodejs`, Volta, nvm-windows (`%NVM_SYMLINK%`,
+  `%APPDATA%\nvm`), fnm, `%APPDATA%\npm`, then `PATH`; `AGENTVILLE_DESKTOP_NODE` pins one.
+- **Closing the window** quits the app (there is no tray icon yet), which stops a server the app
+  started and so stops notifications. Run `npm start` in a terminal, or use `Start.cmd` again, to keep
+  watching. Quit stops the server by ending its process; any agent sessions you started from the
+  built-in terminal end with it.
+- **Credentials:** Claude Code on Windows keeps its login in `%USERPROFILE%\.claude\.credentials.json`.
+  Nothing encrypts that file; it is protected only by NTFS permissions on your profile folder.
+- **Agent notifications:** call `tools\agentville-notify.cmd` (it runs `tools\notify.mjs`).
+
+**New on Windows** (supported, but newly ported): account switching, starting and stopping agents,
+and restore after crash.
+
+**Not yet on Windows**
+
+- Sending messages to agents (Fleet send).
+- Ghostty pop-out layouts (Ghostty is not available on Windows; use the built-in terminal).
+- The work Wi-Fi rule (quarantine accounts by network).
 
 ## Privacy & safety
 

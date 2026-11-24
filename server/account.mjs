@@ -22,11 +22,12 @@
  */
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { findExecutable } from './terminal.mjs'
+import { cliDirs } from './platform.mjs'
+import { launch, windowsActionsOff } from './actions.mjs'
 import { createAccounts, writeAtomic } from './accounts.mjs'
 
 /** Settings env keys that make up the pool profile. */
@@ -47,8 +48,6 @@ const isPoolEnv = (env) => Boolean(env && Object.hasOwn(env, 'ANTHROPIC_BASE_URL
   !(env.ANTHROPIC_BASE_URL === PERSONAL_ROUTING_ENV.ANTHROPIC_BASE_URL &&
     !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY))
 const TERMINAL = ['done', 'stopped', 'failed']
-const HOME = os.homedir()
-const CLAUDE_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.claude', 'local'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
 const RESPAWN_MS = 120_000
 /** How long a busy job is waited for before it is left "restart pending", and how often it is polled. */
 const idleMaxMs = () => Number(process.env.AGENTVILLE_ACCOUNT_IDLE_MAX_MS) || 600_000
@@ -62,19 +61,25 @@ const testing = () => process.env.AGENTVILLE_TEST === '1' || process.env.NODE_EN
 
 /** Why switching can't run here ('' = it can). Tests must name a fake home and a fake `claude`. */
 export function switchingBlocked() {
-  if (process.platform === 'win32') return 'Account switching is not supported on Windows'
+  // Windows: the credential is `<claude home>/.credentials.json`, the CLI goes through execTarget.
+  // AGENTVILLE_WINDOWS_ACTIONS=off puts the old gate back.
+  if (windowsActionsOff()) return 'Account switching is not supported on Windows'
   if (testing() && !(process.env.AGENTVILLE_CLAUDE_HOME && process.env.AGENTVILLE_CLAUDE_BIN)) return 'Account switching is disabled in tests'
   return ''
 }
 
 /** The real `claude` executable (never a shell function), or the test fake. */
-export const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutable('claude', CLAUDE_DIRS)
+export const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutable('claude', cliDirs('claude'))
 
-export function run(bin, args, timeout) {
+/**
+ * Runs the CLI (through execTarget, hidden). Never rejects: a failed `claude respawn` on Windows,
+ * a missing binary or an argv cmd.exe can't carry comes back as a non-zero `code`.
+ */
+export function run(bin, args, timeout, exec = execFile) {
   return new Promise((resolve) => {
-    execFile(bin, args, { timeout, maxBuffer: 256 * 1024, env: process.env }, (err, stdout, stderr) => {
+    launch(bin, args, { timeout, maxBuffer: 256 * 1024, env: process.env }, (err, stdout, stderr) => {
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), stdout: String(stdout || ''), stderr: String(stderr || '') })
-    })
+    }, exec)
   })
 }
 
@@ -109,6 +114,9 @@ export function withModel(flags, saved) {
 }
 
 /** A registry entry for job `short` (or its sessions) written after `since` whose process is alive. */
+// Windows file times can trail Date.now() by ~15 ms; allow a little slack so a just-written file counts.
+const MTIME_SLACK_MS = 50
+
 export async function liveSince(home, short, state, since) {
   const ids = new Set([state.sessionId, state.resumeSessionId].filter(Boolean))
   const dir = path.join(home, 'sessions')
@@ -116,7 +124,7 @@ export async function liveSince(home, short, state, since) {
     if (!f.endsWith('.json')) continue
     const file = path.join(dir, f)
     const st = await fsp.stat(file).catch(() => null)
-    if (!st || st.mtimeMs < since) continue
+    if (!st || st.mtimeMs < since - MTIME_SLACK_MS) continue
     let s
     try { s = JSON.parse(await fsp.readFile(file, 'utf8')) } catch { continue }
     if (s.jobId !== short && !ids.has(s.sessionId)) continue
@@ -128,6 +136,8 @@ export async function liveSince(home, short, state, since) {
 /** Registry statuses that mean the session is mid turn or sitting in a dialog (claude-code.mjs). */
 // 'shell': waiting on a background shell; the turn resumes when it finishes, so a respawn would cut it off.
 const NOT_IDLE = new Set(['busy', 'waiting', 'needs_user', 'blocked', 'needs_trust', 'shell'])
+/** A scheduler `detail` that is the harness stopping the turn (usage limit, API error), not a question. */
+const STOPPED_DETAIL = /^(?:You['\u2019]ve hit your (?:[\w-]+ ){0,4}limit\b|API Error\b)/
 /** Registry statuses that mean the session sits in a dialog: a respawn would throw the dialog away. */
 const IN_DIALOG = new Set(['needs_user', 'blocked', 'needs_trust'])
 
@@ -144,8 +154,10 @@ export async function jobActivity(home, short) {
   let busy = state?.tempo === 'active'
   // A job stopped on an error (an API error ends the turn: state 'failed') is at a turn boundary,
   // even while its background shells (watch loops that never end) keep the registry on 'shell'.
-  // Only a dialog still counts as busy then.
-  const stopped = state?.state === 'failed' && !busy
+  // Only a dialog still counts as busy then. So is one the scheduler parked as 'blocked' on the
+  // usage limit or an API error ("You've hit your 5-hour limit …", "API Error: …"): that is how a
+  // limit stop is recorded, and it would otherwise wait out the 10 minutes and be left pending.
+  const stopped = (state?.state === 'failed' || (state?.state === 'blocked' && STOPPED_DETAIL.test(String(state?.detail || '').trim()))) && !busy
   const dir = path.join(home, 'sessions')
   for (const f of await fsp.readdir(dir).catch(() => [])) {
     if (!f.endsWith('.json')) continue
@@ -359,7 +371,7 @@ export function createAccount({
       const text = await fsp.readFile(from, 'utf8').catch(() => null)
       if (text === null) return
       await fsp.writeFile(to, text, { mode: 0o600 })
-      files.push(path.relative(dir, to))
+      files.push(path.relative(dir, to).split(path.sep).join('/')) // meta names are POSIX-style on every platform
     }
     await copy(settingsFile(), path.join(dir, 'settings.json'))
     await copy(stashFile, path.join(dir, 'pool-profile.json'))
@@ -734,7 +746,9 @@ export function createAccount({
    * sampler) with those agents' ids: each live background job among them is put on the idle-gated
    * restart queue (restarted at its next turn boundary, like any switch restart), once per switch.
    * Only within STALE_MS of an account -> account switch; a limit stop recorded (`limitStopAt`)
-   * before the switch doesn't count. `agents`: the scan's agents (default: the ones the switch saw).
+   * before the switch doesn't count. `agents`: the current scan's agents. Pass them: the default (the
+   * ones the switch saw) carries each job's limit stop from before the switch, so a job that stopped
+   * before it and again after it would be skipped (2026-11-20: nothing was queued).
    * -> `{ queued: [short], reason? }`.
    */
   async function respawnStale(agentIds, agents = lastAgents) {

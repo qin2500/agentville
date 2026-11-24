@@ -1,14 +1,16 @@
 // Replying to one agent from the inspector: preview (the exact text), then a one-time confirm that
 // delivers through the same inbox socket as Fleet. Fake sockets under AGENTVILLE_FLEET_SOCKET_ROOT only.
-import test from 'node:test'
+import baseTest from 'node:test'
+import { posixTest, shortTmp, LIVE_PID, sockPath } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { makeHome, IDS, ASK } from './fixtures/make-home.mjs'
 import { createServer } from '../server/serve.mjs'
+const test = posixTest(baseTest, 'unix-domain-socket inboxes (the Fleet/Claude messaging socket) have no Windows equivalent here')
 
-const root = fs.mkdtempSync('/tmp/vms-')
+const root = shortTmp('vms-')
 const env = makeHome(root)
 const sockRoot = path.join(root, 's')
 fs.mkdirSync(sockRoot)
@@ -21,7 +23,7 @@ const frames = {}
 const peers = []
 function peer(key, { ack }) {
   const sid = IDS[key]
-  const sock = path.join(sockRoot, `${key}.sock`)
+  const sock = sockPath(sockRoot, key)
   frames[key] = []
   const srv = net.createServer((c) => {
     let buf = ''
@@ -36,7 +38,7 @@ function peer(key, { ack }) {
   })
   peers.push(srv)
   fs.writeFileSync(path.join(claudeHome, 'sessions', `${sid.slice(0, 8)}.json`),
-    JSON.stringify({ pid: 1, sessionId: sid, kind: 'bg', status: 'idle', messagingSocketPath: sock, peerProtocol: 1 }))
+    JSON.stringify({ pid: LIVE_PID, sessionId: sid, kind: 'bg', status: 'idle', messagingSocketPath: sock, peerProtocol: 1 }))
   return new Promise((r) => srv.listen(sock, r))
 }
 await peer('leadBlocked', { ack: true })

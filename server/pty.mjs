@@ -75,7 +75,7 @@ const testing = () => process.env.AGENTVILLE_TEST === '1' || process.env.NODE_EN
  * @param {number} [o.idleMs]  how long a PTY with no sockets lives
  * @param {number} [o.endWaitMs]  how long a graceful end may take before it escalates
  */
-export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scrollback = SCROLLBACK } = {}) {
+export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scrollback = SCROLLBACK, platform = process.platform } = {}) {
   const sessions = new Map() // agentId -> session
   const tickets = new Map() // ticket -> { agentId, expires }
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: false })
@@ -247,7 +247,8 @@ export function createTerminals({ idleMs = IDLE_MS, endWaitMs = END_WAIT_MS, scr
   }
 
   const wait = (s, ms) => Promise.race([s.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), ms).unref?.())])
-  const signal = (s, sig) => { try { s.proc.kill(sig) } catch { /* gone */ } }
+  // Windows has no POSIX signals: node-pty's kill() takes none there and ends the process tree.
+  const signal = (s, sig) => { try { if (platform === 'win32') s.proc.kill(); else s.proc.kill(sig) } catch { /* gone */ } }
 
   /**
    * End an agent's PTY and wait for its process to exit. An attach client is simply hung up

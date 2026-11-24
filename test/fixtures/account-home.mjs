@@ -15,6 +15,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { fakeBin, LIVE_PID } from '../support/posix.mjs'
 
 export const TOKEN = 'dummy-pool-token-DO-NOT-LEAK-123'
 export const SETTINGS = {
@@ -56,8 +57,7 @@ export function makeAccountHome(root) {
     if (LIVE_JOBS.includes(short)) fs.writeFileSync(path.join(home, 'sessions', `${short}.json`), JSON.stringify({ pid: process.pid, sessionId: `${short}-0000-4000-8000-000000000000`, jobId: short, status: 'idle' }))
   }
   const log = path.join(root, 'claude.log')
-  const bin = path.join(root, 'claude-fake')
-  fs.writeFileSync(bin, `#!${process.execPath}
+  const bin = fakeBin(root, 'claude-fake', `
 const fs = require('fs'); const a = process.argv.slice(2)
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n')
 if (a[0] === 'auth') {
@@ -76,14 +76,13 @@ if (a[0] === 'respawn') {
   const stateFile = home + '/jobs/' + short + '/state.json'
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
   if (process.env.FAKE_CLOBBER === '1') fs.writeFileSync(stateFile, JSON.stringify({ ...state, respawnFlags: ['--model', 'cc/claude-opus-5-5'] }))
-  if (process.env.FAKE_NO_LIVE !== '1') fs.writeFileSync(home + '/sessions/' + short + '.json', JSON.stringify({ pid: 1, sessionId: state.sessionId, jobId: short, status: 'idle' }))
+  if (process.env.FAKE_NO_LIVE !== '1') fs.writeFileSync(home + '/sessions/' + short + '.json', JSON.stringify({ pid: ${LIVE_PID}, sessionId: state.sessionId, jobId: short, status: 'idle' }))
   const reply = process.env.FAKE_REPLY // ok | synthetic | (none)
   if (reply) fs.appendFileSync(home + '/projects/-w/' + state.sessionId + '.jsonl', JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(),
     ...(reply === 'synthetic' && { isApiErrorMessage: true }), message: { model: reply === 'synthetic' ? '<synthetic>' : 'claude-opus-5-5', content: [{ type: 'text', text: 'x' }] } }) + '\\n')
   process.exit(0)
 }
 `)
-  fs.chmodSync(bin, 0o755)
   return {
     env: {
       AGENTVILLE_TEST: '1', AGENTVILLE_CLAUDE_HOME: home, AGENTVILLE_CLAUDE_BIN: bin, AGENTVILLE_CODEX_HOME: path.join(root, 'no-codex'),

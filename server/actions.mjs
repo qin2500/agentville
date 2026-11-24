@@ -11,10 +11,10 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { findExecutable, shQuote } from './terminal.mjs'
+import { findExecutable } from './terminal.mjs'
+import { cliDirs, execTarget, quoteForShell } from './platform.mjs'
 
 const HOME = os.homedir()
-const CLAUDE_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.claude', 'local'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
 const RUN_MS = 60_000
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SUB_KINDS = ['subagent', 'teammate', 'thread']
@@ -31,15 +31,42 @@ export const NAME_MAX = 80
 const testing = () => process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
 const bad = (message, status = 400) => Object.assign(new Error(message), { status })
 
+/**
+ * The Windows safety net: `AGENTVILLE_WINDOWS_ACTIONS=off` puts back the old gates that turned
+ * accounts, switching, start/stop and restore off on Windows. Default on. Elsewhere it does nothing.
+ */
+export const windowsActionsOff = () => process.platform === 'win32' && /^(off|0|false|no)$/i.test(String(process.env.AGENTVILLE_WINDOWS_ACTIONS || '').trim())
+
+/** A fixed reason for an argv cmd.exe can't carry safely (line break, NUL, a `%…%` pair). */
+export const CMD_UNSAFE = "It can't be passed safely to claude.cmd: remove line breaks and % signs, or install the native Claude Code (claude.exe)"
+
+/**
+ * `execFile(bin, args)` through execTarget (a `.cmd`/`.bat` claude goes through cmd.exe on
+ * Windows), hidden, never through a shell otherwise. Never throws: a refused argv (execTarget
+ * throws on CR/LF/NUL and `%…%`) or a spawn that throws reaches `cb` as an error with code
+ * 'ECMDUNSAFE' / its own code. `exec` is injectable for tests.
+ */
+export function launch(bin, args, opts, cb, exec = execFile) {
+  let t
+  try { t = execTarget(bin, args) } catch {
+    process.nextTick(() => cb(Object.assign(new Error(CMD_UNSAFE), { code: 'ECMDUNSAFE' }), '', ''))
+    return null
+  }
+  try { return exec(t.file, t.args, { ...opts, ...t.opts, windowsHide: true }, cb) } catch (e) {
+    process.nextTick(() => cb(e, '', ''))
+    return null
+  }
+}
+
 /** Why starting/stopping/forking can't run here ('' = it can). */
 export function actionsBlocked() {
-  if (process.platform === 'win32') return 'Starting and stopping agents is not supported on Windows'
+  if (windowsActionsOff()) return 'Starting and stopping agents is not supported on Windows'
   if (testing() && !(process.env.AGENTVILLE_CLAUDE_HOME && process.env.AGENTVILLE_CLAUDE_BIN)) return 'Starting and stopping agents is disabled in tests'
   return ''
 }
 
 /** The real `claude` executable (never a shell function or alias), or the test fake. */
-export const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutable('claude', CLAUDE_DIRS)
+export const claudeBin = async () => process.env.AGENTVILLE_CLAUDE_BIN || findExecutable('claude', cliDirs('claude'))
 
 /** The folder agents of this project run in: a worktree's main checkout, if it's one. */
 export function projectRoot(cwd) {
@@ -130,18 +157,23 @@ export function forkPlan(a, fork, rawName) {
 }
 
 /** What the confirm step shows: the command exactly as it will run (with `claude` for the binary). */
-export const display = (plan) => ['claude', ...plan.args].map((x) => (/^[\w@%+=:,./[\]-]+$/.test(x) ? x : shQuote(x))).join(' ')
+export const display = (plan) => ['claude', ...plan.args].map((x) => (/^[\w@%+=:,./[\]-]+$/.test(x) ? x : quoteForShell(x))).join(' ')
 
-/** Runs a confirmed plan once. Resolves `{ ok, jobId?, error? }`; output is never returned as is. */
-export async function run(plan) {
-  const bin = await claudeBin()
+/**
+ * Runs a confirmed plan once. Resolves `{ ok, jobId?, error? }`; output is never returned as is.
+ * Never rejects: on Windows a failed `claude stop`, a missing binary or a refused argv is reported.
+ * `exec` and `bin` are injectable for tests.
+ */
+export async function run(plan, { exec = execFile, bin: findBin = claudeBin } = {}) {
+  const bin = await findBin()
   if (!bin) return { ok: false, error: 'Claude Code CLI not found' }
   return new Promise((resolve) => {
-    execFile(bin, plan.args, { cwd: plan.cwd, timeout: RUN_MS, maxBuffer: 256 * 1024, env: process.env, windowsHide: true }, (err, stdout, stderr) => {
+    launch(bin, plan.args, { cwd: plan.cwd, timeout: RUN_MS, maxBuffer: 256 * 1024, env: process.env }, (err, stdout, stderr) => {
       const out = `${stdout || ''}\n${stderr || ''}`
       const jobId = /(?:backgrounded ·|claude (?:attach|logs|stop))\s+([0-9a-f]{8})\b/.exec(out)?.[1] || (plan.kind === 'stop' ? plan.jobId : null)
+      if (err?.code === 'ECMDUNSAFE') return resolve({ ok: false, error: CMD_UNSAFE })
       if (err) return resolve({ ok: false, error: err.killed ? 'Claude Code took too long to answer' : `Claude Code exited with code ${typeof err.code === 'number' ? err.code : 1}` })
       resolve({ ok: true, jobId })
-    })
+    }, exec)
   })
 }

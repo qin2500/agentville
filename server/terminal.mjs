@@ -13,17 +13,33 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execTarget } from './platform.mjs'
 
-/** PATH first, then `extraDirs`; absolute and a regular executable file, or null. */
-export async function findExecutable(name, extraDirs = []) {
+/** PATHEXT entries to try on Windows, `.exe` first (a real binary beats its `.cmd` shim). */
+function winExts(env) {
+  const exts = String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.trim().toLowerCase()).filter(Boolean)
+  return [...exts.filter((e) => e === '.exe'), ...exts.filter((e) => e !== '.exe')]
+}
+
+/**
+ * PATH first, then `extraDirs`; absolute and a regular executable file, or null. On Windows
+ * each PATHEXT extension is tried and there is no X_OK check. `{ platform, env }` are for tests.
+ */
+export async function findExecutable(name, extraDirs = [], { platform = process.platform, env = process.env } = {}) {
   if (typeof name !== 'string' || !name) return null
-  const explicit = name.includes('/')
-  for (const dir of explicit ? ['.'] : [...(process.env.PATH || '').split(path.delimiter).filter(Boolean), ...extraDirs]) {
-    const candidate = path.resolve(dir, name)
-    try {
-      await fsp.access(candidate, fsp.constants.X_OK)
-      if ((await fsp.stat(candidate)).isFile()) return candidate
-    } catch { /* not here */ }
+  const win = platform === 'win32'
+  const explicit = name.includes('/') || (win && name.includes('\\'))
+  const exts = win ? winExts(env) : ['']
+  const hasExt = win && exts.includes(path.extname(name).toLowerCase())
+  const names = win ? [...(hasExt ? [name] : []), ...exts.map((e) => name + e)] : [name]
+  for (const dir of explicit ? ['.'] : [...(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean), ...extraDirs]) {
+    for (const n of names) {
+      const candidate = path.resolve(dir, n)
+      try {
+        if (!win) await fsp.access(candidate, fsp.constants.X_OK)
+        if ((await fsp.stat(candidate)).isFile()) return candidate
+      } catch { /* not here */ }
+    }
   }
   return null
 }
@@ -84,6 +100,7 @@ export function terminalAppLaunch(cwd, argv) {
  * infer success from elapsed time, retry, or fall back after a denial.
  */
 export function runAppleScript(launch, cwd, timeout = 15000) {
+  if (process.platform === 'win32') return Promise.resolve({ ok: false, error: 'Not supported on Windows' })
   const app = launch.app || 'The terminal'
   return new Promise((resolve) => {
     execFile(launch.executable, launch.args, { cwd, timeout, maxBuffer: 16384 }, (err, stdout, stderr) => {
@@ -107,11 +124,11 @@ export function runAppleScript(launch, cwd, timeout = 15000) {
 const REFUSAL_MS = 300
 const GRACE_MS = 1500
 
-function trySpawn(cmd, args, cwd) {
+function trySpawn(cmd, args, cwd, extra = {}) {
   return new Promise((resolve) => {
     let child
     try {
-      child = spawn(cmd, args, { cwd, stdio: 'ignore', detached: true })
+      child = spawn(cmd, args, { cwd, stdio: 'ignore', detached: true, ...extra })
     } catch (err) {
       return resolve({ ok: false, error: err?.code || 'spawn failed' })
     }
@@ -143,6 +160,10 @@ export async function detectTerminal() {
     const name = path.basename(bin)
     return TERMINALS[name] || name === 'x-terminal-emulator' ? { kind: 'spawn', name, bin } : null
   }
+  if (process.platform === 'win32') {
+    const bin = await findExecutable('wt.exe')
+    return bin ? { kind: 'wt', name: 'wt', bin } : { kind: 'cmd-start', name: 'cmd', bin: process.env.ComSpec || 'cmd.exe' }
+  }
   if (process.platform === 'darwin') {
     const ghostty = macGhostty()
     if (ghostty) return { kind: 'ghostty-mac', name: 'ghostty', bin: ghostty }
@@ -166,6 +187,17 @@ export async function openInTerminal(term, argv, cwd) {
   if (!term) return { ok: false, error: 'No supported terminal' }
   if (term.kind === 'ghostty-mac') return runAppleScript(ghosttyMacLaunch(term.bin, cwd, argv), cwd)
   if (term.kind === 'terminal-app') return runAppleScript(terminalAppLaunch(cwd, argv), cwd)
+  if (term.kind === 'wt' || term.kind === 'cmd-start') {
+    const [file, ...rest] = argv
+    let t
+    try {
+      t = term.kind === 'wt'
+        ? execTarget(term.bin, ['-d', cwd, file, ...rest])
+        : execTarget(term.bin, ['/c', 'start', '', '/D', cwd, file, ...rest])
+    } catch (err) { return { ok: false, error: `Could not open a terminal (${err.message})` } }
+    const r = await trySpawn(t.file, t.args, cwd, t.opts)
+    return r.ok ? r : { ok: false, error: `Could not open a terminal (${r.error})` }
+  }
   // Debian's x-terminal-emulator wrapper only guarantees `-e`.
   const args = term.name === 'x-terminal-emulator' ? ['-e', ...argv] : TERMINALS[term.name](cwd, argv)
   const r = await trySpawn(term.bin, args, cwd)

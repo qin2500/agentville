@@ -24,7 +24,7 @@
  * a stalled fleet. A proactive switch (not yet out) never takes one. The pool is NEVER chosen automatically
  * (AUTO_POOL): with nowhere at all to go it stays put, and `info().blocked` says so ({ why, until }) and the account log gets one line. It uses the normal switch (backups, canary,
  * rollback, audit log, running jobs only). Guards: a persisted toggle (default on), one automatic
- * switch per COOLDOWN_MS, never during another switch, never from the pool back to an account. Switching to the pool is manual only (the Account menu).
+ * switch per COOLDOWN_MS unless the account is really out (OUT_AT % or a limit hit), never during another switch, never from the pool back to an account. Switching to the pool is manual only (the Account menu).
  *
  * Quarantine accounts (network.mjs) can't be used on the work Wi-Fi; anywhere else they come
  * first. While a work network is marked, `enforce` checks every 10 s (cached usage only, so it
@@ -35,11 +35,40 @@
  *     is one (respecting the toggle and the cooldown, so jobs aren't restarted back and forth).
  * When an account runs out, quarantine accounts rank first off the work Wi-Fi and aren't
  * candidates on it.
+ *
+ * Low-priority accounts (`lowPriority` on the saved entry): used only when it pays,
+ * never excluded. The goal is still to use up every account before it resets; a low-priority one just
+ * counts for less while there is time.
+ *   - urgency = weekly room left (%) / hours until the weekly reset (at least URGENCY_MIN_HOURS): the burn
+ *     rate it needs to be used up before it expires. An unknown reset has urgency 0.
+ *   - A low-priority account's urgency counts LOW_PRIORITY_WEIGHT (a quarter) of its value.
+ *   - Use it or lose it: a low-priority account with more room than LOW_PRIORITY_DRAIN_PER_HOUR (half of
+ *     the flat-out weekly pace of one full 5-hour window per 5 hours at projection.mjs's RATIO_PRIOR, so
+ *     2.5 %/h) times its hours left counts as a regular account (full weight). The active one keeps that
+ *     status down to LOW_PRIORITY_DRAIN_PER_HOUR / LOW_PRIORITY_MARGIN (2 %/h), so it doesn't flicker.
+ *   - Held back: a low-priority target is skipped while a regular target (or a low-priority one that must
+ *     be drained) has an urgency at least its weighted urgency, or, on a rebalance or `prefer`, while the
+ *     active regular account's urgency times LOW_PRIORITY_MARGIN is. Accounts that aren't held back are
+ *     ranked exactly as before (quarantine, soonest weekly reset within SOON_WEEK_MS, most weekly room),
+ *     so with no low-priority account every decision is the same as before. With no regular account to
+ *     go to, nothing is held back: low-priority accounts are used when everything else is out.
+ *   - Leaving one: a rebalance moves off an active low-priority account (not one that must be drained) to
+ *     a regular one with rebalance room whose urgency is at least LOW_PRIORITY_MARGIN times the active
+ *     one's weighted urgency (or, as before, whose week resets REBALANCE_LEAD_MS sooner). Coming back
+ *     needs the reverse margin, so the two never trade places on a small change; the cooldown and the
+ *     15-minute rebalance check apply as always. A hand-picked account is still never rebalanced away.
+ *   - The network ban (off a quarantine account on the work Wi-Fi) ignores priority: it's a rule.
+ * Worked example (weights 0.25, margin 1.25): regular R has 50 % left and resets in 5 days (120 h): urgency
+ * 0.42. Low-priority L has 80 % left: a week out (168 h) its urgency is 0.48, weighted 0.12, so R wins. A
+ * day out (24 h) its urgency is 3.3 %/h: more than 2.5 %/h, so it must be drained and counts in full; it also
+ * resets within SOON_WEEK_MS, so it ranks first, and a rebalance off R takes it (it resets 4 days sooner and
+ * 0.25 x 3.3 = 0.83 beats 1.25 x 0.42 = 0.52). The decision carries `note` (also in `info().last.note` and
+ * `projection().next.note`): "low priority, but its week resets in 24 h with 80% left".
  */
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { writeAtomic } from './accounts.mjs'
-import { project, projectWeekly, weeklyPerFive, binding } from './projection.mjs'
+import { project, projectWeekly, weeklyPerFive, binding, RATIO_PRIOR } from './projection.mjs'
 
 export const OUT_AT = 99 // % used: the account is really out (the only thing that moves us off a manual pick)
 export const SWITCH_AT = 95 // % used, either window: switch before the wall
@@ -60,8 +89,43 @@ export const REBALANCE_MIN_ROOM = TARGET_MIN_ROOM // weekly % it must have left 
 export const REBALANCE_MAX_FIVE = 80 // 5-hour % it may have used (no 5-hour limit always passes)
 export const REBALANCE_CHECK_MS = 15 * 60e3 // how often the sampler re-reads the other accounts for it
 export const STALE_LOGIN_MS = 10 * 60e3 // a limit stop this soon after a switch, with room left, means the job is still on the old login
+/**
+ * How long a running Claude Code process may keep serving the login it read before a switch: the CLI
+ * caches its Keychain read for 30 s (2.1.329: `acn=30000` in the keychain store). A "continue" sent
+ * sooner can go out on the old, used-up login and stop on the limit again (2026-11-20 11:54: the
+ * Contracts Lead got "continue" 0.3 s after the switch and hit the limit again 2 s later).
+ */
+export const CRED_CACHE_MS = 30e3
+/** Nudges after an account switch wait until this long after it: the cache plus a margin. */
+export const NUDGE_AFTER_SWITCH_MS = CRED_CACHE_MS + 5e3
 export const MODEL_HOP_MS = 3600e3 // a model-specific limit ("hit your Opus limit") moves accounts at most once per hour
 export const HEADROOM_WARN = 300 // chars of Keychain room left below which the account menu shows it
+// Low-priority accounts (see the top of this file).
+export const LOW_PRIORITY_WEIGHT = 0.25 // a low-priority account's urgency counts this much
+export const LOW_PRIORITY_MARGIN = 1.25 // leaving or taking one over the active account needs this much more urgency
+export const URGENCY_MIN_HOURS = 1 // hours until the weekly reset, floored: no infinite urgency at the reset
+/** Weekly % per hour flat out: one full 5-hour window (100 %) per 5 hours at the default weekly-per-5-hour ratio. */
+export const FLAT_OUT_WEEK_PER_HOUR = (100 / 5) * RATIO_PRIOR
+/** A realistic weekly burn: half of flat out. More room than this times the hours left can't be used up in time. */
+export const LOW_PRIORITY_DRAIN_PER_HOUR = FLAT_OUT_WEEK_PER_HOUR / 2
+
+const H = 3600e3
+const hoursLeft = (u, now) => (u?.weekly?.resetsAt == null ? Infinity : Math.max(URGENCY_MIN_HOURS, (u.weekly.resetsAt - now) / H))
+/** Weekly room left (%) per hour until the weekly reset: the burn rate that uses the account up in time. 0 when unknown. */
+export function urgency(u, now) {
+  if (!u || u.error || !u.weekly) return 0
+  const h = hoursLeft(u, now)
+  return Number.isFinite(h) ? Math.max(0, 100 - u.weekly.used) / h : 0
+}
+/** Use it or lose it: more room than a realistic burn can spend before the reset (`active`: the lower staying threshold). */
+export function mustDrain(u, now, active = false) {
+  const h = hoursLeft(u, now)
+  if (!u || u.error || !u.weekly || !Number.isFinite(h)) return false
+  return 100 - u.weekly.used > h * LOW_PRIORITY_DRAIN_PER_HOUR / (active ? LOW_PRIORITY_MARGIN : 1)
+}
+const fmtHours = (u, now) => { const h = (u.weekly.resetsAt - now) / H; return h < 48 ? `${Math.max(1, Math.round(h))} h` : `${Math.round(h / 24)} days` }
+const fmtRoom = (u) => `${Math.round(100 - u.weekly.used)}%`
+const lowOf = (list) => new Set(list.filter((a) => a.lowPriority === true).map((a) => a.id))
 
 /**
  * Hard rule, no setting: automatic switching (sampler, limit hits, rebalance, network
@@ -104,19 +168,22 @@ export function extrapolate(u, { ageMs = 0, perHour = 0, ratio = 0 } = {}) {
  * `{ action: 'none', why }` or `{ action: 'switch', to, why }`, `why` in 'five_hour' | 'weekly' | 'projected' |
  * 'limit' | 'quarantine' | 'prefer' | 'rebalance' for a switch. `projectedMs`: time until the active 5-hour window is
  * projected to fill (null/absent: not projected); `manual`: the last change was a manual pick; `retryAt`: no
- * attempt before this time (backoff after a failed switch).
+ * attempt before this time (backoff after a failed switch). `lowPriority`: Set of low-priority account ids; a
+ * switch to one (or a rebalance off one) also carries `note`, a short plain-words reason.
  */
-export function decide({ enabled, active, saved, activeUsage, usage, limitHit, busy, lastAutoAt, poolAvailable, now, onWork = false, quarantine = new Set(), prefer = false, rebalance = false, projectedMs = null, manual = false, retryAt = 0 }) {
+export function decide({ enabled, active, saved, activeUsage, usage, limitHit, busy, lastAutoAt, poolAvailable, now, onWork = false, quarantine = new Set(), prefer = false, rebalance = false, projectedMs = null, manual = false, retryAt = 0, lowPriority = new Set() }) {
   if (active === 'pool') return { action: 'none', why: 'on the pool' }
   if (!saved.includes(active)) return { action: 'none', why: 'not a saved account' }
   const banned = onWork && quarantine.has(active)
   if (!enabled && !banned) return { action: 'none', why: 'off' }
   if (busy) return { action: 'none', why: 'a switch is running' }
   if (retryAt && now < retryAt) return { action: 'none', why: 'backoff' } // after a failed attempt, on every path
-  if (!banned && lastAutoAt && now - lastAutoAt < COOLDOWN_MS) return { action: 'none', why: 'cooldown' }
-  const five = activeUsage?.fiveHour?.used, week = activeUsage?.weekly?.used
   // Really out: the only thing that moves us off an account picked by hand.
   const hard = hardOut(activeUsage, limitHit)
+  // The cooldown stops back-and-forth on soft reasons. Really out, staying only stalls the fleet: it
+  // doesn't hold (2026-11-15 00:26: every lead sat on the weekly limit 2 min until the cooldown ended).
+  if (!banned && !hard && lastAutoAt && now - lastAutoAt < COOLDOWN_MS) return { action: 'none', why: 'cooldown' }
+  const five = activeUsage?.fiveHour?.used, week = activeUsage?.weekly?.used
   const soft = manual ? '' : five >= SWITCH_AT ? 'five_hour' : week >= SWITCH_AT ? 'weekly' : projectedMs != null && projectedMs <= PROJECT_WITHIN_MS ? 'projected' : ''
   const out = hard || soft
   const why = banned ? 'quarantine' : out || (prefer && !onWork && !quarantine.has(active) ? 'prefer' : '') || (rebalance && !manual ? 'rebalance' : '')
@@ -136,18 +203,40 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   const week_ = (a, b) => { const d = at(a, 'weekly') - at(b, 'weekly'); return Math.abs(d) < 3600e3 ? 0 : d } // within the hour: a tie
   const order = (a, b) => rank(a) - rank(b) || (soon(a) ? 0 : 1) - (soon(b) ? 0 : 1)
     || (soon(a) ? week_(a, b) : usage.get(a).weekly.used - usage.get(b).weekly.used) || at(a, 'fiveHour') - at(b, 'fiveHour')
-  const best = saved.filter((id) => id !== active && ok(usage.get(id)) && !(onWork && quarantine.has(id)) && (why !== 'prefer' || quarantine.has(id)))
-    .sort(order)[0]
+  // Low priority: `weak` counts at LOW_PRIORITY_WEIGHT (not one that must be drained before its reset).
+  const weak = (id, u, act = false) => lowPriority.has(id) && !mustDrain(u, now, act)
+  const worth_ = (id, u) => (weak(id, u) ? LOW_PRIORITY_WEIGHT : 1) * urgency(u, now)
+  // The active account competes with a low-priority target only while it isn't out (a rebalance or `prefer`).
+  const mineU = activeUsage || usage.get(active) // the network rule passes no activeUsage: the cached reading
+  const rivalActive = !out && !banned && !weak(active, mineU, true) ? LOW_PRIORITY_MARGIN * urgency(mineU, now) : -1
+  /** Skip the low-priority ones a regular account beats on urgency (none when there's no regular one): note why the rest won. */
+  const hold = (ids, u_) => {
+    const rivals = Math.max(rivalActive, ...ids.filter((id) => !weak(id, u_(id))).map((id) => urgency(u_(id), now)))
+    const kept = ids.filter((id) => !weak(id, u_(id)) || worth_(id, u_(id)) > rivals)
+    return { kept, held: ids.length - kept.length, alone: rivals < 0 }
+  }
+  const lowNote = (id, u, alone) => (!lowPriority.has(id) ? null : alone ? 'low priority, but no regular account has room'
+    : `low priority, but its week resets in ${fmtHours(u, now)} with ${fmtRoom(u)} left`)
+  const go = (to, extra = {}, alone = false) => { const note = lowNote(to, usage.get(to), alone); return { action: 'switch', to, why, ...extra, ...(note && { note }) } }
+  const pool_ = saved.filter((id) => id !== active && ok(usage.get(id)) && !(onWork && quarantine.has(id)) && (why !== 'prefer' || quarantine.has(id)))
+  const cand = hold(pool_, (id) => usage.get(id))
+  const best = cand.kept.sort(order)[0]
   if (why === 'rebalance') { // only for an account whose allowance expires well before the active one's, with real room
     // The active account's week must be known: an unreadable one (rate-limited, expired) is not "never expires".
     const w = !activeUsage?.error && activeUsage?.weekly
     if (!w || (w.resetsAt == null && w.used > 0)) return { action: 'none', why: 'not out' }
     const b = best && usage.get(best), mine = w.resetsAt ?? Infinity
-    const worth = b && rank(best) <= rank(active) && at(best, 'weekly') + REBALANCE_LEAD_MS <= mine && 100 - b.weekly.used >= REBALANCE_MIN_ROOM && (b.fiveHour.none || b.fiveHour.used < REBALANCE_MAX_FIVE)
-    return worth ? { action: 'switch', to: best, why } : { action: 'none', why: 'not out' }
+    const room = b && 100 - b.weekly.used >= REBALANCE_MIN_ROOM && (b.fiveHour.none || b.fiveHour.used < REBALANCE_MAX_FIVE)
+    const sooner = b && rank(best) <= rank(active) && at(best, 'weekly') + REBALANCE_LEAD_MS <= mine
+    // Off a low-priority account to a regular one that is clearly more urgent (the margin keeps them from trading places).
+    const off = b && weak(active, mineU, true) && !weak(best, b) // a low-priority account (not one to drain) to a regular one
+    const leave = off && urgency(b, now) >= LOW_PRIORITY_MARGIN * LOW_PRIORITY_WEIGHT * urgency(mineU, now)
+    if (!room || !(sooner || leave)) return { action: 'none', why: 'not out' }
+    if (off) return { action: 'switch', to: best, why, note: `off a low-priority account: this one's week resets in ${fmtHours(b, now)} with ${fmtRoom(b)} left` }
+    return go(best, {}, cand.alone)
   }
-  if (best) return { action: 'switch', to: best, why }
-  if (why === 'prefer') return { action: 'none', why: 'no quarantine account available' }
+  if (best) return go(best, {}, cand.alone)
+  if (why === 'prefer') return { action: 'none', why: cand.held ? 'the quarantine account is low priority' : 'no quarantine account available' }
   if (why === 'quarantine') { // off a quarantine account no matter what: the regular one that frees up soonest, used up or not
     const frees = (id) => usage.get(id)?.fiveHour?.resetsAt ?? Infinity
     const any = saved.filter((id) => id !== active && !quarantine.has(id)).sort((a, b) => frees(a) - frees(b))[0]
@@ -156,9 +245,9 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   // Really out and nothing with TARGET_MIN_ROOM: the best account that can still run, not a stalled fleet.
   if (hard && !banned) {
     const room = (id) => 100 - usage.get(id).weekly.used
-    const last = saved.filter((id) => id !== active && canRun(usage.get(id)) && !(onWork && quarantine.has(id)))
-      .sort((a, b) => rank(a) - rank(b) || room(b) - room(a) || at(a, 'weekly') - at(b, 'weekly'))[0]
-    if (last) return { action: 'switch', to: last, why, fallback: true }
+    const fb = hold(saved.filter((id) => id !== active && canRun(usage.get(id)) && !(onWork && quarantine.has(id))), (id) => usage.get(id))
+    const last = fb.kept.sort((a, b) => rank(a) - rank(b) || room(b) - room(a) || at(a, 'weekly') - at(b, 'weekly'))[0]
+    if (last) return go(last, { fallback: true }, fb.alone)
   }
   if (AUTO_POOL && poolAvailable) return { action: 'switch', to: 'pool', why } // never: AUTO_POOL is false
   return { action: 'none', why: NO_TARGET_WHY }
@@ -200,7 +289,7 @@ export function blockedUntil({ active, activeUsage, saved, usage, now, onWork = 
  * `account`: createAccount(); `agents()`: the current scan's agents; `nudge(ids)`: send "continue" to those jobs (serve.mjs);
  * `holding()`: true while the fleet is paused for usage (usage-pause.mjs): no "continue" nudge and no stale-login respawn then.
  */
-export function createSampler({ dataDir, account, agents, network, nudge = null, holding = () => false, now = Date.now }) {
+export function createSampler({ dataDir, account, agents, network, nudge = null, holding = () => false, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const file = path.join(dataDir, 'autoswitch.json')
   const samples = new Map() // account id ('personal' when unknown) -> [{ at, five, week }]
   let state = null // { enabled, lastAutoAt, last }
@@ -278,6 +367,42 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     if (state.stuck && (d.action === 'switch' || !UNDECIDED.has(d.why))) { delete state.stuck; await save() }
   }
 
+  /**
+   * Jobs (`stopped`, the scan's agents) that stopped on the limit after the account switch at `since` while the
+   * new account has room. First time this switch: "continue" (the cache has expired by now). Stopped again
+   * after that "continue": restart at the next turn boundary (account.respawnStale, given these fresh agents),
+   * then "continue" once the restart is done. `state.stale`: { for: since, nudged: { id: at }, respawned: [id] }.
+   */
+  async function staleLogin(stopped, since, at, active) {
+    if (state.stale?.for !== since) state.stale = { for: since, nudged: {}, respawned: [] }
+    const st = state.stale
+    const first = stopped.filter((a) => !(a.id in st.nudged)).map((a) => a.id)
+    const again = stopped.filter((a) => a.id in st.nudged && a.limitStopAt > st.nudged[a.id] && !st.respawned.includes(a.id))
+    let nudged = 0
+    if (first.length && nudge) {
+      try { for (const id of await nudge(first)) { st.nudged[id] = at; nudged++ } } catch { /* the next tick tries again */ }
+    }
+    let respawned = 0
+    if (again.length && typeof account.respawnStale === 'function') {
+      try {
+        const { queued = [] } = (await account.respawnStale(again.map((a) => a.id), again)) || {}
+        const ids = again.filter((a) => queued.includes(a.jobId)).map((a) => a.id)
+        st.respawned.push(...ids)
+        respawned = ids.length
+        // A restarted job waits for a prompt: "continue" once its restart is through.
+        if (ids.length && nudge && typeof account.settled === 'function') {
+          Promise.resolve(account.settled()).then((rs) => {
+            const done = new Set((rs || []).filter((r) => r.status === 'respawned').map((r) => r.id))
+            const back = again.filter((a) => ids.includes(a.id) && done.has(a.jobId)).map((a) => a.id)
+            return back.length && !isHolding() ? nudge(back) : null
+          }).catch(() => {})
+        }
+      } catch { /* left for the user: it shows as stopped on the limit */ }
+    }
+    if (nudged || respawned) state.last = { at, from: active, to: active, why: 'stale_login', nudged, respawned, fromLabel: '', toLabel: '' }
+    await save()
+  }
+
   async function decideTick() {
     await load()
     if ((await account.profile()) === 'pool') { latest = null; return { action: 'none', why: 'on the pool' } }
@@ -321,13 +446,13 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     // keeps "waiting for the 5-hour reset" alive past the reset and the stopped jobs get "continue" every tick.
     const eff = extrapolate(fresh(u, at), { ageMs, perHour: pace.perHour, ratio: pace.ratio })
     const projectedMs = pace.fiveEtaMs
-    // A limit stop soon after an account-to-account switch, with room on the active account: the job is still on the old login.
-    if (limitAgents.length && change && !change.viaPool && at - since <= STALE_LOGIN_MS && state.staleFor !== since && !isHolding()
-      && !(eff.fiveHour?.used >= SWITCH_AT) && !(eff.weekly?.used >= SWITCH_AT) && typeof account.respawnStale === 'function') {
-      state.staleFor = since
-      const ids = limitAgents.map((a) => a.id)
-      try { await account.respawnStale(ids); state.last = { at, from: u.id, to: u.id, why: 'stale_login', respawned: ids.length, fromLabel: '', toLabel: '' } } catch { /* the next limit stop falls through to a switch */ }
-      await save()
+    // A limit stop soon after an account-to-account switch, with room on the active account: the job went
+    // out on the old login (Claude's 30 s credential cache). Not a reason to switch again. Once the cache
+    // has expired, each such job gets one "continue" for this switch; a job that stops on the limit again
+    // after that is restarted at its next turn boundary (respawnStale), and nudged once it has been.
+    if (limitAgents.length && change && !change.viaPool && at - since <= STALE_LOGIN_MS && !isHolding()
+      && !(eff.fiveHour?.used >= SWITCH_AT) && !(eff.weekly?.used >= SWITCH_AT)) {
+      if (at - since >= CRED_CACHE_MS) await staleLogin(limitAgents, since, at, u.id)
       limitAgents = []
     }
     // A model-specific limit ("hit your Opus limit") is not the account running out: hop at most once an hour for it.
@@ -336,7 +461,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     if (model && state.lastModelHopAt && at - state.lastModelHopAt < MODEL_HOP_MS) limitAgents = []
     const limitIds = limitAgents.map((a) => a.id)
     const base = { enabled: state.enabled, active: u.id, saved, activeUsage: eff, limitHit: limitIds.length > 0, busy: account.isBusy(), lastAutoAt: state.lastAutoAt, poolAvailable: false, now: at,
-      onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)), projectedMs, manual, retryAt: state.retryAt || 0 }
+      onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)), lowPriority: lowOf(list), projectedMs, manual, retryAt: state.retryAt || 0 }
     const info = { active: { id: u.id, fiveHour: eff.fiveHour?.used ?? null, weekly: eff.weekly?.used ?? null, ageMs }, limitHit: limitIds, model }
     // Not out, or a guard says no: nothing else to check.
     const pre = decide({ ...base, usage: new Map() })
@@ -375,19 +500,22 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     const labels = new Map((await account.accounts.load()).map((a) => [a.id, a.label]))
     const names = { fromLabel: labels.get(from) || '', toLabel: d.to === 'pool' ? 'Pool' : labels.get(d.to) || '' }
     const t = all?.accounts?.find((x) => x.id === d.to)
-    const why = { reason: reasonOf(d.why), ...(info.model && d.why === 'limit' && { model: info.model }), active: info.active, limitHit: info.limitHit, target: { id: d.to, fiveHour: t?.fiveHour?.used ?? null, weekly: t?.weekly?.used ?? null } }
+    const why = { reason: reasonOf(d.why), ...(info.model && d.why === 'limit' && { model: info.model }), ...(d.note && { note: d.note }), active: info.active, limitHit: info.limitHit, target: { id: d.to, fiveHour: t?.fiveHour?.used ?? null, weekly: t?.weekly?.used ?? null } }
     let failed = false
     try {
       const out = await account.switchTo({ to: d.to }, await agents(), { auto: true, why })
       failed = Boolean(out.restored) // rolled back: the account did not change
       if (!failed) { state.lastAutoAt = at; if (info.model && d.why === 'limit') state.lastModelHopAt = at } // the cooldown starts with a switch that worked; retryAt governs failures
-      state.last = { at, from, to: d.to, ...names, why: d.why, restored: out.restored, respawned: out.results.filter((r) => r.status === 'respawned').length }
+      state.last = { at, from, to: d.to, ...names, why: d.why, ...(d.note && { note: d.note }), restored: out.restored, respawned: out.results.filter((r) => r.status === 'respawned').length }
       if (!failed && info.limitHit.length && nudge) { // jobs stopped on the limit: tell each to go on, once
+        // Not before Claude's credential cache has let go of the old login, or the "continue" can stop on it again.
+        const wait = at + NUDGE_AFTER_SWITCH_MS - now()
+        if (wait > 0) await sleep(wait)
         try { state.last.nudged = (await nudge([...new Set(info.limitHit)])).length } catch { state.last.nudged = 0 }
       }
     } catch (e) {
       failed = true
-      state.last = { at, from, to: d.to, ...names, why: d.why, error: e.status ? e.message : 'Switch failed' }
+      state.last = { at, from, to: d.to, ...names, why: d.why, ...(d.note && { note: d.note }), error: e.status ? e.message : 'Switch failed' }
       if (e.code === 'too_big') { // the Keychain item can't hold another login: stop retrying until there is room or the user switches
         state.tooBig = { at, size: e.size ?? null, max: e.max ?? null }
         state.last.error = e.message
@@ -419,7 +547,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     const all = await account.accounts.usage()
     const at = now()
     const d = decide({ enabled: state.enabled, active, saved: list.map((a) => a.id), activeUsage: null, usage: new Map(all.accounts.map((x) => [x.id, x])), limitHit: false,
-      busy: account.isBusy(), lastAutoAt: state.lastAutoAt, retryAt: state.retryAt || 0, poolAvailable: false, now: at, onWork: st.current.work, quarantine, prefer: true })
+      busy: account.isBusy(), lastAutoAt: state.lastAutoAt, retryAt: state.retryAt || 0, poolAvailable: false, now: at, onWork: st.current.work, quarantine, lowPriority: lowOf(list), prefer: true })
     const mine = all.accounts.find((x) => x.id === active)
     return d.action === 'switch' ? autoSwitch(d, active, at, { active: { id: active, fiveHour: mine?.fiveHour?.used ?? null, weekly: mine?.weekly?.used ?? null, ageMs: null }, limitHit: [] }, all) : d
   }
@@ -446,16 +574,16 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     const bind = binding(fiveHour, weekly)
     return { account: latest.id, saved: latest.saved, at: latest.at, error: latest.error, fiveHour, weekly, binding: bind, next: bind ? await nextAccount() : null }
   }
-  /** `{ to, label }`: where an automatic switch would go if the active account ran out now. */
+  /** `{ to, label, note? }`: where an automatic switch would go if the active account ran out now (`note`: why a low-priority one). */
   async function nextAccount() {
     await load()
     if (!state.enabled || !latest?.saved || !account.accounts.cachedUsage) return null
     const list = await account.accounts.load()
     const net = network ? (await network.status()).current : { work: false }
     const d = decide({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, manual: false, usage: new Map([...account.accounts.cachedUsage()].map(([id, x]) => [id, fresh(x, now())])),
-      limitHit: false, busy: false, lastAutoAt: null, poolAvailable: false, now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)) })
+      limitHit: false, busy: false, lastAutoAt: null, poolAvailable: false, now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)), lowPriority: lowOf(list) })
     if (d.action !== 'switch') return null
-    return { to: d.to, label: list.find((a) => a.id === d.to)?.label || 'another saved account' }
+    return { to: d.to, label: list.find((a) => a.id === d.to)?.label || 'another saved account', ...(d.note && { note: d.note }) }
   }
   async function info() {
     await load()

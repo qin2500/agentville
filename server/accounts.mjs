@@ -23,6 +23,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { usageWindows } from './research.mjs'
+import { renameRetry } from './fsutil.mjs'
+import { windowsActionsOff } from './actions.mjs'
 
 export const KEYCHAIN_SERVICE = 'Claude Code-credentials'
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
@@ -56,45 +58,76 @@ export function withOauth(current, oauth) {
   return JSON.stringify(obj)
 }
 
+/** Is `text` a JSON object (a whole credential item, not a damaged one)? */
+const isObjectText = (text) => { try { const j = JSON.parse(text); return Boolean(j) && typeof j === 'object' && !Array.isArray(j) } catch { return false } }
+
 /** Why saved accounts can't be used here ('' = they can). Tests must name a fake Claude home. */
 export function accountsBlocked() {
-  if (process.platform === 'win32') return 'Accounts are not supported on Windows'
+  // On Windows Claude Code keeps its login in `<claude home>/.credentials.json` (fileStore below).
+  // AGENTVILLE_WINDOWS_ACTIONS=off puts the old Windows gate back (safety net while unverified there).
+  if (windowsActionsOff()) return 'Accounts are not supported on Windows'
   if (testing() && !process.env.AGENTVILLE_CLAUDE_HOME) return 'Accounts are disabled in tests'
   return ''
 }
 
-export async function writeAtomic(file, text, mode) {
+/**
+ * Temp file + rename. The rename is retried for about 1 s while Windows reports the target busy
+ * (another process has it open); `file` keeps its old content until a rename succeeds, and the
+ * last error is thrown. `chmod` only sets the read-only bit on Windows: 0600 leaves it writable.
+ */
+export async function writeAtomic(file, text, mode, { rename } = {}) {
   const tmp = `${file}.agentville-${process.pid}.tmp`
   try {
     await fsp.writeFile(tmp, text, { mode })
     if (mode) await fsp.chmod(tmp, mode)
-    await fsp.rename(tmp, file)
+    await renameRetry(tmp, file, rename && { rename })
   } catch (e) {
     await fsp.rm(tmp, { force: true }).catch(() => {}) // a half-written temp file on a full disk
     throw e
   }
 }
 
+/**
+ * Runs `/usr/bin/security` with no shell. Only the exit status and stdout come back: stderr and the
+ * error object (whose message and `cmd` would repeat the argv, which may hold the hex secret) are
+ * dropped here and never logged. stdin is always closed, so nothing can wait on it.
+ */
 function runSecurity(args, input) {
   return new Promise((resolve) => {
-    const child = execFile('/usr/bin/security', args, { timeout: 10_000, maxBuffer: 64 * 1024 }, (err, stdout) => {
-      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || '') })
-    })
-    if (input !== undefined) child.stdin.end(input)
+    let child
+    try {
+      child = execFile('/usr/bin/security', args, { timeout: 10_000, maxBuffer: SECURITY_STDOUT_MAX }, (err, stdout) => {
+        resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || '') })
+      })
+    } catch { resolve({ code: 1, stdout: '' }); return } // a spawn that throws (its message can quote argv)
+    child.stdin?.on('error', () => {}) // the helper exiting before reading stdin is not a crash
+    child.stdin?.end(input ?? '')
   })
 }
 
 /**
- * The macOS Keychain item Claude Code reads. Reads use `-w`; writes go through `security -i` over
- * stdin with the JSON hex-encoded (`-X`), so the secret never appears in any process's argv.
+ * The macOS Keychain item Claude Code reads. Reads use `find-generic-password -w`; writes use
+ * `add-generic-password -U … -X <hex>` exactly as Claude Code itself does (2.1.330):
+ *  - when the whole command line fits `security -i`'s line limit, it goes over stdin to `security -i`
+ *    (the secret is never in any argv);
+ *  - when it does not (MCP OAuth tokens make the item grow past ~2 KB), `security -i` would silently
+ *    cut the line (a corrupt credential), so the same command runs with its arguments in argv, which
+ *    is what Claude Code does for this same item on every token refresh past that size. The hex is
+ *    then in that one process's argv while it runs (tens of ms), where `ps` (setuid root) can show
+ *    it to any local user, and any exec-auditing tool (EDR, eslogger) would record it; up to the 10 s
+ *    timeout if `security` hangs. An exposure Claude Code already causes for this same item.
+ * Both paths run /usr/bin/security, the one app on the item's access list, so neither raises a
+ * Keychain access prompt. Every write is read back and compared before it counts.
  */
-/**
- * The `security -i` line limit. Longer lines are silently truncated (a corrupt item), so a bigger
- * item is refused before anything is written. Claude Code itself falls back to passing the secret in
- * argv beyond this (visible to `ps`); that is never done here, and no other helper can update the
- * item without a Keychain access prompt (its access list trusts /usr/bin/security only).
- */
+/** The `security -i` line limit (Claude Code uses 4032; this stays under it). Longer lines go via argv. */
 export const KEYCHAIN_LINE_LIMIT = 4000
+/**
+ * The largest item written (UTF-8 bytes). Hex doubles it: 128 KiB in argv, far under ARG_MAX (1 MiB).
+ * A real item is a few KB; anything bigger is refused before any write, with code 'too_big'.
+ */
+export const KEYCHAIN_MAX_BYTES = 64 * 1024
+/** stdout cap for `security`: a read of the largest item, even printed as hex, fits. */
+const SECURITY_STDOUT_MAX = 4 * KEYCHAIN_MAX_BYTES + 64 * 1024
 /** `security`'s exit status for "the specified item could not be found in the keychain". */
 const SEC_NOT_FOUND = 44
 /**
@@ -113,39 +146,37 @@ export function keychainStore(service = KEYCHAIN_SERVICE, { run = runSecurity } 
     // `security -w` prints hex when the secret isn't plain text.
     return !text.startsWith('{') && /^(?:[0-9a-f]{2})+$/i.test(text) ? Buffer.from(text, 'hex').toString('utf8') : text
   }
-  /** The `security -i` line for `hex`, minus the hex: its fixed part depends on the item's account name. */
-  const linePrefix = async () => {
+  /** The item's account name (attributes only, never the secret); refused if it can't be quoted for `-i`. */
+  const account = async () => {
     const attrs = await security(['find-generic-password', '-s', service]) // attributes only, no secret
     const hexAcct = /"acct"<blob>=0x([0-9A-F]+)/i.exec(attrs.stdout)?.[1]
     const acct = hexAcct ? Buffer.from(hexAcct, 'hex').toString('utf8') : /"acct"<blob>="([^"]*)"/.exec(attrs.stdout)?.[1] || os.userInfo().username
     if (/["\\\n]/.test(acct) || /["\\\n]/.test(service)) throw new Error('Unsupported Keychain account name')
-    return `add-generic-password -U -a "${acct}" -s "${service}" -X `
+    return acct
   }
-  /** The largest item (UTF-8 bytes; = characters for ASCII JSON) whose line fits the helper's limit. */
-  const maxFor = (prefix) => Math.max(0, Math.floor((KEYCHAIN_LINE_LIMIT - prefix.length - 1) / 2))
   return {
     kind: 'keychain',
     read,
     /**
-     * `{ size, max, left }`: the live item's length now, the most the helper can write, and the
+     * `{ size, max, left }`: the live item's length now, the most a write accepts, and the
      * difference (negative = over). Lengths only, from the item's length; never its content.
      */
     async headroom() {
       const text = await read()
       const size = text === null ? 0 : Buffer.byteLength(text, 'utf8')
-      const max = maxFor(await linePrefix())
-      return { size, max, left: max - size }
+      return { size, max: KEYCHAIN_MAX_BYTES, left: KEYCHAIN_MAX_BYTES - size }
     },
     async write(text) {
-      const prefix = await linePrefix()
       const size = Buffer.byteLength(text, 'utf8')
-      // `security -i` silently truncates longer lines, which would store a corrupt credential, and
-      // the secret is never put in argv instead: a bigger item is refused, visibly, before any write.
-      const max = maxFor(prefix)
-      if (size > max) {
-        throw Object.assign(new Error(`Claude's Keychain login is too big to update safely (${size} characters; at most ${max}). Nothing was changed. Signing out of MCP servers you no longer use makes it smaller.`), { status: 409, code: 'too_big', tooLarge: true, size, max })
+      if (size > KEYCHAIN_MAX_BYTES) {
+        throw Object.assign(new Error(`Claude's Keychain login is unusually large (${size} characters; at most ${KEYCHAIN_MAX_BYTES}). Nothing was changed. Signing out of MCP servers you no longer use makes it smaller.`), { status: 409, code: 'too_big', tooLarge: true, size, max: KEYCHAIN_MAX_BYTES })
       }
-      await security(['-i'], `${prefix}${Buffer.from(text, 'utf8').toString('hex')}\n`)
+      const acct = await account()
+      const hex = Buffer.from(text, 'utf8').toString('hex')
+      const line = `add-generic-password -U -a "${acct}" -s "${service}" -X ${hex}\n`
+      if (Buffer.byteLength(line, 'utf8') <= KEYCHAIN_LINE_LIMIT) await security(['-i'], line) // fgets counts bytes
+      else await security(['add-generic-password', '-U', '-a', acct, '-s', service, '-X', hex])
+      // Exit codes are not relied on (`security -i` reports the session, not each command): the read-back decides.
       if ((await read()) !== text) throw new Error('The Keychain did not take the new login')
     },
   }
@@ -316,7 +347,7 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
     await ensureDir()
     await writeAtomic(slotFile(id), slotText(oauth), 0o600)
   }
-  const publicOf = (a, liveId, pool) => ({ id: a.id, label: a.label, email: a.email, subscriptionType: a.subscriptionType || null, quarantine: a.quarantine === true, active: !pool && a.id === liveId, signedIn: a.id === liveId })
+  const publicOf = (a, liveId, pool) => ({ id: a.id, label: a.label, email: a.email, subscriptionType: a.subscriptionType || null, quarantine: a.quarantine === true, lowPriority: a.lowPriority === true, active: !pool && a.id === liveId, signedIn: a.id === liveId })
   const cleanLabel = (label) => {
     if (label == null || label === '') return ''
     if (typeof label !== 'string' || label.trim().length > 60 || /[\u0000-\u001f\u007f]/.test(label)) throw fail(400, 'label must be text of at most 60 characters')
@@ -379,7 +410,7 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
         await fsp.chmod(tmp, before.mode & 0o777)
         const after = await fsp.stat(file).catch(() => null)
         if (!after || after.mtimeMs !== before.mtimeMs || after.size !== before.size) { await fsp.rm(tmp, { force: true }); continue }
-        await fsp.rename(tmp, file)
+        await renameRetry(tmp, file)
         return true
       } catch (e) {
         await fsp.rm(tmp, { force: true }).catch(() => {})
@@ -647,19 +678,24 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
     return { restored }
   })
 
-  /** PATCH: a new `label`, and/or `quarantine` (true: never used on the work Wi-Fi). */
+  /**
+   * PATCH: a new `label`, and/or `quarantine` (true: never used on the work Wi-Fi), and/or `lowPriority`
+   * (true: auto-switch weights it down, autoswitch.mjs). Each flag is stored only when true.
+   */
   const rename = (id, body) => exclusive(async () => {
     guard()
-    const hasLabel = body?.label !== undefined, hasQ = body?.quarantine !== undefined
-    if (!hasLabel && !hasQ) throw fail(400, 'Nothing to change: send label and/or quarantine')
+    const hasLabel = body?.label !== undefined, hasQ = body?.quarantine !== undefined, hasLow = body?.lowPriority !== undefined
+    if (!hasLabel && !hasQ && !hasLow) throw fail(400, 'Nothing to change: send label, quarantine and/or lowPriority')
     const label = hasLabel ? cleanLabel(body.label) : null
     if (hasLabel && !label) throw fail(400, 'label must be text of at most 60 characters')
     if (hasQ && typeof body.quarantine !== 'boolean') throw fail(400, 'quarantine must be true or false')
+    if (hasLow && typeof body.lowPriority !== 'boolean') throw fail(400, 'lowPriority must be true or false')
     const accounts = await load()
     const entry = accounts.find((a) => a.id === id)
     if (!entry) throw fail(404, 'No such account')
     if (hasLabel) entry.label = label
     if (hasQ) { if (body.quarantine) entry.quarantine = true; else delete entry.quarantine }
+    if (hasLow) { if (body.lowPriority) entry.lowPriority = true; else delete entry.lowPriority }
     await saveMeta(accounts)
     const liveText = await live().read().catch(() => null) // only for `signedIn` in the reply
     return { account: publicOf(entry, liveText ? await identify(liveText).catch(() => null) : null, (await poolState()).active) }
@@ -681,11 +717,12 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
    * Write `oauth` as the Claude login in Claude's store, keeping every other key of the item as it
    * is right now (MCP logins and the like). Returns the text written (null when nothing changed).
    * If the live item can't be read, this throws and writes nothing: writing without it would drop
-   * every other key (MCP logins).
+   * every other key (MCP logins). `base` (a rollback's backup) is used in place of a live item that
+   * is not a JSON object (a damaged write), so its other keys are not lost with it.
    */
-  async function putLogin(oauth) {
+  async function putLogin(oauth, { base } = {}) {
     const cur = await live().read()
-    const text = withOauth(cur, oauth)
+    const text = withOauth(base !== undefined && !isObjectText(cur) ? base : cur, oauth)
     if (text === cur) return null
     await live().write(text)
     return text
@@ -737,7 +774,7 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
     const slot = accountId ? oauthOf(await readSlot(accountId)) : null
     const backup = oauthOf(text)
     const best = slot && expiresOf(slot) > expiresOf(backup) ? slot : backup
-    const written = await putLogin(best)
+    const written = await putLogin(best, { base: text })
     memo = null
     return written !== null
   }

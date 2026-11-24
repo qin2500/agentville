@@ -84,10 +84,10 @@ test('capture saves the current login (0600 files, 0700 folder) and dedupes by a
     t.login(a1, 'A')
     let r = await t.post('/api/accounts/capture', { label: 'Work' })
     assert.equal(r.status, 200, r.text)
-    assert.deepEqual(r.json.account, { id: UUID.A, label: 'Work', email: 'a@example.com', subscriptionType: 'max', quarantine: false, active: false, signedIn: true }, 'on the pool, so not active')
-    assert.equal(fs.statSync(path.join(t.dataDir, 'accounts')).mode & 0o777, 0o700)
-    assert.equal(fs.statSync(path.join(t.dataDir, 'accounts.json')).mode & 0o777, 0o600)
-    assert.equal(fs.statSync(path.join(t.dataDir, 'accounts', `${UUID.A}.json`)).mode & 0o777, 0o600)
+    assert.deepEqual(r.json.account, { id: UUID.A, label: 'Work', email: 'a@example.com', subscriptionType: 'max', quarantine: false, lowPriority: false, active: false, signedIn: true }, 'on the pool, so not active')
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(t.dataDir, 'accounts')).mode & 0o777, 0o700)
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(t.dataDir, 'accounts.json')).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(t.dataDir, 'accounts', `${UUID.A}.json`)).mode & 0o777, 0o600)
     assert.equal(t.slot('A'), a1, 'the credential is stored exactly as Claude had it')
     assert.ok(!fs.readFileSync(path.join(t.dataDir, 'accounts.json'), 'utf8').includes(TOKEN_MARK), 'metadata holds no secret')
 
@@ -116,7 +116,7 @@ test('add/start then add/finish saves the new login and leaves Claude\'s credent
     let r = await t.post('/api/accounts/add/start')
     assert.deepEqual([r.status, r.json.command, r.json.opened], [200, 'claude auth login', false], 'no terminal under test')
     assert.equal((await t.get('/api/accounts')).json.adding, true)
-    assert.equal(fs.statSync(path.join(t.dataDir, 'accounts', 'pending-add.json')).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(t.dataDir, 'accounts', 'pending-add.json')).mode & 0o777, 0o600)
     r = await t.post('/api/accounts/add/finish', {})
     assert.deepEqual([r.status, r.json.error], [409, 'No new login yet. Finish signing in in the terminal, then try again.'])
 
@@ -342,7 +342,7 @@ test('Undo after an account -> account switch puts the previous login back byte 
     assert.equal(t.live(), b)
     const sets = fs.readdirSync(path.join(t.dataDir, 'account-backups')).sort()
     const dir = path.join(t.dataDir, 'account-backups', sets.at(-1))
-    assert.equal(fs.statSync(path.join(dir, 'credential.json')).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(dir, 'credential.json')).mode & 0o777, 0o600)
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')).changed, ['credential.json', 'oauth-account.json'], 'only the login changed')
     // The user edits settings after the switch: Undo of an account switch must not revert that.
     fs.writeFileSync(path.join(t.home.home, 'settings.json'), settings.replace('"opus"', '"sonnet"'))

@@ -38,6 +38,7 @@ import { createSubLimitNudger } from './sub-limit.mjs'
 import { createUsagePause } from './usage-pause.mjs'
 import { createResearch } from './research.mjs'
 import { createNetwork } from './network.mjs'
+import { cliDirs, isWin } from './platform.mjs'
 import { detectTerminal, findExecutable, openInTerminal, runAppleScript } from './terminal.mjs'
 import { normalizeLayout, layoutLeaves, ghosttyLayoutLaunch } from './ghostty-layout.mjs'
 import { createTerminals } from './pty.mjs'
@@ -52,8 +53,8 @@ const SCAN_TTL_MS = 2000
 const STALE_MS = 60_000 // how old a scan may be and still be served while the next one runs
 const HOME = os.homedir()
 // Never inside an app bundle; a shell function or alias is invisible here by construction.
-const CLAUDE_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.claude', 'local'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
-const CODEX_DIRS = [path.join(HOME, '.local', 'bin'), path.join(HOME, '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+const CLAUDE_DIRS = cliDirs('claude')
+const CODEX_DIRS = cliDirs('codex')
 export const NEVER_STARTED = "This launch failed before it started, so there's no session to open"
 const refuse = (status, message) => Object.assign(new Error(message), { status })
 
@@ -417,6 +418,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     const focus = typeof body?.focus === 'string' && ids.includes(body.focus) ? body.focus : null
     const launch = ghosttyLayoutLaunch(term.bin, tree, commands, { focus, cellW: n(body?.cell?.w), cellH: n(body?.cell?.h), width: n(body?.size?.w), height: n(body?.size?.h) })
     if (!launch) return [501, { error: 'Popping out a split layout needs Ghostty' }]
+    if (isWin) return [501, { error: 'Popping out a split layout is not supported on Windows' }]
     const r = await runAppleScript(launch, HOME, 30000)
     if (r.ok) return [200, { ok: true, terminal: term.name, panes: ids.length, closed: running }]
     return [502, { error: running.length ? `${r.error} The built-in terminals were already closed; open them again from the list.` : r.error, closed: running }]

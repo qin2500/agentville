@@ -129,7 +129,7 @@ export function createSpend(app) {
     const p = d.projection, a = d.autoSwitch;
     const row = (k, v, cls = '') => `<div class="${cls}"><dt>${k}</dt><dd class="num">${v}</dd></div>`;
     const last = a?.last;
-    const lastLine = last ? `Last: ${when(last.at)}, ${esc(last.fromLabel || 'account')} → ${esc(last.toLabel || last.to)} (${esc(WHY[last.why] || last.why)})${last.error ? ` — failed: ${esc(last.error)}` : last.restored ? ' — rolled back' : ''}` : '';
+    const lastLine = last ? `Last: ${when(last.at)}, ${esc(last.fromLabel || 'account')} → ${esc(last.toLabel || last.to)} (${esc(WHY[last.why] || last.why)}${last.note ? `; ${esc(last.note)}` : ''})${last.error ? ` — failed: ${esc(last.error)}` : last.restored ? ' — rolled back' : ''}` : '';
     return `<div class="spendpop">
       <div class="sp-head"><h4 id="sp-h">Token spend</h4>
         <span class="sp-k">Last hour <b class="num">${fmt(s.last60.tokens)}</b> tokens</span></div>
@@ -151,7 +151,7 @@ export function createSpend(app) {
              ${paceText(p.fiveHour) ? `<p class="helper sp-why" data-sp-five-why>${esc(paceText(p.fiveHour))}</p>` : ''}
              <p class="sp-line" data-sp-week><span>Weekly</span><b>${esc(weeklyText(p.weekly))}</b><span class="dim num">${p.weekly ? `${Math.round(p.weekly.used)}% used` : ''}</span></p>
              ${weeklyDetail(p.weekly) ? `<p class="helper sp-why" data-sp-week-why>${esc(weeklyDetail(p.weekly))}</p>` : ''}
-             ${p.binding && p.next ? `<p class="helper" data-sp-next>Then auto-switches to ${esc(p.next.label)}.</p>` : ''}
+             ${p.binding && p.next ? `<p class="helper" data-sp-next>Then auto-switches to ${esc(p.next.label)}${p.next.note ? ` (${esc(p.next.note)})` : ''}.</p>` : ''}
              <p class="helper">Checked ${when(p.at)}, every minute. Times assume the agents keep going.</p>`}
       </section>
       <section aria-label="Auto-switch">

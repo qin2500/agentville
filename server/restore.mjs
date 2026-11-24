@@ -1,6 +1,6 @@
 /**
- * Restore after crash: bring back the crown agents (role 'boss') and the agents the user marked
- * Important that were running when the Mac went down.
+ * Restore after crash: bring back every top-level background job (crown, lead or solo) that was
+ * running when the Mac went down, plus terminal sessions that are crown agents or marked Important.
  *
  * Claude Code's daemon does not restart background jobs after a reboot: it logs
  * `bg adopt: adopted=0 respawned=0 dead=N` and leaves them. So on every scan we keep a small
@@ -27,8 +27,9 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { claudeBin } from './actions.mjs'
-import { shQuote } from './terminal.mjs'
+import { claudeBin as findClaude, CMD_UNSAFE, launch, windowsActionsOff } from './actions.mjs'
+import { quoteForShell } from './platform.mjs'
+import { renameRetry } from './fsutil.mjs'
 
 export const CROWN_ROLES = ['boss'] // the roles the village draws with a crown (web/src/world.js)
 export const BOOT_SLACK_MS = 2 * 60_000 // two readings of one boot time differ by at most this
@@ -44,7 +45,13 @@ const waitMs = () => Number(process.env.AGENTVILLE_RESTORE_WAIT_MS) || 60_000
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const bad = (message, status = 400) => Object.assign(new Error(message), { status })
 
-/** When this machine booted (ms). AGENTVILLE_BOOT_TIME pins it in tests. os.uptime() reads kern.boottime on macOS. */
+/**
+ * When this machine booted (ms). AGENTVILLE_BOOT_TIME pins it in tests. os.uptime() reads kern.boottime
+ * on macOS and GetTickCount64 on Windows. Windows Fast Startup (the default "Shut down") hibernates
+ * the kernel instead of booting it fresh, so the uptime keeps counting across a shut down + power on
+ * and that is not seen as a new boot. A crash, a Restart or a power loss does reset it, which is what
+ * restore is for; a Fast Startup "shut down" with agents running just isn't offered as a crash.
+ */
 export function bootTime() {
   const pinned = Number(process.env.AGENTVILLE_BOOT_TIME)
   if (pinned) return pinned
@@ -54,7 +61,8 @@ export const sameBoot = (a, b) => Math.abs((a || 0) - (b || 0)) <= BOOT_SLACK_MS
 
 /** Why restoring can't run here ('' = it can). Tests must name a fake Claude home and a fake `claude`. */
 export function restoreBlocked() {
-  if (process.platform === 'win32') return 'Restoring agents is not supported on Windows'
+  // AGENTVILLE_WINDOWS_ACTIONS=off puts the old Windows gate back.
+  if (windowsActionsOff()) return 'Restoring agents is not supported on Windows'
   if (testing() && !(process.env.AGENTVILLE_CLAUDE_HOME && process.env.AGENTVILLE_CLAUDE_BIN)) return 'Restoring agents is disabled in tests'
   return ''
 }
@@ -147,13 +155,16 @@ export function runningSet(agents, now = Date.now()) {
     .sort((x, y) => (x.id < y.id ? -1 : 1))
 }
 
+/** A display-only `cd <dir> && <cmd>` (`;` in PowerShell 5, which has no `&&`). */
+const cdThen = (dir, cmd) => `cd ${quoteForShell(dir)}${process.platform === 'win32' ? ';' : ' &&'} ${cmd}`
+
 /**
  * `<claude home>` is read for: jobs/<short>/state.json (state, sessionId, resumeSessionId, cwd,
  * worktreePath, respawnFlags, providerEnv; the last two only when building a restore),
  * projects/<dir>/<sid>.jsonl (existence only), sessions/*.json (pid, sessionId, jobId, inbox) and
- * daemon/roster.json (workers' pids).
+ * daemon/roster.json (workers' pids). Tests may inject `execFile` (the CLI runner) and `bin` (finds `claude`).
  */
-export function createRestore({ dataDir, claudeHome }) {
+export function createRestore({ dataDir, claudeHome, execFile: execImpl = execFile, bin: claudeBin = findClaude }) {
   const file = path.join(dataDir, 'restore.json')
   let data = null
   let queue = Promise.resolve()
@@ -176,7 +187,7 @@ export function createRestore({ dataDir, claudeHome }) {
       await fsp.mkdir(dataDir, { recursive: true })
       const tmp = `${file}.${process.pid}.tmp`
       await fsp.writeFile(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
-      await fsp.rename(tmp, file)
+      await renameRetry(tmp, file)
       data = next
       return next
     })
@@ -261,7 +272,8 @@ export function createRestore({ dataDir, claudeHome }) {
 
   /**
    * Every entry from before this boot, each with a verdict: 'lost' | 'running' | 'stopped' |
-   * 'removed' | 'no-transcript' | 'not-chosen' (neither a crown agent nor Important).
+   * 'removed' | 'no-transcript' | 'not-chosen' (a terminal session or Codex thread that is neither a crown agent nor Important;
+   * background jobs are always chosen).
    * `important(id)` is the current mark, so marking a lost agent after the crash still counts.
    */
   async function examine({ important = () => false, live = () => false, removed = () => false, now = Date.now(), boot = bootTime() } = {}) {
@@ -274,7 +286,9 @@ export function createRestore({ dataDir, claudeHome }) {
     const codex = []
     for (const e of prev.running) {
       if (removed(e.id) && !live(e.id)) continue // quiet for over QUIET_REMOVE_DAYS: gone from the app
-      const chosen = CROWN_ROLES.includes(e.role) || e.important || important(e.id)
+      // Every top-level background job comes back (the user's leads: get straight back to work after a
+      // reboot, decided 2026-11-20). Terminal sessions and Codex threads still need crown or Important.
+      const chosen = e.kind === 'job' || CROWN_ROLES.includes(e.role) || e.important || important(e.id)
       const base = { id: e.id, name: e.name, project: e.project, cwd: e.cwd, role: e.role, crown: CROWN_ROLES.includes(e.role), important: e.important || important(e.id), seen: e.seen }
       if (e.kind === 'codex') {
         // Listed only: a Codex thread is reopened in the Codex app. Never a command here.
@@ -296,7 +310,7 @@ export function createRestore({ dataDir, claudeHome }) {
         else if (!(await transcript(e.sid))) verdict = 'no-transcript'
         else verdict = chosen ? 'lost' : 'not-chosen'
         const cmd = `claude --resume ${e.sid}`
-        sessions.push({ ...base, sid: e.sid, verdict, command: e.cwd ? `cd ${shQuote(e.cwd)} && ${cmd}` : cmd })
+        sessions.push({ ...base, sid: e.sid, verdict, command: e.cwd ? cdThen(e.cwd, cmd) : cmd })
       }
     }
     return { boot, crashBoot: prev.boot, at: prev.at, dismissed: sameBoot(d.dismissed, boot), jobs, sessions, codex }
@@ -328,13 +342,13 @@ export function createRestore({ dataDir, claudeHome }) {
     return { short: j.short, id: j.id, name: j.name, project: j.project, crown: j.crown, important: j.important, respawn, resume }
   }
   // Brackets are quoted too: pasted into zsh, `opus[1m]` would be a glob.
-  const display = (args) => ['claude', ...args].map((x) => (/^[\w@%+=:,./-]+$/.test(x) ? x : shQuote(x))).join(' ')
+  const display = (args) => ['claude', ...args].map((x) => (/^[\w@%+=:,./-]+$/.test(x) ? x : quoteForShell(x))).join(' ')
   /** The confirm step's view of a plan: exact commands; env key names only, never values. */
   const shown = (p) => ({
     id: p.id, short: p.short, name: p.name, project: p.project, crown: p.crown, important: p.important,
     command: display(p.respawn.args),
     fallback: p.resume.unavailable ? { unavailable: p.resume.unavailable }
-      : { command: `cd ${shQuote(p.resume.cwd)} && ${display(p.resume.args)}`, envKeys: p.resume.envKeys },
+      : { command: cdThen(p.resume.cwd, display(p.resume.args)), envKeys: p.resume.envKeys },
   })
 
   /** `ids`: agent ids from the lost list (all of them when omitted). */
@@ -353,9 +367,9 @@ export function createRestore({ dataDir, claudeHome }) {
   // ---------- run ----------
   function exec(bin, args, { cwd, env }) {
     return new Promise((resolve) => {
-      execFile(bin, args, { cwd, env, timeout: RUN_MS, maxBuffer: 256 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-        resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), out: `${stdout || ''}\n${stderr || ''}` })
-      })
+      launch(bin, args, { cwd, env, timeout: RUN_MS, maxBuffer: 256 * 1024 }, (err, stdout, stderr) => {
+        resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: Boolean(err?.killed), unsafe: err?.code === 'ECMDUNSAFE', out: `${stdout || ''}\n${stderr || ''}` })
+      }, execImpl)
     })
   }
   /** Until the job has a live process again, or the wait runs out. */
@@ -368,7 +382,7 @@ export function createRestore({ dataDir, claudeHome }) {
       await sleep(250)
     }
   }
-  const failText = (what, r) => (r.timedOut ? `${what} timed out` : `${what} failed (exit ${r.code})`)
+  const failText = (what, r) => (r.unsafe ? `${what} refused: ${CMD_UNSAFE.charAt(0).toLowerCase()}${CMD_UNSAFE.slice(1)}` : r.timedOut ? `${what} timed out` : `${what} failed (exit ${r.code})`)
 
   /**
    * Runs confirmed plans one at a time. Each result: `{ id, short, status: 'restored' | 'running' |

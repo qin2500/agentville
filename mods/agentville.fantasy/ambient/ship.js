@@ -24,7 +24,12 @@ const tau = Math.PI * 2;
 const levelOf = (world, venue) => Math.max(0, world?.venues?.[venue]?.level | 0);
 const venueOf = (ctx, a) => ctx.world?.venues?.[a.venue] ?? null;
 const harbours = world => Object.values(world?.venues || {}).filter(v => v && v.kind === HARBOUR).sort((p, q) => (p.id < q.id ? -1 : 1));
-const bobOf = (a, ctx) => (ctx.reduceMotion || ctx.motion === false ? 0 : Math.sin(tau * ((ctx.now || 0) / BOB.period + (a.bobPhase || 0))) * BOB.amp);
+// Only a hull afloat bobs: on a land or deck tile (the quay, a pier, a prop) it must sit still.
+const bobOf = (a, ctx) => (ctx.reduceMotion || ctx.motion === false || !afloat(ctx.world, a) ? 0 : Math.sin(tau * ((ctx.now || 0) / BOB.period + (a.bobPhase || 0))) * BOB.amp);
+const afloat = (world, a) => {
+  const p = a.warp ?? a, x = Math.floor(p.x), y = Math.floor(p.y);
+  return isWater(world?.grid, x, y) && !venueTiles(world, a.venue).has(`${x},${y}`);
+};
 const here = a => a.warp ?? { x: a.x, y: a.y };
 const setPath = (a, pts) => { a.path = Float32Array.from(pts); a.arrived = false; };
 
@@ -199,6 +204,25 @@ function clearRun(world, v, a, b) {
   return true;
 }
 
+/** The tug's mooring: the nominal spot, moved seaward to the first open-water tile clear of the venue's objects and past the
+ *  pier heads. The quay and its shore rows are land, and the lanes between the piers hold the berthed ships, so a tug
+ *  placed on either would sit on the quay or on top of a hull. */
+function tugHome(world, v, dir) {
+  const g = world?.grid, solid = venueTiles(world, v.id);
+  const x0 = v.tx + 4.5 + dir.dx * 2, y0 = v.ty + 1.5 + dir.dy * 1;
+  let reach = -Infinity;   // how far seaward (along dir) the piers run
+  for (const key of pierTiles(world, v.id)) {
+    const [px, py] = key.split(',').map(Number);
+    reach = Math.max(reach, (dir.dx ? px * dir.dx : py * dir.dy) + 1);
+  }
+  for (let k = 0; k < 24; k++) {
+    const x = x0 + dir.dx * k, y = y0 + dir.dy * k, tx = Math.floor(x), ty = Math.floor(y);
+    if ((dir.dx ? tx * dir.dx : ty * dir.dy) < reach) continue;
+    if (isWater(g, tx, ty) && !solid.has(`${tx},${ty}`)) return { x, y };
+  }
+  return { x: x0, y: y0 };
+}
+
 /** Tug (tier >= 3), rowboats and gulls (tier 4) for every harbour venue; rand(...keys) -> [0,1). */
 export function spawnHarbourLife(world, rand) {
   const out = [];
@@ -206,8 +230,8 @@ export function spawnHarbourLife(world, rand) {
   for (const v of harbours(world)) {
     const lv = levelOf(world, v.id), dir = seaward(v);
     if (lv >= TUG_TIER) {
-      // the tug waits in the first water row a little east of the venue anchor (the main pier head is at the anchor)
-      const home = { x: v.tx + 4.5 + dir.dx * 2, y: v.ty + 1.5 + dir.dy * 1 };
+      // the tug waits in the first open-water tile a little east of the venue anchor (the main pier head is at the anchor)
+      const home = tugHome(world, v, dir);
       out.push({ id: `tug:${v.id}:0`, kind: 'tug', venue: v.id, x: home.x, y: home.y, home, gridFree: true, speed: TUG_SPEED, face: 0, anim: 'idle' });
     }
     if (lv >= LIFE_TIER) {

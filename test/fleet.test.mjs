@@ -6,6 +6,8 @@ import path from 'node:path'
 import { makeHome, IDS } from './fixtures/make-home.mjs'
 import { createServer } from '../server/serve.mjs'
 import { notePathFor } from '../server/fleet.mjs'
+import { LIVE_PID } from './support/posix.mjs'
+const SEND_SKIP = process.platform === 'win32' && 'sending to agents is unix-socket only, and unsupported on Windows'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-fleet-'))
 Object.assign(process.env, makeHome(root))
@@ -21,7 +23,7 @@ const post = (p, body, headers = {}) => fetch(`${base}${p}`, {
   method: 'POST', headers: { 'content-type': 'application/json', origin: base, ...headers }, body: JSON.stringify(body) })
 const agent = async (id) => (await get('/api/agents')).agents.find((a) => a.id === id)
 
-test('agents payload advertises send mode; sending is disabled in tests without a socket root', async () => {
+test('agents payload advertises send mode; sending is disabled in tests without a socket root', { skip: SEND_SKIP }, async () => {
   const { fleet } = await get('/api/agents')
   assert.deepEqual(fleet, { mode: 'send', blocked: 'Sending is disabled in tests', last: null, pending: null, restore: null })
   const p = await get('/api/fleet/preview?action=offline')
@@ -29,7 +31,7 @@ test('agents payload advertises send mode; sending is disabled in tests without 
   assert.equal(r.status, 501)
 })
 
-test('preview: boss gets one relaying copy, leads/subs are reached by relay, solos and Codex get their own', async () => {
+test('preview: boss gets one relaying copy, leads/subs are reached by relay, solos and Codex get their own', { skip: SEND_SKIP }, async () => {
   const p = await get('/api/fleet/preview?action=offline')
   assert.equal(p.mode, 'send')
   assert.equal(p.targets.find((t) => t.id === `codex:${IDS.codexTurn}`).problem, "Can't be messaged: Codex")
@@ -51,7 +53,7 @@ test('preview: boss gets one relaying copy, leads/subs are reached by relay, sol
   assert.deepEqual(p.commands, [], 'internet loss needs no restart commands')
 })
 
-test('reboot preview lists the commands the user may run; custom text is filled; bad input is refused', async () => {
+test('reboot preview lists the commands the user may run; custom text is filled; bad input is refused', { skip: SEND_SKIP }, async () => {
   const p = await get('/api/fleet/preview?action=reboot')
   const cmds = p.commands.map((c) => c.command)
   assert.ok(cmds.includes('claude respawn --all') && cmds.includes(`claude respawn ${IDS.boss.slice(0, 8)}`))
@@ -62,7 +64,7 @@ test('reboot preview lists the commands the user may run; custom text is filled;
   assert.equal((await post('/api/fleet/preview', { action: 'offline', text: 7 })).status, 400)
 })
 
-test('mark: guarded, validated, persisted; a marked prep pauses recipients until new activity or resume', async () => {
+test('mark: guarded, validated, persisted; a marked prep pauses recipients until new activity or resume', { skip: SEND_SKIP }, async () => {
   assert.equal((await post('/api/fleet/mark', { action: 'reboot', ids: [] }, { origin: 'http://evil.example' })).status, 403)
   assert.equal((await post('/api/fleet/mark', { action: 'explode', ids: [] })).status, 400)
   assert.equal((await post('/api/fleet/mark', { action: 'reboot', ids: 'all' })).status, 400)
@@ -124,11 +126,11 @@ test('mark is rate limited', async () => {
   assert.equal(last.status, 429)
 })
 
-test('a job reopened in a terminal is reached and restarted like the interactive session it is', async () => {
+test('a job reopened in a terminal is reached and restarted like the interactive session it is', { skip: SEND_SKIP }, async () => {
   const claude = process.env.AGENTVILLE_CLAUDE_HOME
   const reg = path.join(claude, 'sessions', 'reopened.json')
   const now = Date.now()
-  fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', status: 'idle', startedAt: now - 60_000, statusUpdatedAt: now }))
+  fs.writeFileSync(reg, JSON.stringify({ pid: LIVE_PID, sessionId: IDS.leadDone, kind: 'interactive', status: 'idle', startedAt: now - 60_000, statusUpdatedAt: now }))
   // Top level, so it is a target of its own rather than reached through the boss.
   const patch = (body) => fetch(`${base}/api/overrides/${encodeURIComponent(C('leadDone'))}`, { method: 'PATCH', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify(body) })
   assert.equal((await patch({ parentId: '' })).status, 200)

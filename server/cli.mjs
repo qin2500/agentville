@@ -5,6 +5,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { adoptLegacyEnv, resolveDataDir } from './datadir.mjs'
+import { execTarget } from './platform.mjs'
 
 // Before anything else loads: on an older Node the server would fail later with a cryptic error.
 const [major, minor] = process.versions.node.split('.').map(Number)
@@ -41,7 +42,8 @@ const built = fs.statSync(path.join(WEB, 'dist', 'index.html'), { throwIfNoEntry
 const hasSources = fs.existsSync(path.join(WEB, 'index.html'))
 if (!built || (hasSources && newestSource() > built)) {
   console.log(built ? 'Web sources changed; rebuilding…' : 'Building the web app (first run)…')
-  const r = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit' })
+  const npm = execTarget(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'])
+  const r = spawnSync(npm.file, npm.args, { cwd: ROOT, stdio: 'inherit', ...npm.opts })
   if (r.status !== 0) console.error('Build failed; serving the API only. Run `npm install && npm run build` to see the village.')
 }
 // A local dashboard should outlive one bad request or a full disk: log and keep serving.

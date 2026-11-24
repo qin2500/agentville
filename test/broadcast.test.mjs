@@ -1,7 +1,8 @@
 // "Message agents": filter matching and eligibility (web/src/broadcast-match.js), the fan-out
 // (server/broadcast.mjs), and the API: a confirm token bound to the exact set and text, the cap, the
 // rate limit, and per-recipient results. Fixture HOME and fake sockets under AGENTVILLE_FLEET_SOCKET_ROOT only.
-import test from 'node:test'
+import baseTest from 'node:test'
+import { posixTest, shortTmp, LIVE_PID, sockPath } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -9,6 +10,8 @@ import path from 'node:path'
 import { makeHome, IDS } from './fixtures/make-home.mjs'
 import { matches, pick, statusOf, whyNot, isFiltered, SELF_WHY } from '../web/src/broadcast-match.js'
 import { fanOut, recipientIds, selfId, summarize, textProblem, MAX_RECIPIENTS } from '../server/broadcast.mjs'
+const sockTest = posixTest(baseTest, 'unix-domain-socket inboxes (the Fleet/Claude messaging socket) have no Windows equivalent here')
+const test = baseTest
 
 // ---------- pure: filters and eligibility ----------
 const ag = (o) => ({ id: `claude-code:${o.name}`, role: 'solo', bucket: 'building', severity: null, prompt: null, project: 'alpha', messageWhy: '', self: false, hidden: false, ...o })
@@ -97,7 +100,7 @@ test('fan-out: bounded concurrency, live progress, delivered / sent / failed per
 })
 
 // ---------- the API, over fake sockets ----------
-const root = fs.mkdtempSync('/tmp/vbc-')
+const root = shortTmp('vbc-')
 const env = makeHome(root)
 const sockRoot = path.join(root, 's')
 fs.mkdirSync(sockRoot)
@@ -115,7 +118,7 @@ const frames = {}
 const peers = {}
 function peer(key, { ack = true } = {}) {
   const sid = IDS[key]
-  const sock = path.join(sockRoot, `${key}.sock`)
+  const sock = sockPath(sockRoot, key)
   frames[key] = []
   const srv = net.createServer((c) => {
     let buf = ''
@@ -130,7 +133,7 @@ function peer(key, { ack = true } = {}) {
   })
   peers[key] = srv
   fs.writeFileSync(path.join(claudeHome, 'sessions', `${sid.slice(0, 8)}.json`),
-    JSON.stringify({ pid: 1, sessionId: sid, kind: 'bg', status: 'idle', messagingSocketPath: sock, peerProtocol: 1 }))
+    JSON.stringify({ pid: LIVE_PID, sessionId: sid, kind: 'bg', status: 'idle', messagingSocketPath: sock, peerProtocol: 1 }))
   return new Promise((r) => srv.listen(sock, r))
 }
 await peer('boss')
@@ -150,7 +153,7 @@ const preview = async (ids, text) => post('/api/broadcast/preview', { ids, text 
 const lines = async (res) => (await res.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l))
 const TEXT = 'Please pull main and rebase your branch.'
 
-test('the agent list marks the dashboard\'s own session; Codex and stopped agents say why', async () => {
+sockTest('the agent list marks the dashboard\'s own session; Codex and stopped agents say why', async () => {
   const { agents } = await get('/api/agents')
   const by = (id) => agents.find((a) => a.id === id)
   assert.equal(by(C('leadCi')).self, true)
@@ -163,7 +166,7 @@ test('the agent list marks the dashboard\'s own session; Codex and stopped agent
   assert.doesNotMatch(JSON.stringify(agents), /\.sock|msg_id/)
 })
 
-test('preview: exact text as it arrives, the recipients and count; refuses empty, tags, over the cap, ineligible, foreign origin', async () => {
+sockTest('preview: exact text as it arrives, the recipients and count; refuses empty, tags, over the cap, ineligible, foreign origin', async () => {
   const pv = await (await preview([C('soloWaiting'), C('boss'), C('boss')], TEXT)).json()
   assert.equal(pv.sent, `<cross-session-message from-name="Agentville">\n${TEXT}\n</cross-session-message>`)
   assert.deepEqual(pv.recipients.map((r) => r.id), [C('boss'), C('soloWaiting')].sort())
@@ -182,7 +185,7 @@ test('preview: exact text as it arrives, the recipients and count; refuses empty
   assert.equal((await post('/api/broadcast/preview', { ids: [C('boss')], text: TEXT }, { origin: 'http://evil.test' })).status, 403)
 })
 
-test('the confirm token is bound to that exact set and text; a changed one needs a new confirm', async () => {
+sockTest('the confirm token is bound to that exact set and text; a changed one needs a new confirm', async () => {
   let pv = await (await preview([C('boss'), C('leadBlocked')], TEXT)).json()
   const r1 = await post('/api/broadcast/send', { confirm: pv.confirm, ids: [C('boss')], text: TEXT })
   assert.equal(r1.status, 409)
@@ -197,7 +200,7 @@ test('the confirm token is bound to that exact set and text; a changed one needs
   assert.equal(frames.boss.length + frames.leadBlocked.length, 0, 'nothing was sent')
 })
 
-test('send: one frame each, streamed per-agent results (delivered / sent unconfirmed / failed), a log without the text', async () => {
+sockTest('send: one frame each, streamed per-agent results (delivered / sent unconfirmed / failed), a log without the text', async () => {
   const ids = [C('boss'), C('leadBlocked'), C('soloTurn'), C('soloWaiting')]
   const pv = await (await preview(ids, TEXT)).json()
   // soloWaiting's session goes away between confirm and send: it fails with the reason.
@@ -228,7 +231,7 @@ test('send: one frame each, streamed per-agent results (delivered / sent unconfi
   assert.equal((await post('/api/broadcast/send', { confirm: pv.confirm, ids, text: TEXT })).status, 409, 'one send per confirm')
 })
 
-test('rate limit: 3 broadcasts a minute, apart from the single-message limit', async () => {
+sockTest('rate limit: 3 broadcasts a minute, apart from the single-message limit', async () => {
   const ids = [C('boss')]
   for (let i = 0; i < 2; i++) { // one already went out above
     const pv = await (await preview(ids, TEXT)).json()
@@ -246,14 +249,14 @@ test('rate limit: 3 broadcasts a minute, apart from the single-message limit', a
   assert.equal(frames.boss.length, 4)
 })
 
-test('a stale "done" job reopened in a terminal with a socket can be messaged; once the terminal ends it cannot', async () => {
-  const sock = path.join(sockRoot, 'reopened.sock')
+sockTest('a stale "done" job reopened in a terminal with a socket can be messaged; once the terminal ends it cannot', async () => {
+  const sock = sockPath(sockRoot, 'reopened')
   const got = []
   const srv = net.createServer((c) => { let b = ''; c.on('data', (d) => { b += d }); c.on('end', () => got.push(b)) })
   await new Promise((r) => srv.listen(sock, r))
   const reg = path.join(claudeHome, 'sessions', 'reopened.json')
   const now = Date.now()
-  fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', status: 'idle', startedAt: now - 60_000, statusUpdatedAt: now, messagingSocketPath: sock, peerProtocol: 1 }))
+  fs.writeFileSync(reg, JSON.stringify({ pid: LIVE_PID, sessionId: IDS.leadDone, kind: 'interactive', status: 'idle', startedAt: now - 60_000, statusUpdatedAt: now, messagingSocketPath: sock, peerProtocol: 1 }))
   const fresh = async () => { await new Promise((r) => setTimeout(r, 2100)); return (await get('/api/agents')).agents } // past the scan cache
   try {
     const a = (await fresh()).find((x) => x.id === C('leadDone'))

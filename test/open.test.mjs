@@ -3,7 +3,8 @@
  * delivery. Every terminal here is a fake that records its argv; nothing real is ever opened and
  * no real session is resumed. Partly adapted from Bot Crossing test/terminal.test.mjs (MIT).
  */
-import test from 'node:test'
+import baseTest from 'node:test'
+import { posixTest, shortTmp, LIVE_PID } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -11,11 +12,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { createServer } from '../server/serve.mjs'
 import { ghosttyMacLaunch, terminalAppLaunch, runAppleScript } from '../server/terminal.mjs'
+const test = posixTest(baseTest, 'the fake terminal and CLIs are node-shebang scripts that Windows cannot exec')
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-open-'))
 const bin = path.join(root, 'bin')
 const log = path.join(root, 'terminal.log')
-const ws = path.join(root, "work space it's $(touch nope) ; | x")
+const ws = path.join(root, `work space it's $(touch nope) ; ${process.platform === 'win32' ? '+' : '|'} x`)   // '|' is not a legal Windows file name character
 const claude = path.join(root, 'claude')
 const codex = path.join(root, 'codex')
 fs.mkdirSync(bin)
@@ -41,7 +43,7 @@ for (const sid of [ids.job, ids.closed, ids.live]) transcript(sid)
 fs.mkdirSync(path.join(claudeHome, 'jobs', 'aaaaaaa1'), { recursive: true })
 fs.writeFileSync(path.join(claudeHome, 'jobs', 'aaaaaaa1', 'state.json'), JSON.stringify({ sessionId: ids.job, resumeSessionId: ids.job, cwd: ws, state: 'working', tempo: 'idle', createdAt: ts, updatedAt: ts }))
 fs.mkdirSync(path.join(claudeHome, 'sessions'), { recursive: true })
-fs.writeFileSync(path.join(claudeHome, 'sessions', 'live.json'), JSON.stringify({ pid: 1, sessionId: ids.live, status: 'idle' }))
+fs.writeFileSync(path.join(claudeHome, 'sessions', 'live.json'), JSON.stringify({ pid: LIVE_PID, sessionId: ids.live, status: 'idle' }))
 const subs = path.join(project, ids.job, 'subagents')
 fs.mkdirSync(subs, { recursive: true })
 fs.writeFileSync(path.join(subs, 'agent-s1.jsonl'), JSON.stringify({ type: 'user', timestamp: ts, message: { content: 'x' } }) + '\n')
