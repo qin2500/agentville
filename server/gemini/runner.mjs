@@ -90,6 +90,27 @@ export function parseEvents(text) {
   return out
 }
 
+/**
+ * Windows launcher for a `.cmd` shim (npm installs `gemini.cmd`). A detached spawn sets DETACHED_PROCESS,
+ * so cmd.exe has no console; the console program it then starts (node) gets a fresh console and that
+ * console's std handles, not cmd's, so stdout/stderr never reach out.log/err.log. So the detached process
+ * is this small node script instead: it inherits the log handles (libuv passes them explicitly), starts
+ * cmd.exe attached to itself with those handles, and exits with cmd's exit code.
+ */
+const WIN_LAUNCHER = `const { spawn } = require('child_process')
+const t = JSON.parse(process.argv[1])
+const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
+const c = spawn(t.file, t.args, { ...t.opts, stdio: 'inherit', windowsHide: true, env })
+c.on('error', (e) => { process.stderr.write(String(e && e.message || e) + '\\n'); process.exit(127) })
+c.on('exit', (code) => process.exit(code == null ? 1 : code))`
+
+/** `{ file, args, opts }` to spawn detached for one turn; see WIN_LAUNCHER. */
+export function launchTarget(bin, argv, { platform = process.platform, env = process.env, execPath = process.execPath, electron = !!process.versions.electron } = {}) {
+  const t = execTarget(bin, argv, { platform, env })
+  if (platform !== 'win32' || t.file === bin) return { ...t, env: {} }
+  return { file: execPath, args: ['-e', WIN_LAUNCHER, '--', JSON.stringify(t)], opts: {}, env: electron ? { ELECTRON_RUN_AS_NODE: '1' } : {} }
+}
+
 const alive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -132,12 +153,12 @@ export function createRunner({
     rotate(outFile); rotate(errFile)
     const turnOffset = (() => { try { return fs.statSync(outFile).size } catch { return 0 } })()
     const outFd = fs.openSync(outFile, 'a', 0o600), errFd = fs.openSync(errFile, 'a', 0o600)
-    const t = execTarget(bin, argv, { platform, env })
+    const t = launchTarget(bin, argv, { platform, env })
     let child
     try {
       child = spawn(t.file, t.args, {
         ...t.opts, cwd: st.cwd, detached: true, windowsHide: true, stdio: ['ignore', outFd, errFd],
-        env: runEnv({ base: env, home: st.home, agentId: st.agentId, accountEnv, port, handoffId: st.handoffId }),
+        env: { ...runEnv({ base: env, home: st.home, agentId: st.agentId, accountEnv, port, handoffId: st.handoffId }), ...t.env },
       })
     } finally { fs.closeSync(outFd); fs.closeSync(errFd) }
     child.on?.('error', (e) => update(st.runId, { state: 'error', error: String(e.message || e), endedAt: now() }))

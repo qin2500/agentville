@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fakeBin as shimBin, WIN } from './support/posix.mjs'
-import { createRunner, parseEvents, startArgs, runEnv, isQuotaText, scrub } from '../server/gemini/runner.mjs'
+import { createRunner, parseEvents, startArgs, runEnv, isQuotaText, scrub, launchTarget } from '../server/gemini/runner.mjs'
 
 // A fake `gemini`: records argv + env to $AGENTVILLE_FAKE_LOG, then behaves per $AGENTVILLE_FAKE_MODE.
 function fakeBin(dir) {
@@ -178,27 +178,12 @@ test('F10: 0700 dirs, no prompt text in state, capped + redacted errors, prune',
   assert.ok(!fs.existsSync(old)); assert.ok(fs.existsSync(runner.dirOf(st.runId)))
 })
 
-// TEMP PROBE (win debug): remove before landing.
-test('TEMP probe windows stdio variants', { skip: !WIN }, async () => {
-  const { spawn } = await import('node:child_process')
-  const { execTarget } = await import('../server/platform.mjs')
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-'))
-  const bin = shimBin(dir, 'p', `console.log(JSON.stringify({ hi: 1, argv: process.argv.slice(2) })); process.stderr.write('ERR\\n'); process.exit(7)`)
-  const node = path.join(dir, 'p.cjs')
-  const res = {}
-  const run = (name, file, args, opts, flag = 'a') => new Promise((resolve) => {
-    const out = path.join(dir, name + '.out'), err = path.join(dir, name + '.err')
-    const o = fs.openSync(out, flag), e = fs.openSync(err, flag)
-    let c
-    try { c = spawn(file, args, { stdio: ['ignore', o, e], windowsHide: true, ...opts }) } finally { fs.closeSync(o); fs.closeSync(e) }
-    c.on('error', (x) => { res[name] = 'spawnerr ' + x.message; resolve() })
-    c.on('exit', (code) => setTimeout(() => { res[name] = { code, out: fs.readFileSync(out, 'utf8'), err: fs.readFileSync(err, 'utf8') }; resolve() }, 500))
-  })
-  const t = execTarget(bin, ['--prompt=hello world', '-o', 'x'])
-  await run('A_cmd_detached', t.file, t.args, { ...t.opts, detached: true })
-  await run('B_cmd_attached', t.file, t.args, { ...t.opts, detached: false })
-  await run('E_cmd_detached_w', t.file, t.args, { ...t.opts, detached: true }, 'w')
-  await run('D_node_detached', process.execPath, [node, '--prompt=x'], { detached: true })
-  await run('F_cmd_detached_nohide', t.file, t.args, { ...t.opts, detached: true, windowsHide: false })
-  assert.fail('PROBE ' + JSON.stringify({ t, env: Object.keys(process.env).filter((k) => /^(path|comspec|systemroot|pathext)$/i.test(k)), res }, null, 1))
+test('launchTarget: POSIX spawns the bin; a Windows .cmd shim runs under a node launcher, not a detached cmd.exe', () => {
+  assert.deepEqual(launchTarget('/x/gemini', ['--prompt=a'], { platform: 'darwin' }), { file: '/x/gemini', args: ['--prompt=a'], opts: {}, env: {} })
+  const t = launchTarget('C:\\g\\gemini.cmd', ['--prompt=a b'], { platform: 'win32', env: { ComSpec: 'C:\\cmd.exe' }, execPath: 'C:\\node.exe', electron: true })
+  assert.equal(t.file, 'C:\\node.exe'); assert.equal(t.args[0], '-e'); assert.equal(t.args[2], '--')
+  assert.deepEqual(t.env, { ELECTRON_RUN_AS_NODE: '1' })
+  const inner = JSON.parse(t.args[3])
+  assert.equal(inner.file, 'C:\\cmd.exe'); assert.deepEqual(inner.args.slice(0, 3), ['/d', '/s', '/c']); assert.equal(inner.opts.windowsVerbatimArguments, true)
+  assert.deepEqual(launchTarget('C:\\g\\gemini.exe', [], { platform: 'win32', electron: true }).env, {})
 })
