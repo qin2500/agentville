@@ -53,7 +53,7 @@ export async function mountProvidersSettings(el, fetchFn = (...a) => fetch(...a)
   async function save(patch, revert) {
     el.querySelectorAll('select,input,button').forEach(n => { n.disabled = true; });
     try {
-      const r = await fetchFn('/api/providers/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+      const r = await fetchFn('/api/providers/settings', { method: 'PUT', headers: { 'content-type': 'application/json', 'X-Agentville-UI': '1' }, body: JSON.stringify(patch) });
       if (r.status === 404) throw new Error('this server has no provider settings yet');
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json().catch(() => null);

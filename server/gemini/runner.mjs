@@ -26,11 +26,12 @@ const SESSION_RE = /^[A-Za-z0-9][\w.\-]*$/
  * Every value-bearing flag uses the `--flag=value` form so a value can never become another flag.
  * Throws on an invalid model/session id, and on mode `yolo` unless `allowYolo` is true.
  */
-export function startArgs({ prompt, model, mode, sessionId, resume, allowYolo = false } = {}) {
+export function startArgs({ prompt, model, mode, sessionId, resume, allowYolo = false, skipTrust = true } = {}) {
   if (model && !MODEL_RE.test(String(model))) throw new Error('invalid model name')
   for (const id of [resume, sessionId]) if (id && !SESSION_RE.test(String(id))) throw new Error('invalid session id')
   if (mode === 'yolo' && allowYolo !== true) throw new Error('yolo mode requires explicit allowYolo')
-  const args = [`--prompt=${String(prompt ?? '')}`, '-o', 'stream-json', '--skip-trust']
+  const args = [`--prompt=${String(prompt ?? '')}`, '-o', 'stream-json']
+  if (skipTrust === true) args.push('--skip-trust')
   args.push(`--approval-mode=${APPROVAL_MODES.includes(mode) ? mode : 'default'}`)
   if (model) args.push(`--model=${model}`)
   if (resume) args.push(`--resume=${resume}`)
@@ -124,9 +125,9 @@ export function createRunner({
   }
 
   /** Spawn one turn for a run. */
-  function launchTurn(st, { prompt, model, mode, resume, allowYolo, accountEnv }) {
+  function launchTurn(st, { prompt, model, mode, resume, allowYolo, accountEnv, skipTrust }) {
     const dir = dirOf(st.runId)
-    const argv = startArgs({ prompt, model, mode, sessionId: st.sessionId, resume, allowYolo }) // validates before any side effect
+    const argv = startArgs({ prompt, model, mode, sessionId: st.sessionId, resume, allowYolo, skipTrust }) // validates before any side effect
     const outFile = path.join(dir, 'out.log'), errFile = path.join(dir, 'err.log')
     rotate(outFile); rotate(errFile)
     const turnOffset = (() => { try { return fs.statSync(outFile).size } catch { return 0 } })()
@@ -164,7 +165,7 @@ export function createRunner({
     }
     startArgs({ prompt: o.prompt, model: o.model, mode: st.mode, sessionId: st.sessionId, allowYolo: o.allowYolo }) // fail before writing state
     write(st)
-    return launchTurn(st, { prompt: o.prompt, model: o.model, mode: st.mode, allowYolo: o.allowYolo, accountEnv: o.accountEnv })
+    return launchTurn(st, { prompt: o.prompt, model: o.model, mode: st.mode, allowYolo: o.allowYolo, accountEnv: o.accountEnv, skipTrust: o.skipTrust })
   }
 
   /** Follow-up turn on a finished run (`-r <sessionId> -p`). */
@@ -173,7 +174,7 @@ export function createRunner({
     if (!st) throw new Error('unknown run')
     if (st.state === 'running') throw new Error('run is still working')
     if (!st.sessionId) throw new Error('run has no session id')
-    return launchTurn(st, { prompt, model: o.model || st.model, mode: o.mode || st.mode, resume: st.sessionId, allowYolo: o.allowYolo, accountEnv: o.accountEnv })
+    return launchTurn(st, { prompt, model: o.model || st.model, mode: o.mode || st.mode, resume: st.sessionId, allowYolo: o.allowYolo, accountEnv: o.accountEnv, skipTrust: o.skipTrust })
   }
 
   /** Re-read the run's log and process: state is running | idle | error | limit | stopped | exited. */

@@ -72,7 +72,7 @@ const fromPage = (body) => {
 export const AGENT_STARTS_MAX_PER_HOUR = 60
 export const AGENT_STARTS_MAX_DEPTH = 3
 /** Flip to true once server/gemini/runner.mjs start() takes `skipTrust` (then untrusted folders run without it). */
-const GEMINI_RUNNER_SKIP_TRUST = false
+const GEMINI_RUNNER_SKIP_TRUST = true
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.join(ROOT, 'web', 'dist')

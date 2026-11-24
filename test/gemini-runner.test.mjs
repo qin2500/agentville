@@ -77,9 +77,24 @@ test('quota error (exit 173 + result.error) records a limitStop', async () => {
   const { dir, env, runner } = setup()
   env.AGENTVILLE_FAKE_MODE = 'quota'
   const st = runner.start({ cwd: dir, prompt: 'q' })
-  const s = await waitFor(() => { const r = runner.refresh(st.runId); return r.state === 'limit' && r })
+  const s = await waitFor(() => { const r = runner.refresh(st.runId); return r.state === 'limit' && r?.limitStop && r }, 20000)
   assert.equal(s.limitStop.kind, 'limit'); assert.ok(s.limitStop.at > 0); assert.match(s.limitStop.text, /daily quota/)
   assert.equal(s.exitCode, 173)
+})
+
+test('skipTrust option: --skip-trust only when true (default true)', () => {
+  assert.ok(startArgs({ prompt: 'x' }).includes('--skip-trust'))
+  assert.ok(startArgs({ prompt: 'x', skipTrust: true }).includes('--skip-trust'))
+  assert.ok(!startArgs({ prompt: 'x', skipTrust: false }).includes('--skip-trust'))
+  const seen = []
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gemrun-'))
+  const runner = createRunner({ dataDir: dir, env: { PATH: '' }, isAlive: () => true, bin: 'gemini',
+    spawn: (_b, argv) => { seen.push(argv); return { pid: 99, on() {}, unref() {} } } })
+  const st = runner.start({ cwd: dir, prompt: 'p', skipTrust: false })
+  assert.ok(!seen[0].includes('--skip-trust'))
+  runner.start({ cwd: dir, prompt: 'p' })
+  assert.ok(seen[1].includes('--skip-trust'))
+  assert.ok(st.runId)
 })
 
 test('stop terminates a hung run', async () => {
