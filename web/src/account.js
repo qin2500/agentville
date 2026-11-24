@@ -116,9 +116,12 @@ export function createAccount(app, { open: openAgent, termName }) {
   /** Extra usage groups the server may send (e.g. "Claude and GPT models"): shown only in the row's tooltip. */
   function extraTip(u) {
     const ex = Array.isArray(u?.extra) ? u.extra : [];
-    return ex.map(g => {
-      const w = g.window || g, name = g.name || g.label || g.id || 'Other';
-      return w && !w.none && Number.isFinite(Number(w.used)) ? `${name}: ${Math.round(w.used)}% used${w.resetsAt ? `, resets in ${until(w.resetsAt)}` : ''}` : '';
+    const one = (label, w) => w && !w.none && Number.isFinite(Number(w.used)) ? `${label}: ${Math.round(w.used)}% used${w.resetsAt ? `, resets in ${until(w.resetsAt)}` : ''}` : '';
+    // Server shape (gemini /usage): { name, fiveHour: {used, resetsAt}, weekly: {used, resetsAt} }
+    return ex.flatMap(g => {
+      const name = g.name || g.label || g.id || 'Other';
+      if (g.fiveHour || g.weekly) return [one(`${name} 5h`, g.fiveHour), one(`${name} weekly`, g.weekly)];
+      return [one(name, g.window || g)];
     }).filter(Boolean).join('\n');
   }
   function usageHTML(id) {
