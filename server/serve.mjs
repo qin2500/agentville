@@ -49,8 +49,8 @@ import * as codex from './codex.mjs'
 import { getProvider, providers, providerOfAgent } from './providers/index.mjs'
 import { createProviderSettings } from './provider-settings.mjs'
 import { createProviderSwitch, fallbackTarget } from './provider-switch.mjs'
-import { createLaunches } from './launches.mjs'
-import { parseAgentStart, checkAgentStart } from './agent-start.mjs'
+import { createLaunches, newToken, TOKEN_ENV } from './launches.mjs'
+import { parseAgentStart, checkAndRecord, rollback } from './agent-start.mjs'
 import { buildNote, notePrompt } from './handoff-note.mjs'
 import { readChanges } from './changes.mjs'
 import { createHandoffRefs } from './handoff-refs.mjs'
@@ -71,6 +71,8 @@ const fromPage = (body) => {
 /** Hard ceilings for agent starts, whatever providers.json says (security review). */
 export const AGENT_STARTS_MAX_PER_HOUR = 60
 export const AGENT_STARTS_MAX_DEPTH = 3
+/** Flip to true once server/gemini/runner.mjs start() takes `skipTrust` (then untrusted folders run without it). */
+const GEMINI_RUNNER_SKIP_TRUST = false
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.join(ROOT, 'web', 'dist')
@@ -209,11 +211,14 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       const a = getProvider(id)
       if (!a) return a
       const w = Object.create(a)
-      w.run = (plan, ...rest) => a.run(withPort(plan), ...rest)
+      w.run = (plan, ...rest) => launchWithToken(withPort(plan), { via: 'handoff', provider: id, parentAgentId: plan?.parentAgentId || null }, (p) => a.run(p, ...rest))
       return w
     }), settings: providerSettings,
     agents: () => agentsOf(null), providerState: () => providerSwitch.status(), buildNote, notePrompt, readChanges,
-    launches, fallbackTarget, providerOfAgent, selfId: selfId(),
+    // The start wrapper above records (and binds) every handoff launch with its token; the engine's own
+    // record of the same ref is then a no-op. reparent and the reads go to the ledger as they are.
+    launches: Object.assign(Object.create(launches), { record: (x) => (x?.ref && launches.refOf(x.ref) ? null : launches.record(x)) }),
+    fallbackTarget, providerOfAgent, selfId: selfId(),
     projects: async () => knownProjects((await snapshot()).agents),
     log: (e) => logFleet({ ...e, source: 'handoff' }),
   }) : null
@@ -252,6 +257,22 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const withPort = (plan) => {
     const port = server.address()?.port
     return plan?.kind === 'start' && port ? { ...plan, env: { ...plan.env, AGENTVILLE_PORT: String(port) } } : plan
+  }
+  /**
+   * UI and handoff starts get a per-launch token too, so their children can start agents (security review):
+   * a pending ledger record before the spawn, the token in the child's env, then bind to the real ref or roll back.
+   */
+  async function launchWithToken(plan, { via, provider, parentAgentId = null }, runFn) {
+    if (plan?.kind !== 'start') return runFn(plan)
+    const token = newToken()
+    let rec = null
+    try { rec = launches.record({ ref: `pending-${crypto.randomUUID()}`, parentAgentId, provider, via, token, pending: true }) } catch (e) { logSafely(e) }
+    const r = await runFn({ ...plan, env: { ...plan.env, ...(rec && { [TOKEN_ENV]: token }) } })
+    if (rec) {
+      const ref = r?.ref?.runId || r?.ref?.jobId || r?.ref?.sessionId || r?.jobId || null
+      try { if (r?.ok && ref) launches.bind(rec.ref, ref, [r.id].filter(Boolean)); else launches.rollback(rec.ref) } catch (e) { logSafely(e) }
+    }
+    return r
   }
   /** Why starting/stopping on this provider can't run here ('' = it can). Claude keeps actionsBlocked()'s exact text. */
   async function blockedFor(provider) {
@@ -990,13 +1011,16 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (typeof req.headers.origin !== 'string') return send(res, 403, { ok: false, error: 'Origin required' }) // isLocalRequest checked it matches
         const parsed = parseAgentStart(await readBody(req))
         if (!parsed.ok) return send(res, parsed.status || 400, { ok: false, error: parsed.error })
-        const input = parsed.value
-        const agents = (await snapshot()).agents
+        const input = parsed.value // the plan is built from these fields only, never from the raw body
+        cached = null
+        const agents = (await snapshot()).agents // fresh: the caller must be live now
         const byId = new Map(agents.map((a) => [a.id, a]))
         const status = {}
         for (const p of providers()) status[p.id] = await providerStatusOf(p.id)
         const projects = knownProjects(agents)
-        const verdict = checkAgentStart(input, {
+        const port = String(server.address()?.port || '')
+        // Synchronous from here to the record: two concurrent requests can't both pass the rate/depth checks.
+        const verdict = checkAndRecord(input, {
           settings: providerSettings, launches,
           resolveSession: (session) => {
             const id = resolveSession(session, agents, (x) => forks.get(x)?.sid || null)
@@ -1005,22 +1029,27 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
             return a ? { ...a, isSubagent: SUB_KIND.has(a.kind) } : null
           },
           providerStatus: (id) => status[id] || { usable: false, why: 'not installed' },
-          knownProjects: () => projects.map((p) => p.dir),
-          startPlan: (provider, i) => adapterOf(provider).startPlan({ cwd: i.cwd, prompt: i.prompt, name: i.name, model: i.model, permissionMode: i.permissionMode,
-            env: { AGENTVILLE_PORT: String(server.address()?.port || '') } }, projects),
+          knownProjects: () => projects,
+          startPlan: (provider, i) => adapterOf(provider).startPlan({ cwd: i.cwd, prompt: i.prompt, name: i.name, model: i.model, permissionMode: i.permissionMode }, projects),
         })
         if (!verdict.ok) return send(res, verdict.status || 400, { ok: false, error: verdict.error })
-        const callerId = verdict.caller.id
-        const plan = { ...verdict.plan, parentAgentId: callerId, env: { ...verdict.plan?.env, AGENTVILLE_PARENT_ID: callerId } }
-        limit(runs, 10, 'starts and stops')
+        const undo = () => { try { rollback(verdict.launchId, { launches }) } catch (e) { logSafely(e) } }
+        // --skip-trust only for a trusted (known project) folder. plan.skipTrust carries it to the runner; until the
+        // runner honours it (it always passes --skip-trust today), an untrusted Gemini start is refused here.
+        if (verdict.provider === 'gemini' && !verdict.trusted && !GEMINI_RUNNER_SKIP_TRUST) { undo(); return send(res, 403, { ok: false, error: 'Gemini agent starts need a known project folder' }) }
+        if (verdict.provider === 'claude' && actionsBlocked()) { undo(); return send(res, 501, { ok: false, error: actionsBlocked() }) }
+        try { limit(runs, 10, 'starts and stops') } catch (e) { undo(); throw e }
+        const plan = { ...verdict.plan, parentAgentId: verdict.callerId, ...(verdict.provider === 'gemini' && { skipTrust: verdict.trusted === true }),
+          env: { ...verdict.plan?.env, AGENTVILLE_PARENT_ID: verdict.callerId, ...(port && { AGENTVILLE_PORT: port }) } }
         const r = await adapterOf(verdict.provider).run(plan)
         const ref = r.ref?.runId || r.ref?.jobId || r.ref?.sessionId || r.jobId || null
-        if (r.ok && ref) { try { launches.record({ ref, parentAgentId: callerId, provider: verdict.provider, via: 'api' }) } catch (e) { logSafely(e) } }
-        // Ids only: never the prompt.
-        await logFleet({ at: Date.now(), action: 'agent-start', source: 'api', parent: callerId, provider: verdict.provider, ok: Boolean(r.ok), ...(ref && { ref }) })
+        if (r.ok && ref) { try { launches.bind(verdict.launchId, ref, [r.id].filter(Boolean)) } catch (e) { logSafely(e) } }
+        else undo()
+        // Ids only: never the prompt, cwd or stderr.
+        await logFleet({ at: Date.now(), action: 'agent-start', source: 'api', parent: verdict.callerId, provider: verdict.provider, ok: Boolean(r.ok && ref), ...(ref && { ref }) })
         cached = null
-        if (!r.ok) return send(res, 502, { ok: false, error: r.error || 'start failed' })
-        return send(res, 200, { ok: true, id: r.id || null, ref: r.ref || (r.jobId ? { jobId: r.jobId } : {}), provider: verdict.provider })
+        if (!r.ok || !ref) return send(res, 502, { ok: false, error: 'start failed' })
+        return send(res, 200, { ok: true, id: r.id || null, ref: r.ref || { jobId: r.jobId }, provider: verdict.provider })
       }
       const as = /^\/api\/agents\/([^/]+)\/status$/.exec(url.pathname)
       if (as && req.method === 'GET') {
@@ -1085,9 +1114,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (blocked) return send(res, 501, { error: blocked })
         const plan = redeem(body?.confirm, ['start', 'stop', 'fork'])
         limit(runs, 10, 'starts and stops')
-        const r = provider === 'claude' ? await runPlan(withPort(plan)) : await adapterOf(provider).run(withPort(plan))
-        const ref = r.ref?.runId || r.jobId || r.ref?.jobId || null
-        if (r.ok && plan.kind === 'start' && ref) { try { launches.record({ ref, parentAgentId: null, provider, via: 'ui' }) } catch (e) { logSafely(e) } }
+        const r = await launchWithToken(withPort(plan), { via: 'ui', provider }, (p) => (provider === 'claude' ? runPlan(p) : adapterOf(provider).run(p)))
         // Ids and outcomes only: never the prompt.
         await logFleet({ at: Date.now(), action: plan.kind, ...(provider !== 'claude' && { provider }), ...(plan.id && { id: plan.id }), ...(plan.project && { project: plan.project }), ok: r.ok, ...(r.jobId && { jobId: r.jobId }), ...(r.ref?.runId && { runId: r.ref.runId }), ...(r.error && { error: r.error }) })
         cached = null

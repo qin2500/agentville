@@ -269,9 +269,16 @@ export default {
       if (plan.kind === 'start') {
         const env = await accountEnv()
         // Never allowYolo: MODES has no yolo, and agent starts must not get it (security review).
-        const st = r.start({ home: env?.GEMINI_CLI_HOME || undefined, accountEnv: env || undefined, cwd: plan.cwd, prompt: plan.prompt,
+        // The per-launch token of an agent start (launches.mjs TOKEN_ENV) rides with the account env: the runner's
+        // env is an allowlist and accountEnv is the one map it merges whole.
+        const tok = typeof plan.env?.AGENTVILLE_AGENT_TOKEN === 'string' && /^[\w-]{16,200}$/.test(plan.env.AGENTVILLE_AGENT_TOKEN) ? plan.env.AGENTVILLE_AGENT_TOKEN : null
+        const runEnvExtra = env || tok ? { ...env, ...(tok && { AGENTVILLE_AGENT_TOKEN: tok }) } : undefined
+        const st = r.start({ home: env?.GEMINI_CLI_HOME || undefined, accountEnv: runEnvExtra, cwd: plan.cwd, prompt: plan.prompt,
           model: plan.model || undefined, mode: plan.mode || undefined, name: plan.name,
-          parentAgentId: plan.parentAgentId || null, handoffId: plan.handoffId || null })
+          parentAgentId: plan.parentAgentId || null, handoffId: plan.handoffId || null,
+          // --skip-trust only for a trusted folder (agent starts set false outside known projects). UI and handoff
+          // starts are trusted: the user picked the folder, or the old agent already worked in it.
+          skipTrust: plan.skipTrust !== false })
         return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } }
       }
       if (plan.kind === 'resume') { const env = await accountEnv(); const st = r.resume(plan.runId, plan.prompt, { accountEnv: env || undefined }); return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } } }
