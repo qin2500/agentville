@@ -775,7 +775,16 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         sampler.enforce() // a quarantine account may now have to go
         return send(res, 200, out)
       }
-      if (url.pathname === '/api/accounts/usage' && req.method === 'GET') return send(res, 200, await account.accounts.usage({ fresh: url.searchParams.has('fresh') }))
+      if (url.pathname === '/api/accounts/usage' && req.method === 'GET') {
+        const fresh = url.searchParams.has('fresh')
+        const out = await account.accounts.usage({ fresh })
+        // Other providers' readings join the same list (ids never collide: gemini-antigravity, ...).
+        for (const p of providers()) {
+          if (p.id === 'claude' || !p.capabilities?.accounts || typeof p.accounts?.usage !== 'function') continue
+          try { const r = await p.accounts.usage({ fresh }); for (const a of r?.accounts || []) (out.accounts ||= []).push({ ...a, provider: p.id }) } catch { /* that provider's bars show "Usage not checked" */ }
+        }
+        return send(res, 200, out)
+      }
       const ac = /^\/api\/accounts\/(capture|add\/start|add\/finish|add\/cancel|[A-Za-z0-9-]{8,64})$/.exec(url.pathname)
       if (ac && ['POST', 'PATCH', 'DELETE'].includes(req.method)) {
         if (req.method !== 'DELETE' && !/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
