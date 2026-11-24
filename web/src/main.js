@@ -10,6 +10,7 @@ import { createTermView } from './term.js';
 import { createPlainTerm } from './plain-term.js';
 import { loadModels } from './models.js';
 import { createUpdate } from './update.js';
+import { mountProvidersSettings } from './providers-settings.js';
 import { createLaunch } from './launch.js';
 import { createBroadcast } from './broadcast.js';
 import { createDock } from './dock.js';
@@ -667,7 +668,8 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
       <p class="helper">Uses a small Haiku model, through your Claude login, for small background jobs. Off by default.</p>
       <p class="helper" id="helper-status" role="status"></p>
-      ${classicToggleHtml(store)}</div>${update.menuHTML()}`;
+      ${classicToggleHtml(store)}<div id="prov-settings"></div></div>${update.menuHTML()}`;
+    mountProvidersSettings(el.querySelector('#prov-settings'));
     loadHelper();
     return;
   }
@@ -679,7 +681,7 @@ function fillPop(name) {
     `<label><input type="checkbox" data-f="${group}" value="${esc(value)}" ${f[group].has(value) ? 'checked' : ''}>${esc(label)}${n != null ? `<span class="n num">${n}</span>` : ''}</label>`;
   el.innerHTML = `
     <div><h4>Project</h4>${[...byProject].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([p, n]) => box('projects', p, p, n)).join('') || '<span class="helper">No projects yet</span>'}</div>
-    <div><h4>Harness</h4>${box('harness', 'claude-code', 'Claude Code')}${box('harness', 'codex', 'Codex')}</div>
+    <div><h4>Harness</h4>${box('harness', 'claude-code', 'Claude Code')}${box('harness', 'codex', 'Codex')}${box('harness', 'gemini-cli', 'Gemini CLI')}</div>
     <div><h4>Role</h4>${box('roles', 'boss', 'Boss')}${box('roles', 'lead', 'Lead')}${box('roles', 'sub', 'Sub')}${box('roles', 'solo', 'Solo')}</div>
     <div><h4>Display</h4>
       <label><input type="checkbox" data-set="hidden" ${f.showHidden ? 'checked' : ''}>Show hidden agents</label>
