@@ -69,5 +69,5 @@ test('annotate maps refs and provider-prefixed ids; unknown refs stay unannotate
   refs.record('bad', 'not-a-hid')
   const list = refs.annotate([{ id: 'claude-code:x', jobId: 'deadbeef' }, { id: 'gemini:deadbeef' }, { id: 'z', jobId: 'bad' }])
   assert.deepEqual(list.map((a) => a.handoffId || null), ['0123456789abcdef', '0123456789abcdef', null])
-  assert.equal((fs.statSync(path.join(dataDir, 'handoff-refs.json')).mode & 0o777), 0o600)
+  if (process.platform !== 'win32') assert.equal((fs.statSync(path.join(dataDir, 'handoff-refs.json')).mode & 0o777), 0o600)
 })
