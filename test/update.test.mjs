@@ -25,6 +25,7 @@ function fakeNpm(dir) {
   return { bin, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) }
 }
 
+const WIN = process.platform === 'win32' && 'a POSIX fake npm and git do not run on Windows'
 test('helpers: GitHub URLs and commit titles', () => {
   assert.equal(githubRepo('git+https://github.com/someone/agentville.git'), 'someone/agentville')
   assert.equal(githubRepo('git@github.com:someone/agentville.git'), 'someone/agentville')
@@ -130,7 +131,7 @@ test('local edits or another branch: canApply false with the reason', async () =
   } finally { await gh.close() }
 })
 
-test('apply: fast-forwards, rebuilds, reinstalls only when the lockfile changed, then restarts', async () => {
+test('apply: fast-forwards, rebuilds, reinstalls only when the lockfile changed, then restarts', { skip: WIN }, async () => {
   const { r, gh, make } = await setup()
   try {
     const npm = fakeNpm(path.join(tmp, `case-${n}`))
@@ -161,7 +162,7 @@ test('apply: fast-forwards, rebuilds, reinstalls only when the lockfile changed,
   } finally { await gh.close() }
 })
 
-test('apply with the real npm runs the checkout’s build; without a restart it says so', async () => {
+test('apply with the real npm runs the checkout’s build; without a restart it says so', { skip: WIN }, async () => {
   const { r, gh, make } = await setup()
   try {
     r.publish('Upstream change')
@@ -276,7 +277,7 @@ test('git missing: quietly off', async () => {
   } finally { await gh.close() }
 })
 
-test('HTTP: GET /api/update, POST /api/update/apply behind the local-only guard', async () => {
+test('HTTP: GET /api/update, POST /api/update/apply behind the local-only guard', { skip: WIN }, async () => {
   const { r, gh, env } = await setup()
   const saved = { ...process.env }
   Object.assign(process.env, env)
