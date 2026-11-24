@@ -535,20 +535,21 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
 .acct-sw[disabled] { opacity: .5; cursor: default; }
 .acct-more { width: 22px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--text-muted); font-size: 16px; line-height: 1; cursor: pointer; }
 .acct-more:hover, .acct-more:focus-visible, .acct-more[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
-.acct-l2 { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 12px; padding-left: 13px; min-width: 0; font-size: 11px; }
+.acct-l2 { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 12px; padding-left: 13px; min-width: 0; font-size: 11px; }
 .acct-note { margin: 0; color: var(--text-muted); }
 .acct-err { color: var(--error); font-size: 11px; }
 .acct-empty { margin: 0; padding: 2px 8px; color: var(--text-muted); }
 .acct-hint { padding: 0 8px; }
 .acct-acts { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .acct-acts .linkbtn, .acct-l2 .linkbtn { padding: 0 2px; font-size: 11px; }
-.ubar.um { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); }
-.um-k { font-size: 10px; }
-.um-t { width: 44px; height: 4px; border-radius: var(--radius-pill); background: var(--surface-3); overflow: hidden; }
+.ubar.um { display: flex; flex: 1 0 100%; align-items: center; gap: 8px; color: var(--text-muted); }
+.um-k { font-size: 11px; width: 44px; flex: none; }
+.um-t { flex: 1; min-width: 60px; height: 6px; border-radius: var(--radius-pill); background: var(--surface-3); overflow: hidden; }
 .um-t i { display: block; height: 100%; background: var(--building); border-radius: inherit; }
 .ubar.mid .um-t i { background: var(--stalled); }
 .ubar.hi .um-t i { background: var(--error); }
 .um-v { white-space: nowrap; font-size: 11px; }
+.um-r { color: var(--text-muted); opacity: .85; }
 .acct-sec { display: grid; gap: 2px; }
 .acct-sh { display: flex; align-items: center; gap: 5px; width: 100%; padding: 2px 4px; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; text-align: left; cursor: pointer; border-radius: var(--radius); }
 .acct-sh:hover, .acct-sh:focus-visible { color: var(--text); background: var(--surface-2); }

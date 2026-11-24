@@ -104,13 +104,13 @@ export function createAccount(app, { open: openAgent, termName }) {
   // ---------- menu (in #pop-account, opened and closed by main.js) ----------
   function bar(name, short, w) {
     if (!w) return `<span class="ubar um" title="${name}: no data"><span class="um-k">${short}</span><span class="um-v">–</span></span>`;
-    if (w.none) return `<span class="ubar um" title="${name}: no limit"><span class="um-k">${short}</span><span class="um-v">no limit</span></span>`;
+    if (w.none) return ''; // no limit on this window: show nothing
     const used = Math.round(w.used), level = used >= 90 ? 'hi' : used >= 70 ? 'mid' : 'lo';
     const resets = w.resetsAt ? `resets in ${until(w.resetsAt)}` : '';
     const tip = `${name}: ${used}% used${resets ? `, ${resets}` : ''}`;
     return `<span class="ubar um ${level}" title="${esc(tip)}"><span class="um-k">${short}</span>
       <span class="um-t" role="meter" aria-label="${name} usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}" aria-valuetext="${esc(`${used}% used${resets ? `, ${resets}` : ''}`)}"><i style="width:${used}%"></i></span>
-      <span class="um-v num">${used}%</span></span>`;
+      <span class="um-v num">${used}%${resets ? `<span class="um-r"> · ${resets}</span>` : ''}</span></span>`;
   }
   const ago = at => { const m = Math.max(0, Math.round((Date.now() - at) / 60e3)); return m < 1 ? 'just now' : `${m} min ago`; };
   /** Extra usage groups the server may send (e.g. "Claude and GPT models"): shown only in the row's tooltip. */
@@ -134,7 +134,7 @@ export function createAccount(app, { open: openAgent, termName }) {
       return `<span class="acct-err" title="${esc(msg)}">${esc(short)}</span>${again}`;
     }
     const stale = u.stale ? `<span class="acct-note" title="${esc(u.note || 'not refreshed')}">as of ${esc(ago(u.asOf))}</span>` : '';
-    return bar('5-hour', '5h', u.fiveHour) + bar('Weekly', 'wk', u.weekly) + stale;
+    return bar('5-hour', '5-hour', u.fiveHour) + bar('Weekly', 'Weekly', u.weekly) + stale;
   }
   const k = (act, id = '') => `data-am="${act}" data-id="${esc(id)}" data-key="${act}:${esc(id)}"`;
   const PILL_Q = 'Never used on the work Wi-Fi; preferred everywhere else';
