@@ -1,10 +1,11 @@
-/** Spec tests for docs/providers-design.md section 3.3: fallbackTarget(from, settings, state). Waiting on P13. */
+/** Spec tests for docs/providers-design.md section 3.3: fallbackTarget(from, settings, state). */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { tryLoad } from './support/spec-load.mjs'
+import * as mod from '../server/provider-switch.mjs'
 
-const mod = await tryLoad('../server/provider-switch.mjs')
-const opts = mod ? {} : { todo: 'waiting on P13' }
+// Was loaded through support/spec-load.mjs, which resolves paths from test/support/, so it always came back
+// null and every test here silently ran as "todo". P13 has landed; import it directly.
+const opts = {}
 const fb = (...a) => mod.fallbackTarget(...a)
 const U = { usable: true }, N = { usable: false, why: 'out' }
 
