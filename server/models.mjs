@@ -49,7 +49,28 @@ export function modelLabel(v) {
   if (m) return `${FAMILY[m[3]]} ${m[1]}${m[2] ? `.${m[2]}` : ''}`
   m = /^gpt-([\d.]+)(?:-(.+))?$/.exec(b)
   if (m) return `GPT-${m[1]}${m[2] ? ` ${m[2].split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')}` : ''}`
+  const g = antigravityLabel(b)
+  if (g) return g
   return String(v).replace(/^cc\//i, '').replace(ONE_M, '').slice(0, 40)
+}
+
+const title = (w) => w.split('-').filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1)).join(' ')
+/**
+ * Antigravity model ids: "gemini-4-neon-high" -> "Gemini 4 Neon · High", "gemini-3.8-flash-low" -> "Gemini 3.8 Flash · Low",
+ * "gemini-pro-orchestrator-neon" -> "Gemini Pro Orchestrator Neon", "claude-opus-5-5-high" -> "Opus 5.5 · High",
+ * "gpt-oss-120b-medium" -> "GPT-OSS 120B · Medium". null for any other id.
+ */
+export function antigravityLabel(b) {
+  const lvl = '(low|medium|high|xhigh)'
+  let m = new RegExp(`^gemini-(\\d+(?:\\.\\d+)?)-([a-z]+)(?:-${lvl})?$`).exec(b)
+  if (m) return `Gemini ${m[1]} ${title(m[2])}${m[3] ? ` · ${title(m[3])}` : ''}`
+  m = /^gemini-pro-orchestrator(?:-(\w+))?$/.exec(b)
+  if (m) return `Gemini Pro Orchestrator${m[1] ? ` ${title(m[1])}` : ''}`
+  m = new RegExp(`^claude-(opus|sonnet|haiku)-(\\d+)-(\\d{1,2})-([a-z-]+)$`).exec(b)
+  if (m) return `${FAMILY[m[1]]} ${m[2]}.${m[3]} · ${title(m[4])}`
+  m = new RegExp(`^gpt-oss-(\\d+b)(?:-${lvl})?$`).exec(b)
+  if (m) return `GPT-OSS ${m[1].toUpperCase()}${m[2] ? ` · ${title(m[2])}` : ''}`
+  return null
 }
 
 /** `~/.claude/settings.json`: the default `model` and the env's `_MODEL` keys, nothing else. */
@@ -96,19 +117,25 @@ const sum = (a) => a.reduce((x, y) => x + y, 0)
  * `{ kind, harness, parentId, file, config }`; `facts(file)`: spend.modelFacts; `profile`: the
  * account profile ('pool' | 'personal'); `defaults`: readDefaults().
  */
-export function buildModels({ agents, info, facts, profile, defaults, now = Date.now(), catchingUp = false }) {
+export function buildModels({ agents, info, facts, profile, defaults, gemini = new Map(), now = Date.now(), catchingUp = false }) {
   const byId = new Map(agents.map((a) => [a.id, a]))
   const rows = new Map()
   const rowOf = (id, depth = 0) => {
     if (rows.has(id)) return rows.get(id)
     const a = byId.get(id)
     const i = info.get(id) || {}
-    const f = (i.file && facts(i.file)) || null
+    const gf = a?.provider === 'gemini' || a?.harness === 'gemini-cli' ? gemini.get(id) || { model: '', at: 0, ctx: 0, tokens: {}, history: [], requested: null } : null
+    const f = gf || (i.file && facts(i.file)) || null
     const isCodex = a?.harness === 'codex'
     const cfg = i.config || {}
     const nowId = f?.model || (isCodex ? cfg.model : '') || ''
     let configured = null
-    if (isCodex) {
+    if (gf) {
+      // Antigravity: what the run asked for, else its own default. It may refine a request ("gemini-4-neon" -> "-high").
+      configured = gf.requested
+        ? { raw: gf.requested, id: gf.requested, label: modelLabel(gf.requested), source: 'gemini-run', effort: null }
+        : { raw: '', id: null, label: 'Antigravity default', source: 'gemini-default', effort: null }
+    } else if (isCodex) {
       configured = cfg.model ? { raw: cfg.model, id: cfg.model, label: modelLabel(cfg.model), source: 'codex', effort: cfg.effort || null } : null
     } else if (['subagent', 'teammate'].includes(i.kind)) {
       const parent = info.get(i.parentId) || {}
@@ -129,14 +156,14 @@ export function buildModels({ agents, info, facts, profile, defaults, now = Date
       if (r) configured = { ...r, label: r.label || (r.alias ? FAMILY[r.alias] : modelLabel(r.id)), source: flag ? 'flag' : 'settings', effort: cfg.effort || null }
     }
     const pnow = parseModel(nowId)
-    const route = isCodex ? 'codex' : pnow.pool || configured?.pool ? 'pool' : 'personal'
+    const route = gf ? 'antigravity' : isCodex ? 'codex' : pnow.pool || configured?.pool ? 'pool' : 'personal'
     // The window: 1M when the configuration says [1m] (a transcript never does), or when the context
     // is already past 200k; Codex reports its own.
     const used = f?.ctx || 0
     const cfgFamily = configured && (configured.alias || familyOf(configured.id))
     const sameFamily = !nowId || !cfgFamily || familyOf(nowId) === cfgFamily
-    const oneM = !isCodex && ((Boolean(configured?.oneM) && sameFamily) || pnow.oneM || used > K200)
-    const window = isCodex ? f?.window || 0 : nowId || used ? (oneM ? M1 : K200) : 0
+    const oneM = !isCodex && !gf && ((Boolean(configured?.oneM) && sameFamily) || pnow.oneM || used > K200)
+    const window = gf ? 0 : isCodex ? f?.window || 0 : nowId || used ? (oneM ? M1 : K200) : 0
     const tokens = Object.entries(f?.tokens || {}).map(([m, t]) => {
       const id = m || nowId || cfg.model || ''
       return { id, label: modelLabel(id) || 'Unknown', pool: parseModel(id).pool, input: t.day[0], output: t.day[1], cacheWrite: t.day[2], cacheRead: t.day[3], day: sum(t.day), hour: sum(t.hour) }
@@ -145,7 +172,7 @@ export function buildModels({ agents, info, facts, profile, defaults, now = Date
     const flags = []
     // A settings default is only where an interactive session starts (`/model` or a flag can change
     // it on purpose), so it is shown but never flagged.
-    const mis = configured?.source !== 'settings' && mismatch(nowId, configured)
+    const mis = gf ? Boolean(gf.model && gf.requested && !canonical(gf.model).startsWith(canonical(gf.requested))) : configured?.source !== 'settings' && mismatch(nowId, configured)
     if (mis) flags.push('mismatch')
     if (route === 'pool' && profile === 'personal') flags.push('pool')
     if (window && used / window > 0.8) flags.push('context')

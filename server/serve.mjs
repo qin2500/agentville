@@ -33,6 +33,8 @@ import { createRestore, restoreBlocked, MESSAGE as RESTORE_MESSAGE } from './res
 import { accountsBlocked } from './accounts.mjs'
 import { createSpend } from './spend.mjs'
 import { buildModels, readDefaults } from './models.mjs'
+import { geminiModelFacts } from './gemini/models.mjs'
+import { agyDir as agyDirOf, defaultHome as agyHome } from './gemini/scan.mjs'
 import { createSampler, OUT_AT } from './autoswitch.mjs'
 import { createSubLimitNudger } from './sub-limit.mjs'
 import { createUsagePause } from './usage-pause.mjs'
@@ -131,6 +133,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   let transcriptOf = new Map()
   // Server-private: per agent, its transcript and model settings for /api/models (never sent as is).
   let modelInfo = new Map()
+  const geminiFactsOf = (id) => {
+    const g = modelInfo.get(id)?.gemini
+    return g ? geminiModelFacts({ ...g, dataDir, agyDir: agyDirOf(agyHome()) }).catch(() => null) : null
+  }
   const plans = new Map() // confirm token -> the previewed plan, valid 2 min, usable once
   const sends = []
   // One agent at a time: a message (inspector reply / compose) or a start, stop or fork. Each is a
@@ -368,7 +374,12 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     }
     inboxes = new Map(facts.map((f) => [f.id, f.inbox || null]))
     transcriptOf = new Map(facts.map((f) => [f.id, f.transcriptFile || null]))
-    modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null }]))
+    modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null, ...(f.provider === 'gemini' && { gemini: { conversationId: f.sessionId || null, runId: f.runId || null } }) }]))
+    // Gemini agents: the model of the latest reply (cached per transcript), so cards and filters can use it.
+    await Promise.all(agents.filter((a) => modelInfo.get(a.id)?.gemini).map(async (a) => {
+      const g = await geminiFactsOf(a.id)
+      a.model = g?.model || null
+    }))
     forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
     limitStops = new Map(facts.filter((f) => f.limitStopAt).map((f) => [f.id, { at: f.limitStopAt, text: f.limitDetail || '' }]))
     privateFacts = new Map(facts.map((f) => [f.id, { limitStop: f.limitStop && f.limitStopAt ? f.limitStop : null, handoffId: f.handoffId || null,
@@ -837,8 +848,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const snap = await snapshot()
         await spend.update()
         const profile = await account.profile().catch(() => 'personal')
+        const gemini = new Map()
+        await Promise.all(snap.agents.filter((a) => modelInfo.get(a.id)?.gemini).map(async (a) => { const g = await geminiFactsOf(a.id); if (g) gemini.set(a.id, g) }))
         return send(res, 200, buildModels({
-          agents: snap.agents, info: modelInfo, facts: spend.modelFacts, profile,
+          agents: snap.agents, info: modelInfo, facts: spend.modelFacts, profile, gemini,
           defaults: await readDefaults(claude.home()), catchingUp: spend.catchingUp(),
         }))
       }

@@ -13,7 +13,7 @@ const COLS = [
   { key: 'harness', label: 'Harness' },
   { key: 'now', label: 'Model now', tip: 'The model of its latest reply, read from its transcript.' },
   { key: 'cfg', label: 'Configured', tip: 'What it was told to use: the job\'s --model (aliases resolved through its model settings), the settings default for an interactive session, or what a subagent asked for.' },
-  { key: 'route', label: 'Route', tip: 'Pool: through the shared gateway (a cc/ model). Personal: straight to your Claude account.' },
+  { key: 'route', label: 'Route', tip: 'Pool: through the shared gateway (a cc/ model). Personal: straight to your Claude account. Antigravity: Gemini agents run through the Antigravity CLI.' },
   { key: 'ctx', label: 'Context', tip: 'How big its latest request was (input, cache writes and cache reads), against the context window.' },
   { key: 'tok', label: 'Tokens 24 h', tip: 'Tokens in the last 24 hours from this agent\'s own transcript: input + output + cache writes + cache reads. A lead\'s figure leaves out its subagents, which have their own rows.' },
   { key: 'changed', label: 'Changed', tip: 'When its model last changed in this transcript.' },
@@ -26,6 +26,8 @@ const SOURCE = {
   subagent: 'What the subagent asked for',
   'subagent-env': 'Set for every subagent by CLAUDE_CODE_SUBAGENT_MODEL',
   codex: 'The Codex thread\'s setting',
+  'gemini-run': 'The model this Antigravity run was started with (Antigravity may pick a variant of it)',
+  'gemini-default': 'No model was requested, so Antigravity uses its own default',
 };
 const FLAG = {
   mismatch: { label: 'Mismatch', tip: r => `Its replies come from ${r.now?.label}, but it was told to use ${r.configured?.label}.` },
@@ -34,7 +36,7 @@ const FLAG = {
 };
 const pct = r => (r.context?.window ? Math.round((r.context.used / r.context.window) * 100) : 0);
 const win = n => (n >= 1e6 ? `${n / 1e6}M` : `${Math.round(n / 1e3)}k`);
-const routeText = r => (r.route === 'codex' ? `Codex${r.provider ? ` · ${r.provider}` : ''}` : r.route === 'pool' ? 'Pool' : 'Personal');
+const routeText = r => (r.route === 'antigravity' ? 'Antigravity' : r.route === 'codex' ? `Codex${r.provider ? ` · ${r.provider}` : ''}` : r.route === 'pool' ? 'Pool' : 'Personal');
 
 export function createModels(api) {
   const { S, keyed, sync, matches, store } = api;
@@ -46,7 +48,7 @@ export function createModels(api) {
   // ---------- configured: the words and the tooltip ----------
   function cfgTitle(r) {
     const c = r.configured;
-    if (!c) return r.route === 'codex' ? 'No model setting recorded for this thread' : 'No --model flag and no settings default';
+    if (!c) return r.route === 'antigravity' ? 'Antigravity default' : r.route === 'codex' ? 'No model setting recorded for this thread' : 'No --model flag and no settings default';
     const parts = [SOURCE[c.source] || ''];
     if (c.raw && c.source !== 'inherit') parts.push(`set to ${c.raw}`);
     if (c.via && c.id) parts.push(`${c.via} = ${c.id}`);
