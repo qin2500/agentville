@@ -109,8 +109,16 @@ const pick = (v, list, what) => {
 /** `claude --bg …` for a new agent. `body` comes from the page; every field is checked. */
 export function startPlan(body, projects) {
   if (!body || typeof body !== 'object') throw bad('Body must be a JSON object')
-  const project = projects.find((p) => p.dir === body.cwd)
-  if (!project) throw bad('Pick one of the listed projects')
+  let project = projects.find((p) => p.dir === body.cwd)
+  // Any other folder you type works too, as long as it is a full path to a folder that exists.
+  if (!project && typeof body.cwd === 'string' && body.cwd.length <= 1024 && path.isAbsolute(body.cwd) && !/[\u0000-\u001f]/.test(body.cwd)) {
+    let isDir = false
+    try { isDir = fs.statSync(body.cwd).isDirectory() } catch {}
+    if (!isDir) throw bad(`No such folder: ${body.cwd}`)
+    const dir = path.resolve(body.cwd)
+    project = { dir, name: path.basename(dir) || dir }
+  }
+  if (!project) throw bad('Pick a project, or type the full path of a folder')
   const prompt = text(body.prompt, PROMPT_MAX, 'The prompt')
   if (!prompt.trim()) throw bad('Write a prompt for the new agent')
   const name = cleanName(body.name)

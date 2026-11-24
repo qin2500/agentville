@@ -41,7 +41,8 @@ export function createLaunch(app) {
   function read() {
     const f = sheet.querySelector('form');
     if (!f) return;
-    Object.assign(L.form, { cwd: f.cwd.value, prompt: f.prompt.value, name: f.aname.value, model: f.model.value, effort: f.effort.value, permissionMode: f.mode.value, worktree: f.worktree.checked });
+    const folder = f.folder.value.trim();
+    Object.assign(L.form, { folder, cwd: folder || f.cwd?.value || '', prompt: f.prompt.value, name: f.aname.value, model: f.model.value, effort: f.effort.value, permissionMode: f.mode.value, worktree: f.worktree.checked });
   }
   function render() {
     const head = (t, lede) => `<header><div class="titlerow"><h2 id="na-title" tabindex="-1">${t}</h2></div>${lede ? `<p class="lede">${lede}</p>` : ''}</header>`;
@@ -72,7 +73,8 @@ export function createLaunch(app) {
     const inval = k => (L.field === k ? 'aria-invalid="true" aria-describedby="na-err"' : '');
     sheet.innerHTML = `${head('New agent', 'Starts a Claude Code background job in one of your projects. You’ll see the exact command before anything runs.')}
       <form class="body naform" novalidate>
-        <label>Project<select name="cwd" ${inval('cwd')}>${o.projects.length ? o.projects.map(p => `<option value="${esc(p.dir)}" ${p.dir === f.cwd ? 'selected' : ''}>${esc(p.name)} — ${esc(p.dir)}</option>`).join('') : '<option value="">No known projects yet</option>'}</select></label>
+        ${o.projects.length ? `<label>Project<select name="cwd" ${inval('cwd')}>${o.projects.map(p => `<option value="${esc(p.dir)}" ${p.dir === f.cwd ? 'selected' : ''}>${esc(p.name)} — ${esc(p.dir)}</option>`).join('')}</select></label>` : ''}
+        <label><span>${o.projects.length ? 'Or another folder <span class="opt">(full path)</span>' : 'Folder <span class="opt">(full path)</span>'}</span><input name="folder" value="${esc(f.folder || '')}" ${o.projects.length ? '' : inval('cwd')} spellcheck="false" placeholder="${navigator.userAgent.includes('Windows') ? 'C:\\Users\\you\\code\\my-project' : '/Users/you/code/my-project'}"></label>
         <label>Prompt<textarea name="prompt" rows="6" maxlength="${o.promptMax}" spellcheck="true" ${inval('prompt')} placeholder="What should it do?">${esc(f.prompt)}</textarea></label>
         <label><span>Name <span class="opt">(optional)</span></span><input name="aname" maxlength="${o.nameMax}" value="${esc(f.name)}" ${inval('name')} placeholder="Shown in the list and in claude agents"></label>
         <div class="row3">
@@ -96,7 +98,7 @@ export function createLaunch(app) {
   async function review() {
     read();
     // Never a disabled button: say what's missing and go there.
-    const miss = !L.form.cwd ? ['cwd', 'Pick a project.'] : !L.form.prompt.trim() ? ['prompt', 'Write a prompt for the new agent.'] : null;
+    const miss = !L.form.cwd ? ['cwd', 'Pick a project, or type the full path of a folder.'] : !L.form.prompt.trim() ? ['prompt', 'Write a prompt for the new agent.'] : null;
     if (miss) { [L.field, L.err] = miss; render(); return sheet.querySelector(`[name="${miss[0]}"]`)?.focus(); }
     L.err = ''; L.field = '';
     try {
