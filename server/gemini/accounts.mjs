@@ -27,11 +27,28 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { createAccountRegistry } from '../account-registry.mjs'
 import { renameRetry } from '../fsutil.mjs'
+import { quoteForShell } from '../platform.mjs'
 
 export const PROVIDER = 'gemini'
 const ID_RE = /^gemini-[a-f0-9]{16}$/
 const HOME_RE = /^h-[a-f0-9]{16}$/
 const EMAIL_MAX = 320
+const READ_MAX = 64 * 1024
+const PENDING_FRESH_MS = 10 * 60_000
+const CTRL_RE = /[\u0000-\u001f\u007f]/
+
+/** Read a small identity file: never through a symlink (O_NOFOLLOW where supported), at most 64 KB. Null on any problem. */
+async function readSmall(file) {
+  let fh
+  try {
+    fh = await fsp.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+    const st = await fh.stat()
+    if (!st.isFile() || st.size > READ_MAX) return null
+    const buf = Buffer.alloc(Math.min(st.size, READ_MAX) + 1)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    return bytesRead > READ_MAX ? null : buf.subarray(0, bytesRead).toString('utf8')
+  } catch { return null } finally { await fh?.close().catch(() => {}) }
+}
 const fail = (status, message, extra) => Object.assign(new Error(message), { status }, extra)
 
 /** Stable account id for a Google account: `gemini-` + 16 hex of sha256(lowercased email). */
@@ -55,7 +72,7 @@ export function emailOf(text) {
  */
 export async function readIdentity(home) {
   const dir = path.join(home, '.gemini')
-  const text = await fsp.readFile(path.join(dir, 'google_accounts.json'), 'utf8').catch(() => null)
+  const text = await readSmall(path.join(dir, 'google_accounts.json'))
   const creds = await fsp.stat(path.join(dir, 'oauth_creds.json')).then((s) => s.isFile() && s.size > 0, () => false)
   return { email: text === null ? null : emailOf(text), creds }
 }
@@ -130,6 +147,16 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
     const t = label.replace(/[\u0000-\u001f\u007f]/g, '').trim()
     return t.length <= 60 ? t : ''
   }
+  /** An email as a default label: rejected (not stripped) when it has control characters or is over 80 chars. */
+  const emailLabel = (email) => (typeof email === 'string' && !CTRL_RE.test(email) && email.length <= 80 ? email : 'Gemini account')
+  /** Remove a pending home, unless a saved account lists it (a stale pending file must never delete a login). */
+  async function rmPendingHome(name, accounts) {
+    const dir = homePath(name)
+    if (!dir) return false
+    if (accounts.some((a) => a.home === name || (a.oldHomes || []).includes(name))) return false
+    await fsp.rm(dir, { recursive: true, force: true })
+    return true
+  }
 
   // --- the active pointer -------------------------------------------------------------------
   async function readPointer() {
@@ -174,12 +201,14 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
     const id = await activeId(list)
     const home = homePath(list.find((a) => a.id === id)?.home)
     if (!home) return null
-    return fsp.readFile(path.join(home, '.gemini', 'google_accounts.json'), 'utf8').catch(() => null)
+    const text = await readSmall(path.join(home, '.gemini', 'google_accounts.json'))
+    const email = text === null ? null : emailOf(text)
+    return email ? { active: email } : null
   }
 
   /** Which saved account an identity text (`google_accounts.json`) names; null when unknown. Offline. */
   async function identify(text) {
-    const id = geminiIdOf(emailOf(text))
+    const id = geminiIdOf(typeof text === 'string' ? emailOf(text) : emailOf(JSON.stringify({ active: text?.active })))
     return id && (await load()).some((a) => a.id === id) ? id : null
   }
 
@@ -227,9 +256,10 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
     if (!bin) return null
     if (platform === 'win32') {
       const cmd = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe'
-      return [cmd, '/d', '/k', `set "GEMINI_CLI_HOME=${home}" && "${bin}"`]
+      for (const v of [home, bin]) if (/["%&|<>^]/.test(String(v))) throw fail(400, 'The Gemini folder or program path has a character that cmd.exe cannot take safely')
+      return [cmd, '/d', '/k', `set "GEMINI_CLI_HOME=${home}" && set "GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false" && "${bin}"`]
     }
-    return ['/usr/bin/env', `GEMINI_CLI_HOME=${home}`, bin]
+    return ['/usr/bin/env', `GEMINI_CLI_HOME=${home}`, 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false', bin]
   }
 
   /**
@@ -239,11 +269,17 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
    */
   const addStart = (opts = {}) => exclusive(async () => {
     const old = await readJsonFile(pendingFile)
-    if (homePath(old?.home)) await fsp.rm(homePath(old.home), { recursive: true, force: true })
+    if (homePath(old?.home) && !opts.force && Number.isFinite(old.at) && now() - old.at >= 0 && now() - old.at < PENDING_FRESH_MS) {
+      throw fail(409, 'A Gemini sign-in is already in progress. Finish or cancel it first.', { code: 'add_in_progress' })
+    }
+    if (old?.home) await rmPendingHome(old.home, await load())
     const name = newHomeName('h')
     const home = await makeHome(name)
     await writeAtomic(pendingFile, JSON.stringify({ at: now(), home: name }) + '\n')
-    return { command: `GEMINI_CLI_HOME="${home}" gemini`, argv: loginArgv(opts.bin, home), env: { GEMINI_CLI_HOME: home }, home }
+    const command = platform === 'win32'
+      ? `$env:GEMINI_CLI_HOME=${quoteForShell(home, { platform })}; $env:GEMINI_FORCE_ENCRYPTED_FILE_STORAGE='false'; gemini`
+      : `GEMINI_CLI_HOME=${quoteForShell(home, { platform })} GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false gemini`
+    return { command, argv: loginArgv(opts.bin, home), env: { GEMINI_CLI_HOME: home }, home }
   })
 
   /**
@@ -262,15 +298,15 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
     const id = geminiIdOf(email)
     const accounts = await load()
     let entry = accounts.find((a) => a.id === id)
-    if (!entry) accounts.push(entry = { id, label: label || email, email, authType: 'oauth-personal', addedAt: now() })
+    if (!entry) accounts.push(entry = { id, label: label || emailLabel(email), email, authType: 'oauth-personal', addedAt: now() })
     else {
       if (homePath(entry.home) && entry.home !== pending.home) entry.oldHomes = [...new Set([...(entry.oldHomes || []), entry.home])].filter((h) => HOME_RE.test(h))
       entry.email = email
     }
     if (label) entry.label = label
     entry.home = pending.home
-    await saveMeta(accounts)
     await fsp.rm(pendingFile, { force: true })
+    await saveMeta(accounts)
     // The first account becomes the active one, so Gemini runs have a home right away.
     let liveId = await activeId(accounts)
     if (!liveId) { await writePointer({ id, at: now(), prev: null }); liveId = id }
@@ -280,7 +316,7 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
   /** Abandon an add: the pending home is ours and new, so it is deleted. Nothing else changes. */
   const addCancel = () => exclusive(async () => {
     const pending = await readJsonFile(pendingFile)
-    if (homePath(pending?.home)) await fsp.rm(homePath(pending.home), { recursive: true, force: true })
+    if (pending?.home) await rmPendingHome(pending.home, await load())
     await fsp.rm(pendingFile, { force: true })
     return { restored: false }
   })
@@ -344,7 +380,12 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
     if (!id) return false
     const p = await readPointer()
     if (p.id === id) return false
-    if (!(await load()).some((a) => a.id === id)) return false
+    const entry = (await load()).find((a) => a.id === id)
+    if (!entry) return false
+    if (entry.quarantine && (await network?.onWork?.())) throw fail(409, `${entry.label} is a quarantine account, and quarantine accounts can't be used on the work Wi-Fi.`)
+    const home = homePath(entry.home)
+    const ident = home ? await readIdentity(home) : { creds: false }
+    if (!ident.creds || geminiIdOf(ident.email) !== id) throw fail(409, 'That Gemini account\'s sign-in is missing or changed. Add the account again.', { code: 'login_expired' })
     await writePointer({ id, at: now(), prev: typeof p.id === 'string' ? p.id : null })
     return true
   }
@@ -380,8 +421,10 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
   async function envFor(id) {
     const list = await load()
     const want = id || await activeId(list)
-    const home = homePath(list.find((a) => a.id === want)?.home)
+    const entry = list.find((a) => a.id === want)
+    const home = homePath(entry?.home)
     if (!home) return null
+    if (entry.quarantine && (await network?.onWork?.())) throw fail(409, `${entry.label} is a quarantine account, and quarantine accounts can't be used on the work Wi-Fi.`)
     // Someone may have used /auth inside that home: never run on a login that isn't this account.
     const ident = await readIdentity(home)
     if (!ident.creds || geminiIdOf(ident.email) !== want) throw fail(409, 'That Gemini account\'s sign-in is missing or changed. Add the account again.', { code: 'login_expired' })
