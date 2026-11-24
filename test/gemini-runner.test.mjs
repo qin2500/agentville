@@ -3,12 +3,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { fakeBin as shimBin, WIN } from './support/posix.mjs'
 import { createRunner, parseEvents, startArgs, runEnv, isQuotaText, scrub } from '../server/gemini/runner.mjs'
 
 // A fake `gemini`: records argv + env to $AGENTVILLE_FAKE_LOG, then behaves per $AGENTVILLE_FAKE_MODE.
 function fakeBin(dir) {
-  return shimBin(dir, 'gemini', `const fs = require('fs')
+  const f = path.join(dir, 'gemini')
+  fs.writeFileSync(f, `#!/usr/bin/env node
+const fs = require('fs')
 const a = process.argv.slice(2)
 fs.appendFileSync(process.env.AGENTVILLE_FAKE_LOG, JSON.stringify({ a, home: process.env.GEMINI_CLI_HOME, norelaunch: process.env.GEMINI_CLI_NO_RELAUNCH, agent: process.env.AGENTVILLE_AGENT_ID, handoff: process.env.AGENTVILLE_HANDOFF_ID, port: process.env.AGENTVILLE_PORT, secret: process.env.GEMINI_API_KEY, goog: process.env.GOOGLE_APPLICATION_CREDENTIALS, enc: process.env.GEMINI_FORCE_ENCRYPTED_FILE_STORAGE, cwd: process.cwd() }) + '\\n')
 const flag = (n) => (a.find((x) => x.startsWith(n + '=')) || '').slice(n.length + 1)
@@ -19,7 +20,8 @@ out({ type: 'init', session_id: sid, model: 'gemini-2.5-flash' })
 if (mode === 'hang') setInterval(() => {}, 1000)
 else if (mode === 'quota') { out({ type: 'result', status: 'error', error: { type: 'Error', message: '[API Error: You have exhausted your daily quota on this model.]' } }); process.exit(173) }
 else { out({ type: 'message', role: 'assistant', content: 'hi', delta: true }); out({ type: 'result', status: 'success', stats: { total_tokens: 3 } }) }
-`)
+`, { mode: 0o755 })
+  return f
 }
 
 async function waitFor(fn, ms = 5000) {
@@ -56,7 +58,7 @@ test('start runs a turn, records state, then resume reuses the session id', asyn
   const st = runner.start({ cwd: dir, prompt: 'hello', mode: 'yolo', allowYolo: true, model: 'gemini-2.5-flash', home: '/acct/home', name: 'n' })
   assert.equal(st.state, 'running'); assert.ok(st.pid)
   const mode = fs.statSync(path.join(runner.dirOf(st.runId), 'state.json')).mode & 0o777
-  if (!WIN) assert.equal(mode, 0o600)
+  assert.equal(mode, 0o600)
   const done = await waitFor(() => { const s = runner.refresh(st.runId); return s.state === 'idle' && s })
   assert.equal(done.lastMessage, 'hi'); assert.equal(done.exitCode, 0)
   const first = calls()[0]
@@ -75,9 +77,24 @@ test('quota error (exit 173 + result.error) records a limitStop', async () => {
   const { dir, env, runner } = setup()
   env.AGENTVILLE_FAKE_MODE = 'quota'
   const st = runner.start({ cwd: dir, prompt: 'q' })
-  const s = await waitFor(() => { const r = runner.refresh(st.runId); return r.state === 'limit' && r })
+  const s = await waitFor(() => { const r = runner.refresh(st.runId); return r.state === 'limit' && r?.limitStop && r }, 20000)
   assert.equal(s.limitStop.kind, 'limit'); assert.ok(s.limitStop.at > 0); assert.match(s.limitStop.text, /daily quota/)
   assert.equal(s.exitCode, 173)
+})
+
+test('skipTrust option: --skip-trust only when true (default true)', () => {
+  assert.ok(startArgs({ prompt: 'x' }).includes('--skip-trust'))
+  assert.ok(startArgs({ prompt: 'x', skipTrust: true }).includes('--skip-trust'))
+  assert.ok(!startArgs({ prompt: 'x', skipTrust: false }).includes('--skip-trust'))
+  const seen = []
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gemrun-'))
+  const runner = createRunner({ dataDir: dir, env: { PATH: '' }, isAlive: () => true, bin: 'gemini',
+    spawn: (_b, argv) => { seen.push(argv); return { pid: 99, on() {}, unref() {} } } })
+  const st = runner.start({ cwd: dir, prompt: 'p', skipTrust: false })
+  assert.ok(!seen[0].includes('--skip-trust'))
+  runner.start({ cwd: dir, prompt: 'p' })
+  assert.ok(seen[1].includes('--skip-trust'))
+  assert.ok(st.runId)
 })
 
 test('stop terminates a hung run', async () => {
@@ -145,10 +162,8 @@ test('F10: 0700 dirs, no prompt text in state, capped + redacted errors, prune',
   env.AGENTVILLE_FAKE_MODE = 'quota'
   const secretPrompt = 'my secret instructions '.repeat(20)
   const st = runner.start({ cwd: dir, prompt: secretPrompt })
-  if (!WIN) {
-    assert.equal(fs.statSync(path.join(dir, 'gemini-runs')).mode & 0o777, 0o700)
-    assert.equal(fs.statSync(runner.dirOf(st.runId)).mode & 0o777, 0o700)
-  }
+  assert.equal(fs.statSync(path.join(dir, 'gemini-runs')).mode & 0o777, 0o700)
+  assert.equal(fs.statSync(runner.dirOf(st.runId)).mode & 0o777, 0o700)
   assert.ok(st.title.length <= 80); assert.equal(st.prompt, undefined)
   await waitFor(() => runner.refresh(st.runId).state === 'limit')
   assert.ok(!fs.readFileSync(path.join(runner.dirOf(st.runId), 'state.json'), 'utf8').includes('secret instructions secret instructions'))

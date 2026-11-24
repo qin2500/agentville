@@ -99,8 +99,10 @@ test('happy path: wait, note, start, confirm, then stop the old agent', async ()
   const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
   assert.equal(saved.records[r.id].state, 'done')
   assert.equal(saved.episodes.claude.id, 'claude-1000000')
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-  assert.equal(fs.statSync(r.notePath).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    assert.equal(fs.statSync(r.notePath).mode & 0o777, 0o600)
+  }
   assert.match(fs.readFileSync(r.notePath, 'utf8'), /Task: fix the bug/)
   assert.deepEqual(w.launches, [{ ref: 'run1', parentAgentId: null, provider: 'gemini', via: 'handoff' }])
   // account-log: one line on done, ids only
