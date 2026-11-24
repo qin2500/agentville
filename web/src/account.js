@@ -8,6 +8,7 @@ import { icon, esc } from './ui.js';
 import { pauseToggleHTML } from './usage-pause.js';
 import { createAccountMenu } from './acctmenu.js';
 import { patchAccount, LOW_PRIORITY_TIP, isLoginExpired } from './acct-items.js';
+import { handoffsHTML, loadHandoffs, handoffAction } from './handoffs.js';
 
 const LOGIN = 'claude auth login';
 const RELOGIN = 'claude auth logout && claude auth login';
@@ -26,11 +27,12 @@ export function createAccount(app, { open: openAgent, termName }) {
   const sheet = $('acct'), btn = $('btn-account'), pop = $('pop-account');
   // Menu state, then the sheet's. view: loading | error | confirm | busy | results
   const A = {
-    list: null, listErr: '', usage: new Map(), usageBusy: false, edit: null, menuErr: '', working: '', addInfo: null, addLabel: '', reloginId: '',
+    list: null, listErr: '', usage: new Map(), usageBusy: false, edit: null, menuErr: '', working: '', addInfo: null, addLabel: '', reloginId: '', addProvider: 'claude', handoffs: [],
     target: null, status: null, view: null, error: '', err: '', result: null, undone: null, undoErr: '', undoBusy: false,
   };
   const say = text => { const l = $('live'); if (l) l.textContent = text; };
-  const accountOf = id => A.list?.accounts.find(a => a.id === id);
+  const geminiOf = () => A.list?.byProvider?.gemini?.accounts || [];
+  const accountOf = id => A.list?.accounts.find(a => a.id === id) || geminiOf().find(a => a.id === id);
   /** What is running now: 'pool', a saved account id, or 'personal' (a login that isn't saved). */
   const current = () => {
     if (A.list) return A.list.active === 'unknown' ? 'personal' : A.list.active;
@@ -89,6 +91,7 @@ export function createAccount(app, { open: openAgent, termName }) {
     try { A.list = await json('/api/accounts'); A.listErr = ''; } catch (e) { A.listErr = `Couldn't load accounts: ${why(e)}`; }
     // An older server, or accounts unavailable here: fall back to the pool/personal profile.
     if (!A.list) A.status = await json('/api/account').catch(() => A.status);
+    A.handoffs = await loadHandoffs();
     label();
   }
   loadList().then(() => loadUsage(false, true));
@@ -159,8 +162,26 @@ export function createAccount(app, { open: openAgent, termName }) {
         });
       }
     }
-    const info = A.addInfo, relogin = A.reloginId ? accountOf(A.reloginId) : null;
-    const add = L?.adding
+    const info = A.addInfo;
+    // Gemini group (after Claude's): only when the server reports the provider.
+    const G = L?.byProvider?.gemini, gem = G ? G.accounts || [] : [];
+    let gemRows = '';
+    for (const a of gem) {
+      gemRows += rowHTML({ id: a.id, name: a.label, sub: a.email && a.email !== a.label ? a.email : '', active: !!(a.signedIn || G.active === a.id), edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true });
+    }
+    const gemAdding = L?.adding && A.addProvider === 'gemini';
+    const gemAdd = gemAdding
+      ? `<div class="acct-add" role="group" aria-labelledby="acct-gadd-h"><p id="acct-gadd-h"><b>Add Gemini account · step 2 of 2</b></p>
+          <p>${info?.command ? `Run <code>${esc(info.command)}</code> in a terminal.` : 'Sign in to Gemini in the window or terminal that opened.'} ${info?.error ? esc(info.error) : ''} Then come back.</p>
+          <label class="acct-field" for="acct-add-label">Name (optional)</label>
+          <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. Personal Google" value="${esc(A.addLabel)}" data-key="add-label">
+          <div class="acts"><button class="primary" type="button" ${k('finish')} ${A.working ? 'disabled' : ''}>${A.working === 'finish' ? 'Saving…' : "I've signed in"}</button>
+          <button class="ghost" type="button" ${k('add-cancel')} ${A.working ? 'disabled' : ''}>Cancel</button></div></div>`
+      : `<button class="menuitem" type="button" ${k('add-gemini')} ${busy || !L || L?.adding ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening sign-in…' : 'Add a Gemini account…'}</b><span>Sign in to a Google account for Gemini CLI.</span></button>`;
+    const gemSection = G
+      ? `<div class="acct-group" data-provider="gemini"><p class="acct-note"><b>Gemini</b>${G.exhausted ? ' · out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}</p>${gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>` : '<p class="acct-note">No Gemini accounts yet</p>'}</div>` : '';
+    const relogin = A.reloginId ? accountOf(A.reloginId) : null;
+    const add = L?.adding && A.addProvider !== 'gemini'
       ? `<div class="acct-add" role="group" aria-labelledby="acct-add-h"><p id="acct-add-h"><b>${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} · step 2 of 2` : 'Add account · step 2 of 2'}</b></p>
           <p>${info?.opened ? `A ${esc(termName() || 'terminal')} window is running <code>${LOGIN}</code>.` : `Run <code>${LOGIN}</code> in a terminal${info?.error ? ` (${esc(info.error)})` : ''}.`}
           ${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} in your browser (sign out of claude.ai there first if it picks another account), then come back. Its saved login is renewed; what's running doesn't change.` : 'Sign in with the other account in your browser (sign out of claude.ai there first if it picks the current one), then come back.'}</p>
@@ -175,10 +196,13 @@ export function createAccount(app, { open: openAgent, termName }) {
       ${L?.network ? networkHTML(L.network, busy) : ''}
       ${L?.network?.current.work && accountOf(cur)?.quarantine ? `<p class="acct-warn" role="alert"><b>${esc(nameOf(cur))} is a quarantine account and you're on the work Wi-Fi.</b> No regular account has room to switch to. Switch to one as soon as it frees up, or add one.</p>` : ''}
       ${headroomHTML()}
-      ${L ? `<ul class="acct-rows" aria-labelledby="acct-menu-h">${rows}</ul>` : `<p class="helper">${esc(A.listErr || 'Loading…')}</p>`}
+      ${L ? `<p class="acct-note" data-provider-h="claude"><b>Claude</b></p><ul class="acct-rows" aria-labelledby="acct-menu-h">${rows}</ul>` : `<p class="helper">${esc(A.listErr || 'Loading…')}</p>`}
       ${A.view === 'busy' ? `<button class="ghost" type="button" ${k('show')}>Switching… show progress</button>` : ''}
+      ${gemSection}
+      ${handoffsHTML(A.handoffs, { busy })}
       ${pauseToggleHTML()}
       <hr>${add}
+      ${G ? gemAdd : ''}
       <p class="err" role="alert" ${A.menuErr ? '' : 'hidden'}>${esc(A.menuErr)}</p></div>`;
   }
   // Which network this is, and the one-time "this is the work Wi-Fi" mark (server/network.mjs).
@@ -259,18 +283,25 @@ export function createAccount(app, { open: openAgent, termName }) {
       case 'switch': app.closePops(); return openSheet(id);
       case 'show': app.closePops(); sheet.showModal(); return focusTitle();
       case 'capture': return act('save', () => send('POST', '/api/accounts/capture', {}), 'Login saved').then(() => loadUsage(false));
-      case 'add': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = ''; }, 'Step 2: sign in, then choose I\'ve logged in')
+      case 'add-gemini': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start', { provider: 'gemini' }); A.addLabel = ''; A.reloginId = ''; A.addProvider = 'gemini'; }, 'Step 2: sign in to Gemini, then choose I\'ve signed in')
+        .then(() => pop.querySelector('#acct-add-label')?.focus());
+      case 'add': return act('add', async () => { A.addProvider = 'claude'; A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = ''; }, 'Step 2: sign in, then choose I\'ve logged in')
         .then(() => pop.querySelector('#acct-add-label')?.focus());
       case 'finish': return act('finish', async () => {
-        const r = await send('POST', '/api/accounts/add/finish', { label: A.addLabel.trim() });
-        A.addInfo = null; A.addLabel = '';
+        const r = await send('POST', '/api/accounts/add/finish', { label: A.addLabel.trim(), ...(A.addProvider === 'gemini' ? { provider: 'gemini' } : {}) });
+        A.addInfo = null; A.addLabel = ''; A.addProvider = 'claude';
         say(A.reloginId === r.account.id ? `Signed in again as ${r.account.label}` : `Added ${r.account.label}`);
         A.reloginId = '';
       }).then(() => { pop.querySelector('[data-am="add"]')?.focus(); return loadUsage(false); });
-      case 'relogin': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = id; }, 'Step 2: sign in again, then choose I\'ve logged in')
+      case 'relogin': return act('add', async () => { A.addProvider = 'claude'; A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = id; }, 'Step 2: sign in again, then choose I\'ve logged in')
         .then(() => pop.querySelector('[data-am="finish"]')?.focus());
-      case 'add-cancel': return act('add-cancel', async () => { await send('POST', '/api/accounts/add/cancel'); A.addInfo = null; A.reloginId = ''; }, 'Adding cancelled')
+      case 'add-cancel': return act('add-cancel', async () => { await send('POST', '/api/accounts/add/cancel'); A.addInfo = null; A.reloginId = ''; A.addProvider = 'claude'; }, 'Adding cancelled')
         .then(() => pop.querySelector('[data-am="add"]')?.focus());
+      case 'handoff-undo': case 'handoff-retry': case 'handoff-dismiss': case 'handoff-approve': {
+        const hact = t.dataset.am.slice(8);
+        if (hact === 'undo' && !confirm('Stop the new agent and resume the old one? Files are never reverted.')) return;
+        return act('update', () => handoffAction(fetch, id, hact), `Handoff ${hact} sent`).then(() => loadList().then(renderMenu));
+      }
       case 'net-work': {
         const work = t.dataset.work === '1';
         return act('mark the network', () => send('POST', '/api/network/work', { work }), work ? 'Marked as the work Wi-Fi' : 'No longer marked as the work Wi-Fi')
