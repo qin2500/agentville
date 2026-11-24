@@ -9,7 +9,7 @@ import { venuePrs } from '../../engine-host.js';
 
 const NEEDS = new Set(['permission', 'question', 'plan', 'dialog']);
 const ROLE = { boss: 'boss', lead: 'lead', sub: 'sub' };
-const HARNESS = { 'claude-code': 'claude', claude: 'claude', codex: 'codex' };
+const HARNESS = { 'claude-code': 'claude', claude: 'claude', codex: 'codex', 'gemini-cli': 'gemini' };
 const num = v => (Number.isFinite(+v) ? +v : 0);
 const str = v => (typeof v === 'string' ? v : '');
 // Mods only ever get a short label: the server's shortName (nickname/override/session name, never prompt-derived),
@@ -67,9 +67,10 @@ export function createInputReuse() {
   return { salt: null, ids: new Map(), titles: new Map(), labels: new Map(), agents: new Map(), prs: new Map(), projects: new Map() };
 }
 // The agent record's keys, in the order toWorldInput builds them: an agent record is compared field by field (no key walk).
-const AGENT_KEYS = ['id', 'name', 'project', 'parent', 'status', 'needs', 'role', 'crown', 'important', 'stopped', 'harness', 'since', 'lastActive', 'prs'];
+const AGENT_KEYS = ['id', 'name', 'project', 'parent', 'status', 'needs', 'role', 'crown', 'important', 'stopped', 'harness', 'since', 'lastActive', 'prs', 'provider'];
 const sameAgent = (a, b) => {
   for (let i = 0; i < 13; i++) { const k = AGENT_KEYS[i]; if (a[k] !== b[k] && !(a[k] !== a[k] && b[k] !== b[k])) return false; }
+  if (a.provider !== b.provider) return false;
   const p = a.prs, q = b.prs;
   if (p.length !== q.length) return false;
   for (let i = 0; i < p.length; i++) if (p[i] !== q[i]) return false;
@@ -157,16 +158,16 @@ export function toWorldInput(view, { seed = 0, salt = '', env = {}, features = [
   // PERF M7 (poll path): with reuse, an agent whose fields all equal its last record's is that record (no new object)
   const agents = agentsIn.map(a => {
     const id = opaqueId(a.id), project = a.project || '—';
-    const name = labelOf(a.shortName) || (a.harness === 'codex' ? 'Codex thread' : a.harness === 'claude-code' || a.harness === 'claude' ? 'Claude session' : 'Agent');
+    const name = labelOf(a.shortName) || (a.harness === 'codex' ? 'Codex thread' : a.harness === 'claude-code' || a.harness === 'claude' ? 'Claude session' : a.harness === 'gemini-cli' ? 'Gemini session' : 'Agent');
     const parent = a.parentId && byId.has(a.parentId) ? opaqueId(a.parentId) : null;
     const status = statusOf(a), needs = NEEDS.has(a.prompt) ? a.prompt : null, role = ROLE[a.role] || 'worker', crown = a.role === 'boss';
-    const important = pinned(a), stopped = !!stoppedNote(a), harness = HARNESS[a.harness] || 'other', since = num(a.since), lastActive = num(a.lastActivityAt);
+    const important = pinned(a), stopped = !!stoppedNote(a), harness = HARNESS[a.harness] || 'other', provider = a.provider === 'gemini' || a.harness === 'gemini-cli' ? 'gemini' : null, since = num(a.since), lastActive = num(a.lastActivityAt);
     const src = a.prs || [], prev = R?.agents.get(id);
     if (prev && prev.name === name && prev.project === project && prev.parent === parent && prev.status === status && prev.needs === needs
-      && prev.role === role && prev.crown === crown && prev.important === important && prev.stopped === stopped && prev.harness === harness
+      && prev.role === role && prev.crown === crown && prev.important === important && prev.stopped === stopped && prev.harness === harness && prev.provider === provider
       && Object.is(prev.since, since) && Object.is(prev.lastActive, lastActive) && prev.prs.length === src.length
       && src.every((p, i) => prev.prs[i] === `${project}#${String(p.id)}`)) return prev;
-    return { id, name, project, parent, status, needs, role, crown, important, stopped, harness, since, lastActive,
+    return { id, name, project, parent, status, needs, role, crown, important, stopped, harness, provider, since, lastActive,
       prs: src.map(p => `${project}#${String(p.id)}`) };
   });
 

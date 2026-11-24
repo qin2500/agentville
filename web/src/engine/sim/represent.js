@@ -210,7 +210,7 @@ function agentView(agent, f) {
   return Object.freeze({
     id: s(a.id), name: s(a.name)?.slice(0, 80) ?? null, project: s(a.project), parent: s(a.parent),
     status: f.status, needs: f.needs, role: f.role, sub: f.sub, crown: f.crown, important: f.important, stopped: f.stopped,
-    harness: s(a.harness), prs: Object.freeze([...f.livePrs, ...f.loadingPrs]),
+    harness: s(a.harness), provider: s(a.provider), prs: Object.freeze([...f.livePrs, ...f.loadingPrs]),
   });
 }
 
