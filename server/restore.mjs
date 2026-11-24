@@ -158,6 +158,25 @@ export function runningSet(agents, now = Date.now()) {
 /** A display-only `cd <dir> && <cmd>` (`;` in PowerShell 5, which has no `&&`). */
 const cdThen = (dir, cmd) => `cd ${quoteForShell(dir)}${process.platform === 'win32' ? ';' : ' &&'} ${cmd}`
 
+/** The job's folder for a restore: its worktree, else its cwd, when it still exists. */
+const dirOk = (p) => typeof p === 'string' && path.isAbsolute(p) && fs.statSync(p, { throwIfNoEntry: false })?.isDirectory()
+const stateDir = (st) => [st?.worktreePath, st?.cwd].find(dirOk) || null
+
+/** `claude respawn <short>`: same job, same id. `st` is the job's state.json (may be null). */
+export function respawnArgs(short, st = null) {
+  return { args: ['respawn', short], cwd: stateDir(st) || os.homedir() }
+}
+
+/** `claude --bg --resume <sid> <checked flags>` from a job's state.json, or `{ unavailable }` with the reason. */
+export function resumeArgs(st) {
+  const sid = st.resumeSessionId && UUID.test(st.resumeSessionId) ? st.resumeSessionId : st.sessionId
+  const cwd = stateDir(st)
+  const flags = checkFlags(st.respawnFlags)
+  const env = checkEnv(st.providerEnv)
+  const why = !UUID.test(sid || '') ? 'It has no saved session id' : !cwd ? 'Its folder no longer exists' : flags.error || env.error || ''
+  return why ? { unavailable: why } : { args: ['--bg', '--resume', sid, ...flags.args], cwd, envKeys: Object.keys(env.env).sort() }
+}
+
 /**
  * `<claude home>` is read for: jobs/<short>/state.json (state, sessionId, resumeSessionId, cwd,
  * worktreePath, respawnFlags, providerEnv; the last two only when building a restore),
@@ -331,15 +350,7 @@ export function createRestore({ dataDir, claudeHome, execFile: execImpl = execFi
   async function planJob(j) {
     const st = await readState(j.short)
     if (!st) throw bad('Its job folder is gone', 409)
-    const sid = st.resumeSessionId && UUID.test(st.resumeSessionId) ? st.resumeSessionId : st.sessionId
-    const dirOk = (p) => typeof p === 'string' && path.isAbsolute(p) && fs.statSync(p, { throwIfNoEntry: false })?.isDirectory()
-    const cwd = [st.worktreePath, st.cwd].find(dirOk) || null
-    const respawn = { args: ['respawn', j.short], cwd: cwd || os.homedir() }
-    const flags = checkFlags(st.respawnFlags)
-    const env = checkEnv(st.providerEnv)
-    const why = !UUID.test(sid || '') ? 'It has no saved session id' : !cwd ? 'Its folder no longer exists' : flags.error || env.error || ''
-    const resume = why ? { unavailable: why } : { args: ['--bg', '--resume', sid, ...flags.args], cwd, envKeys: Object.keys(env.env).sort() }
-    return { short: j.short, id: j.id, name: j.name, project: j.project, crown: j.crown, important: j.important, respawn, resume }
+    return { short: j.short, id: j.id, name: j.name, project: j.project, crown: j.crown, important: j.important, respawn: respawnArgs(j.short, st), resume: resumeArgs(st) }
   }
   // Brackets are quoted too: pasted into zsh, `opus[1m]` would be a glob.
   const display = (args) => ['claude', ...args].map((x) => (/^[\w@%+=:,./-]+$/.test(x) ? x : quoteForShell(x))).join(' ')
