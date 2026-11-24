@@ -768,7 +768,11 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
           if (what === 'add/finish') return send(res, 200, await p.accounts.addFinish(body))
           if (what === 'add/cancel') return send(res, 200, await p.accounts.addCancel())
           // Step 1: the adapter makes a fresh home and returns the sign-in argv (ours, never the page's).
-          const out = typeof p.addStart === 'function' ? await p.addStart() : await p.accounts.addStart({ bin: await p.bin() })
+          // `force` (start over) only from the page itself; bin and argv are always the server's.
+          const force = body?.force === true && req.headers['x-agentville-ui'] === '1'
+          let out
+          try { out = typeof p.addStart === 'function' ? await p.addStart({ force }) : await p.accounts.addStart({ bin: await p.bin(), force }) }
+          catch (e) { if (e.status) return send(res, e.status, { error: e.message, ...(typeof e.code === 'string' && { code: e.code }) }); throw e }
           const { argv, env: _env, home: _home, ...shown } = out || {}
           const term = Array.isArray(argv) && argv.length && await detectTerminal()
           if (!term) return send(res, 200, { ...shown, opened: false, ...(!argv && { error: `${p.label} CLI not found` }) })

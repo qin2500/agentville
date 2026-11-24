@@ -201,7 +201,7 @@ export default {
     scanMod?.configure?.({ dataDir, ...(homes && { homes }) })
   },
   /** Step 1 of adding an account: P7's addStart with the real bin, so its argv can be opened in a terminal. */
-  async addStart() { return accountsPart().accounts.addStart({ bin: await binPath() }) },
+  async addStart({ force = false } = {}) { return accountsPart().accounts.addStart({ bin: await binPath(), force: force === true }) },
   /** From the runner state: running -> busy, limit -> limit, finished turn -> idle, stopped/gone -> gone. */
   async activity(agent) {
     const runId = runIdOf(agent)
