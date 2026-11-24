@@ -260,7 +260,10 @@ export function createGeminiAccounts({ dataDir, registry, network, busyHomes, no
       for (const v of [home, bin]) if (/["%&|<>^]/.test(String(v))) throw fail(400, 'The Gemini folder or program path has a character that cmd.exe cannot take safely')
       return [cmd, '/d', '/k', `set "GEMINI_CLI_HOME=${home}" && set "GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false" && "${bin}"`]
     }
-    return ['/usr/bin/env', `GEMINI_CLI_HOME=${home}`, 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false', bin]
+    // The terminal opens a fresh login shell whose PATH may not hold node (gemini is `#!/usr/bin/env node`):
+    // hand it the server's own PATH with this node's folder first.
+    const PATHv = [path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(':')
+    return ['/usr/bin/env', `PATH=${PATHv}`, `GEMINI_CLI_HOME=${home}`, 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false', bin]
   }
 
   /**

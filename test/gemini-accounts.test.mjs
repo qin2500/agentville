@@ -51,7 +51,7 @@ test('add: fresh 0700 home, official sign-in argv, identity from google_accounts
   assert.ok(start.home.startsWith(path.join(dataDir, 'accounts', 'gemini')))
   assert.equal(start.env.GEMINI_CLI_HOME, start.home)
   if (posix) {
-    assert.deepEqual(start.argv, ['/usr/bin/env', `GEMINI_CLI_HOME=${start.home}`, 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false', '/opt/bin/gemini'])
+    assert.deepEqual(start.argv, ['/usr/bin/env', `PATH=${[path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(':')}`, `GEMINI_CLI_HOME=${start.home}`, 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false', '/opt/bin/gemini'])
     assert.equal(await modeOf(start.home), 0o700)
     assert.equal(await modeOf(path.join(start.home, '.gemini')), 0o700)
   }
