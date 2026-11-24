@@ -18,7 +18,8 @@ test('ledger: 0600, ttl, depth, counts', () => {
   assert.equal(launches.depth('never-seen'), 0)
   assert.equal(launches.count({ parentAgentId: 'a' }), 1)
   const dir = tmp(); const l2 = createLaunches({ dataDir: dir }); l2.record({ ref: 'z', provider: 'claude' })
-  assert.equal(fs.statSync(path.join(dir, 'launches.json')).mode & 0o777, 0o600)
+  // POSIX file modes don't exist on Windows.
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'launches.json')).mode & 0o777, 0o600)
   t += 15 * 24 * 3600 * 1000
   assert.equal(launches.get('a'), null)
 })
