@@ -373,6 +373,36 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
   Security → Automation.
 - **"Build failed; serving the API only."** Run `npm ci && npm run build` to see the error.
 
+## Gemini agents and providers
+
+Agentville runs agents on two providers: **Claude** (Claude Code) and **Gemini** (Google's official
+[Gemini CLI](https://github.com/google-gemini/gemini-cli)). Agents of both kinds live in the same village.
+Gemini agents carry a violet sparkle.
+
+**Set up Gemini**
+
+1. Install the CLI: `npm install -g @google/gemini-cli`, and check that `gemini --version` works.
+2. In Agentville, open the account menu, choose **Add a Gemini account…**, and sign in with Google in the
+   terminal that opens. Each Gemini account gets its own folder under Agentville's data folder. Agentville
+   never reads or copies the login tokens.
+3. Under **+ New agent**, pick **Gemini** to start a Gemini agent in any folder.
+
+**Providers and switching** (Settings › Providers)
+
+- **Default provider** (Claude to start): new agents use it unless you pick another.
+- **Within a provider**: when an account runs low, the switcher moves to another account of the **same**
+  provider first, as before.
+- **When a provider is completely out**: its agents are handed off. A non-default provider hands off to the
+  default provider; the default provider hands off to the next provider in the order. A handoff starts a new
+  agent in the same folder with a note (the task, what was done, changed files, what is left), confirms it
+  is running, and then stops the old one. Handoffs wait 30 minutes first, in case the provider frees up.
+  The accounts menu lists handoffs, and you can undo them there.
+- **Agents starting agents**: agents can start Claude or Gemini agents with `tools/agentville start
+  --provider gemini "prompt"`. These are limited to the agent's own folder or a known project, can't use a
+  looser permission mode than the agent that starts them, and are capped per hour and in depth.
+
+Gemini limits are daily and reset at midnight Pacific time. When Pro runs out, Agentville retries on Flash.
+
 ## Accounts in detail
 
 - **Saving accounts.** The login Claude Code has now shows as "Claude login"; **Save** keeps it.
