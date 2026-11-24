@@ -7,7 +7,7 @@ const MODEL = { '': 'Default', opus: 'Opus', 'opus[1m]': 'Opus · 1M context', s
 const EFFORT = { '': 'Default', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 const MODE = { '': 'Default (asks before edits and commands)', acceptEdits: 'Accept edits', auto: 'Auto', plan: 'Plan first', manual: 'Manual', dontAsk: "Don't ask (deny what isn't allowed)" };
 
-const PROVIDER = { claude: 'Claude', gemini: 'Gemini' };
+const PROVIDER = { claude: 'Claude', gemini: 'Gemini (Antigravity)' };
 
 export function createLaunch(app) {
   const { S } = app;

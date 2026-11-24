@@ -22,5 +22,5 @@ test('sparkle draws pixels; provider survives the snapshot copy; label exists', 
   assert.ok(n > 20);
   assert.ok(AGENT_FIELDS.includes('provider'));
   assert.equal(copyAgentFields({ id: 'x', provider: 'gemini' }).provider, 'gemini');
-  assert.equal(HARNESS_NAME['gemini-cli'], 'Gemini CLI');
+  assert.equal(HARNESS_NAME['gemini-cli'], 'Gemini (Antigravity)');
 });

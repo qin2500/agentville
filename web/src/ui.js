@@ -27,7 +27,7 @@ export async function clearNotice(id, fetchImpl = globalThis.fetch) {
 }
 export const BUCKET_NAME = { stalled: 'Stalled', waiting: 'Waiting', building: 'Building', resting: 'Resting' };
 export const ROLE_NAME = { boss: 'Boss', lead: 'Lead', sub: 'Subagent', solo: 'Solo' };
-export const HARNESS_NAME = { 'claude-code': 'Claude Code', codex: 'Codex', 'gemini-cli': 'Gemini CLI' };
+export const HARNESS_NAME = { 'claude-code': 'Claude Code', codex: 'Codex', 'gemini-cli': 'Gemini (Antigravity)' };
 export const PROVIDER_NAME = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' };
 // Claude Code's `/color` names (the server's `a.color`), a step lighter than the CLI's so they read on
 // the dark panels. No color (unset, Codex, subagents) is nothing: '' removes `--agent-color`, so no bar

@@ -1,84 +1,81 @@
-// Gemini CLI session transcripts (append-only JSONL with upsert-by-id records), see docs/gemini-cli-notes.md §2.2.
+// Gemini provider transcripts, Antigravity CLI (`agy`). Two sources (docs/antigravity-cli-notes.md §2, §3.4):
+// 1. The runner's own out.log: agy stream-json (`init`, `step_update`, `result`), for runs Agentville started.
+// 2. `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript*.jsonl` for sessions the user ran by
+//    hand. That layout is third-party and undocumented, so rows are read best-effort and unknown shapes dropped.
+// Everything is tolerant: unknown events and fields are ignored, never thrown on.
 import fsp from 'node:fs/promises'
 import { jsonLines, readHead, readTail } from '../fsutil.mjs'
+import { joinDelta } from './runner.mjs'
 
-const SYNTHETIC = /^\s*<(session_context|hook_context)>/
-const FILE_KEYS = ['file_path', 'absolute_path', 'path', 'dir_path', 'filepath']
-
-/**
- * Replay a transcript's records. Messages upsert by id (last wins, position of first sight kept), `$patch`
- * updates fields of an existing message, `$rewindTo` drops that message and everything after it, `$set`
- * merges header metadata.
- * @returns {{ header: object, messages: object[] }}
- */
-export function parseTranscript(text) {
-  let header = {}
-  const order = []
-  const byId = new Map()
-  for (const r of jsonLines(String(text || ''))) {
-    if (r.$set && typeof r.$set === 'object') { Object.assign(header, r.$set); continue }
-    if (r.$patch) {
-      for (const u of Array.isArray(r.$patch.updates) ? r.$patch.updates : []) {
-        const m = u && byId.get(u.id)
-        if (m) Object.assign(m, u)
-      }
-      continue
-    }
-    if (typeof r.$rewindTo === 'string') {
-      const i = order.indexOf(r.$rewindTo)
-      if (i >= 0) for (const id of order.splice(i)) byId.delete(id)
-      continue
-    }
-    if (typeof r.id === 'string' && typeof r.type === 'string') {
-      if (!byId.has(r.id)) order.push(r.id)
-      byId.set(r.id, r)
-      continue
-    }
-    if (typeof r.sessionId === 'string' && !('id' in r)) header = { ...header, ...r }
-    else if (r.summary && !r.id) header.summary = r.summary
-  }
-  return { header, messages: order.map((id) => byId.get(id)) }
-}
-
-/** Text of a user message's parts; '' for tool results and the synthetic context blobs. */
-export function userText(m) {
-  const c = m?.content
-  const parts = Array.isArray(c) ? c : typeof c === 'string' ? [{ text: c }] : []
-  const t = parts.map((p) => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
-  return SYNTHETIC.test(t) ? '' : t
-}
-
-const at = (m) => Date.parse(m?.timestamp) || 0
+const FILE_KEYS = ['file_path', 'absolute_path', 'path', 'dir_path', 'filepath', 'AbsolutePath', 'TargetFile', 'FilePath']
+const obj = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : null)
+const str = (x) => (typeof x === 'string' ? x : '')
 
 function filesOf(args) {
   const out = []
-  if (args && typeof args === 'object') for (const k of FILE_KEYS) if (typeof args[k] === 'string' && args[k]) out.push(args[k])
+  const a = obj(args)
+  if (a) for (const k of FILE_KEYS) if (typeof a[k] === 'string' && a[k]) out.push(a[k])
   return out
 }
 
-/** Normalize parsed messages to TxEvents, oldest first. */
-export function toEvents(messages) {
+/** Text of a brain-transcript `content` field: a string, `{ text }`, or a list of either. */
+function textOf(c) {
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) return c.map(textOf).join('')
+  const o = obj(c)
+  return o ? str(o.text) || str(o.content) || '' : ''
+}
+
+/** stream-json rows (out.log, possibly several turns) -> TxEvents, oldest first. De-duplicated per step. */
+export function streamToEvents(rows, at = 0) {
+  const steps = new Map()
+  const order = []
+  let turn = 0
+  for (const e of rows) {
+    const kind = str(e?.event) || str(e?.type)
+    if (kind === 'init') { turn++; continue }
+    if (kind !== 'step_update') continue
+    const u = obj(e.step_update) || e
+    const key = `${turn}:${str(u.conversation_id)}:${Number.isFinite(u.step_index) ? u.step_index : order.length}`
+    let s = steps.get(key)
+    if (!s) { s = { type: str(u.step_type), text: '', tool: null, done: false }; steps.set(key, s); order.push(key) }
+    s.type = str(u.step_type) || s.type
+    s.done = s.done || str(u.state) === 'DONE'
+    if (s.type === 'agent_response' || s.type === 'user_input') s.text = joinDelta(s.text, str(u.text_delta))
+    const ti = obj(u.tool_info)
+    if (s.type === 'tool' || ti) s.tool = { name: str(u.tool_name) || str(ti?.name) || s.tool?.name || 'tool', files: ti ? filesOf(ti.parameters) : s.tool?.files || [] }
+  }
   const ev = []
-  for (const m of messages) {
-    const when = at(m)
-    if (m.type === 'user') {
-      const text = userText(m)
-      if (text) ev.push({ role: 'user', at: when, text })
-    } else if (m.type === 'gemini') {
-      const text = typeof m.content === 'string' ? m.content.trim() : ''
-      if (text) ev.push({ role: 'assistant', at: when, text })
-      for (const tc of Array.isArray(m.toolCalls) ? m.toolCalls : []) {
-        const name = tc.name || tc.displayName || 'tool'
-        const done = !!tc.status && tc.status !== 'scheduled' && tc.status !== 'executing' && tc.status !== 'awaiting_approval'
-        const e = { role: 'tool', at: Date.parse(tc.timestamp) || when, tool: { name, files: filesOf(tc.args), done } }
-        if (name === 'write_todos' && Array.isArray(tc.args?.todos)) {
-          e.todo = tc.args.todos.map((t) => ({ text: String(t.description || t.text || ''), done: t.status === 'completed' }))
-        }
-        ev.push(e)
-      }
-    }
+  for (const k of order) {
+    const s = steps.get(k)
+    if (s.type === 'user_input' && s.text.trim()) ev.push({ role: 'user', at, text: s.text.trim() })
+    else if (s.type === 'agent_response' && s.text.trim()) ev.push({ role: 'assistant', at, text: s.text.trim() })
+    else if (s.tool) ev.push({ role: 'tool', at, tool: { ...s.tool, done: s.done } })
   }
   return ev
+}
+
+/** Brain transcript rows (`step_index`, `source`, `type`, `status`, `content`; schema unconfirmed) -> TxEvents. */
+export function brainToEvents(rows, at = 0) {
+  const ev = []
+  for (const r of rows) {
+    if (!obj(r)) continue
+    const kind = `${str(r.type)} ${str(r.source)}`.toLowerCase()
+    const when = Date.parse(r.timestamp || r.created_at || '') || at
+    const text = textOf(r.content).trim()
+    if (/user/.test(kind)) { if (text) ev.push({ role: 'user', at: when, text }) }
+    else if (/tool|command|call/.test(kind)) {
+      const t = obj(r.tool_call) || obj(r.toolCall) || obj(r.tool_info) || {}
+      ev.push({ role: 'tool', at: when, tool: { name: str(t.name) || str(r.tool_name) || 'tool', files: filesOf(t.parameters || t.args), done: !/active|running|pending/i.test(str(r.status)) } })
+    } else if (text && /response|model|agent|assistant|planner/.test(kind)) ev.push({ role: 'assistant', at: when, text })
+  }
+  return ev
+}
+
+/** Rows of either source -> TxEvents. stream-json is recognised by its `event` field. */
+export function toEvents(rows, at = 0) {
+  const list = Array.isArray(rows) ? rows : []
+  return list.some((r) => typeof r?.event === 'string') ? streamToEvents(list, at) : brainToEvents(list, at)
 }
 
 /** @param {{ transcriptFile?: string|null }} agent */
@@ -86,37 +83,27 @@ export async function readTranscript(agent, { maxBytes = 512 * 1024 } = {}) {
   const file = agent?.transcriptFile
   if (!file) return []
   try {
-    const { size } = await fsp.stat(file)
-    let text
-    if (size <= maxBytes) text = await fsp.readFile(file, 'utf8')
-    else text = await readTail(file, maxBytes) // earlier upserts may be lost: acceptable for a bounded read
-    return toEvents(parseTranscript(text).messages)
+    const { size, mtimeMs } = await fsp.stat(file)
+    const text = size <= maxBytes ? await fsp.readFile(file, 'utf8') : await readTail(file, maxBytes)
+    return toEvents(jsonLines(text), mtimeMs)
   } catch { return [] }
 }
 
-/** Cheap summary for the scan: header, first real prompt, last message shape. Reads head and tail only. */
+/** Cheap summary for the scan: first user text, last assistant text, size and mtime. Head and tail only. */
 export async function summarize(file, { head = 64 * 1024, tail = 64 * 1024 } = {}) {
   const st = await fsp.stat(file)
   const small = st.size <= head + tail
-  const text = small ? await fsp.readFile(file, 'utf8') : await readHead(file, head)
-  const first = parseTranscript(text)
-  let last = first
-  if (!small) last = parseTranscript(await readTail(file, tail))
-  const msgs = last.messages
-  const prompt = (first.messages.map(userText).find(Boolean)) || ''
-  const tail1 = msgs[msgs.length - 1] || null
-  let pending = false
-  if (tail1) {
-    if (tail1.type === 'gemini') pending = (tail1.toolCalls || []).some((t) => t.status === 'scheduled' || t.status === 'executing')
-    else if (tail1.type === 'user') pending = true // a turn is open: user text or a tool result awaiting the model
-  }
+  const first = toEvents(jsonLines(small ? await fsp.readFile(file, 'utf8') : await readHead(file, head)))
+  const last = small ? first : toEvents(jsonLines(await readTail(file, tail)))
+  const end = last[last.length - 1] || null
   return {
-    header: { ...first.header, ...last.header },
-    prompt,
-    lastType: tail1?.type || null,
-    lastText: tail1?.type === 'gemini' && typeof tail1.content === 'string' ? tail1.content.trim() : '',
-    turnOpen: pending,
+    prompt: first.find((e) => e.role === 'user')?.text || '',
+    lastType: end?.role || null,
+    lastText: end?.role === 'assistant' ? end.text : '',
     size: st.size,
     mtime: st.mtimeMs,
   }
 }
+
+/** Old name kept for importers: parse a transcript text to TxEvents. */
+export const parseTranscript = (text) => ({ header: {}, messages: [], events: toEvents(jsonLines(String(text || ''))) })

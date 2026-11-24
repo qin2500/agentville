@@ -60,7 +60,7 @@ const handoffMod = await import('./handoff.mjs').catch((e) => {
   if (e?.code === 'ERR_MODULE_NOT_FOUND' && String(e.message).includes('handoff.mjs')) return null
   throw e
 })
-const SCAN_LABEL = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' }
+const SCAN_LABEL = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini (Antigravity)' }
 const SUB_KIND = new Set(['subagent', 'teammate', 'thread'])
 /** A page or API body never sets env, lineage or handoff fields: only the server does (handoffs, agent starts). */
 const fromPage = (body) => {
@@ -195,7 +195,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // One sampler per provider with accounts (§3.1). Claude's is the existing one, under its old file name.
   const samplers = { claude: sampler }
   for (const p of providers()) {
-    if (p.id === 'claude' || !p.capabilities?.accounts) continue
+    if (p.id === 'claude' || !p.capabilities?.accounts || !p.switcher) continue // no switcher: nothing to rotate
     try {
       samplers[p.id] = createSampler({ dataDir, provider: p.id, file: `autoswitch-${p.id}.json`, tuning: p.tuning || {}, account: p.switcher, network,
         agents: async () => agentsOf(p.id) })
@@ -331,7 +331,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // under test, where it would read the real ~/.gemini unless a fake home is named.
     const adapters = providers()
     const sources = {}
-    for (const p of adapters) sources[p.id] = p.id === 'gemini' ? !(testingEnv && !process.env.GEMINI_CLI_HOME) : fs.existsSync(p.home())
+    for (const p of adapters) sources[p.id] = p.id === 'gemini' ? !(testingEnv && !process.env.AGENTVILLE_AGY_HOME) : fs.existsSync(p.home())
     const results = await Promise.allSettled(adapters.map((p) => (sources[p.id] ? p.scan(now) : [])))
     const scanned = []
     let unreadable = 0

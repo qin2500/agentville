@@ -375,17 +375,26 @@ The tests use a few more (`AGENTVILLE_TEST`, `AGENTVILLE_FAKE_BIN` and others); 
 
 ## Gemini agents and providers
 
-Agentville runs agents on two providers: **Claude** (Claude Code) and **Gemini** (Google's official
-[Gemini CLI](https://github.com/google-gemini/gemini-cli)). Agents of both kinds live in the same village.
-Gemini agents carry a violet sparkle.
+Agentville runs agents on two providers: **Claude** (Claude Code) and **Gemini**, which Agentville drives
+through Google's **Antigravity CLI** (`agy`). Google ended Gemini CLI for personal Google AI Pro/Ultra
+accounts; `agy` is its replacement. Agents of both kinds live in the same village. Gemini agents carry a
+violet sparkle.
 
-**Set up Gemini**
+**Set up Gemini (Antigravity)**
 
-1. Install the CLI: `npm install -g @google/gemini-cli`, and check that `gemini --version` works.
-2. In Agentville, open the account menu, choose **Add a Gemini account…**, and sign in with Google in the
-   terminal that opens. Each Gemini account gets its own folder under Agentville's data folder. Agentville
-   never reads or copies the login tokens.
-3. Under **+ New agent**, pick **Gemini** to start a Gemini agent in any folder.
+1. Install `agy`: `curl -fsSL https://antigravity.google/cli/install.sh | bash` (Windows PowerShell:
+   `irm https://antigravity.google/cli/install.ps1 | iex`). Agentville looks for it on `PATH`, then in
+   `~/.local/bin`, then in `%LOCALAPPDATA%\agy\bin`.
+2. In Agentville, open the account menu and choose **Add Gemini account…**. A terminal opens running `agy`.
+   Sign in in the browser, then paste the code Google shows into the terminal. Back in Agentville, choose
+   **I've signed in**; Agentville confirms with one short headless `agy` call. (Running `agy` once yourself
+   and signing in works too.)
+3. Under **+ New agent**, pick **Gemini (Antigravity)** to start an agent in any folder. Modes: default
+   (accepts file edits), auto, plan. Agentville never passes `--dangerously-skip-permissions`.
+
+`agy` keeps one sign-in in the OS keyring (Keychain, Credential Manager or Secret Service), shared by every
+`agy` on your user account, so Agentville supports **one Gemini account for now**. Agentville never reads or
+copies that sign-in. To sign out, run `/logout` inside `agy`.
 
 **Providers and switching** (Settings › Providers)
 
@@ -401,7 +410,8 @@ Gemini agents carry a violet sparkle.
   --provider gemini "prompt"`. These are limited to the agent's own folder or a known project, can't use a
   looser permission mode than the agent that starts them, and are capped per hour and in depth.
 
-Gemini limits are daily and reset at midnight Pacific time. When Pro runs out, Agentville retries on Flash.
+Antigravity does not document its quota reset. When a Gemini agent stops on its quota, Agentville treats
+Gemini as out for a cautious 5 hours and hands work off to Claude as described above.
 
 ## Accounts in detail
 

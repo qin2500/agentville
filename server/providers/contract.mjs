@@ -70,10 +70,11 @@ export function assertAdapter(a) {
     if (!isObj(v)) { bad.push(`${k} must be an object`); return; }
     for (const f of ops) if (!isFn(v[f])) bad.push(`${k}.${f} must be a function`);
   };
-  // Without accounts (capabilities.accounts=false) credentials, accounts and switcher may be null.
+  // Without accounts (capabilities.accounts=false) credentials, accounts and switcher may be null. With accounts,
+  // `switcher: null` (explicitly) means a display-only account list with nothing to switch between (Gemini/agy).
   opsOk('credentials', ['read', 'write', 'identify'], hasAccounts);
   opsOk('accounts', ACCOUNT_OPS, hasAccounts);
-  opsOk('switcher', SWITCH_OPS, hasAccounts);
+  opsOk('switcher', SWITCH_OPS, hasAccounts && (lazy('switcher') || a.switcher !== null));
   if (bad.length) throw new Error(`adapter ${a && a.id}: ${bad.join('; ')}`);
   return a;
 }

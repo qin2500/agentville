@@ -75,9 +75,10 @@ export function createProviderSwitch({ settings, providers, samplers = {}, agent
 
   /** The raw "out" signal for one adapter right now: { until }, null, or UNKNOWN when the reading failed. */
   async function outSignal(adapter, t) {
-    if (adapter.capabilities?.accounts) {
-      const sampler = samplerOf(adapter.id)
-      if (!sampler?.info) return null
+    // A provider with accounts AND a sampler reads the sampler; one without a sampler (no switcher, e.g. Gemini on
+    // agy's single sign-in) is judged by its agents' limit stops, like a provider without accounts.
+    const sampler = adapter.capabilities?.accounts ? samplerOf(adapter.id) : null
+    if (sampler?.info) {
       let info
       try { info = await sampler.info() } catch { return UNKNOWN }
       const b = info?.blocked

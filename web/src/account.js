@@ -87,7 +87,8 @@ export function createAccount(app, { open: openAgent, termName }) {
     btn.setAttribute('aria-label', `Account: ${name}. Switch account${warn ? `. Warning: ${warn}` : ''}`);
     if (warn) btn.title = warn; else btn.removeAttribute('title');
   }
-  const GEMINI_HINT = 'Gemini CLI not found. Install it with: npm install -g @google/gemini-cli, then try again.';
+  const GEMINI_HINT = 'Antigravity CLI not found. Install: curl -fsSL https://antigravity.google/cli/install.sh | bash (Windows: irm https://antigravity.google/cli/install.ps1 | iex)';
+  const GEMINI_SIGNIN = 'Sign in in the browser, then paste the code Google shows into the terminal.';
   async function loadList() {
     try { A.list = await json('/api/accounts'); A.listErr = ''; } catch (e) { A.listErr = `Couldn't load accounts: ${why(e)}`; }
     // An older server, or accounts unavailable here: fall back to the pool/personal profile.
@@ -176,14 +177,14 @@ export function createAccount(app, { open: openAgent, termName }) {
     const gemAdding = L?.adding && A.addProvider === 'gemini';
     const gemAdd = gemAdding
       ? `<div class="acct-add" role="group" aria-labelledby="acct-gadd-h"><p id="acct-gadd-h"><b>Add Gemini account · step 2 of 2</b></p>
-          <p>${info?.command ? `Run <code>${esc(info.command)}</code> in a terminal.` : 'Sign in to Gemini in the window or terminal that opened.'} ${info?.error ? esc(info.error) : ''} Then come back.</p>
+          <p>${info?.opened ? `A ${esc(termName() || 'terminal')} window is running <code>agy</code>.` : `Run <code>agy</code> in a terminal${info?.error ? ` (${esc(info.error)})` : ''}.`} ${GEMINI_SIGNIN} Then come back.</p>
           <label class="acct-field" for="acct-add-label">Name (optional)</label>
-          <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. Personal Google" value="${esc(A.addLabel)}" data-key="add-label">
+          <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="Google account" value="${esc(A.addLabel)}" data-key="add-label">
           <div class="acts"><button class="primary" type="button" ${k('finish')} ${A.working ? 'disabled' : ''}>${A.working === 'finish' ? 'Saving…' : "I've signed in"}</button>
           <button class="ghost" type="button" ${k('add-cancel')} ${A.working ? 'disabled' : ''}>Cancel</button></div></div>`
-      : `<button class="menuitem" type="button" ${k('add-gemini')} ${busy || !L || L?.adding ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening sign-in…' : 'Add a Gemini account…'}</b><span>Sign in to a Google account for Gemini CLI.</span></button>`;
+      : `<button class="menuitem" type="button" ${k('add-gemini')} ${busy || !L || L?.adding ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening sign-in…' : (gem.length ? 'Sign in to Gemini again…' : 'Add Gemini account…')}</b><span>Opens agy in a terminal. ${GEMINI_SIGNIN} One Google account for now.</span></button>`;
     const gemSection = G
-      ? `<div class="acct-group" data-provider="gemini"><p class="acct-note"><b>Gemini</b>${G.exhausted ? ' · out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}</p>${gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>` : `<p class="acct-note">No Gemini accounts yet</p>${gemHint ? `<p class="acct-note">${gemHint}</p>` : ''}`}</div>` : '';
+      ? `<div class="acct-group" data-provider="gemini"><p class="acct-note"><b>Gemini (Antigravity)</b>${G.exhausted ? ' · out until ' + esc(new Date(G.exhausted.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}</p>${gemRows ? `<ul class="acct-rows" aria-label="Gemini accounts">${gemRows}</ul>` : `<p class="acct-note">Not signed in to Antigravity yet</p>${gemHint ? `<p class="acct-note">${gemHint}</p>` : ''}`}</div>` : '';
     const relogin = A.reloginId ? accountOf(A.reloginId) : null;
     const add = L?.adding && A.addProvider !== 'gemini'
       ? `<div class="acct-add" role="group" aria-labelledby="acct-add-h"><p id="acct-add-h"><b>${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} · step 2 of 2` : 'Add account · step 2 of 2'}</b></p>
@@ -294,7 +295,7 @@ export function createAccount(app, { open: openAgent, termName }) {
           A.addInfo = await json('/api/accounts/add/start', { method: 'POST', headers: { 'content-type': 'application/json', 'x-agentville-ui': '1' }, body: JSON.stringify({ provider: 'gemini', force: true }) });
         }
         A.addLabel = ''; A.reloginId = ''; A.addProvider = 'gemini';
-      }, 'Step 2: sign in to Gemini, then choose I\'ve signed in')
+      }, 'Step 2: sign in in the browser, paste the code into the terminal, then choose I\'ve signed in')
         .then(() => pop.querySelector('#acct-add-label')?.focus());
       case 'add': return act('add', async () => { A.addProvider = 'claude'; A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = ''; }, 'Step 2: sign in, then choose I\'ve logged in')
         .then(() => pop.querySelector('#acct-add-label')?.focus());
@@ -306,7 +307,7 @@ export function createAccount(app, { open: openAgent, termName }) {
       }).then(() => { pop.querySelector('[data-am="add"]')?.focus(); return loadUsage(false); });
       case 'relogin': return act('add', async () => { A.addProvider = 'claude'; A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = id; }, 'Step 2: sign in again, then choose I\'ve logged in')
         .then(() => pop.querySelector('[data-am="finish"]')?.focus());
-      case 'add-cancel': return act('add-cancel', async () => { await send('POST', '/api/accounts/add/cancel'); A.addInfo = null; A.reloginId = ''; A.addProvider = 'claude'; }, 'Adding cancelled')
+      case 'add-cancel': return act('add-cancel', async () => { await send('POST', '/api/accounts/add/cancel', A.addProvider === 'gemini' ? { provider: 'gemini' } : undefined); A.addInfo = null; A.reloginId = ''; A.addProvider = 'claude'; }, 'Adding cancelled')
         .then(() => pop.querySelector('[data-am="add"]')?.focus());
       case 'handoff-undo': case 'handoff-retry': case 'handoff-dismiss': case 'handoff-approve': {
         const hact = t.dataset.am.slice(8);

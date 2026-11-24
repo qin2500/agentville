@@ -30,10 +30,10 @@ const NO_START_KINDS = new Set(['subagent', 'teammate', 'thread'])
 const RANK = { plan: 0, '': 1, default: 1, manual: 1, acceptEdits: 2, auto_edit: 2, auto: 3, dontAsk: 3, bypassPermissions: 4, yolo: 4 }
 const VOCAB = {
   claude: new Set(['', 'default', 'manual', 'plan', 'acceptEdits', 'auto', 'dontAsk']),
-  gemini: new Set(['', 'default', 'plan', 'auto_edit']),
+  gemini: new Set(['', 'default', 'plan', 'auto_edit', 'auto']),
 }
 // Most permissive allowed child mode at each rank, in the child's vocabulary.
-const AT_RANK = { claude: ['plan', '', 'acceptEdits', 'auto'], gemini: ['plan', 'default', 'auto_edit', 'auto_edit'] }
+const AT_RANK = { claude: ['plan', '', 'acceptEdits', 'auto'], gemini: ['plan', 'default', 'auto_edit', 'auto'] }
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 const fail = (status, error) => ({ ok: false, status, error })
