@@ -41,8 +41,8 @@ for (let i = 0; i < args.length; i++) {
 const port = Number(opts.port)
 if (!Number.isInteger(port) || port < 1 || port > 65535) usageFail('invalid --port')
 
-// TODO(G7): add the Gemini session variable once known.
-const sessionFromEnv = () => opts.session || process.env.CLAUDE_CODE_SESSION_ID || process.env.AGENTVILLE_AGENT_ID || process.env.CODEX_THREAD_ID || ''
+// Gemini sets GEMINI_SESSION_ID inside its processes.
+const sessionFromEnv = () => opts.session || process.env.CLAUDE_CODE_SESSION_ID || process.env.AGENTVILLE_AGENT_ID || process.env.GEMINI_SESSION_ID || process.env.CODEX_THREAD_ID || ''
 const needSession = () => {
   const s = sessionFromEnv()
   if (!s) usageFail('no session id. Pass --session, or run inside an agent (CLAUDE_CODE_SESSION_ID or AGENTVILLE_AGENT_ID).')
