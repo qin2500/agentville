@@ -35,6 +35,10 @@ export const DEFAULT_LABEL = 'Google account'
 export const ENTRY_KIND = 'Antigravity sign-in'
 const PENDING_FRESH_MS = 10 * 60_000
 const PROBE_TIMEOUT_MS = 40_000
+const USAGE_TIMEOUT_MS = 40_000
+/** A good /usage reading is reused this long; a failed one is not retried for FAIL_RETRY_MS. */
+export const USAGE_CACHE_MS = 5 * 60_000
+const FAIL_RETRY_MS = 60_000
 /** agy's own cap on the probe turn, so a missing sign-in fails fast (agy 1.5.16 otherwise waits on a browser sign-in). */
 export const PROBE_PRINT_TIMEOUT = '20s'
 export const AGY_MISSING_MESSAGE = 'Antigravity CLI not found. Install: curl -fsSL https://antigravity.google/cli/install.sh | bash (Windows: irm https://antigravity.google/cli/install.ps1 | iex)'
@@ -81,12 +85,74 @@ export function probeSignIn({ bin, spawn = nodeSpawn, env = process.env, platfor
   })
 }
 
+/** One group's buckets -> { fiveHour, weekly } windows ({ used, resetsAt, out? }), or null when neither is present. */
+function windowsOf(group) {
+  const out = {}
+  for (const b of Array.isArray(group?.buckets) ? group.buckets : []) {
+    const frac = Number(b?.remaining_fraction)
+    if (!Number.isFinite(frac)) continue
+    const tag = `${b.window || ''} ${b.id || ''} ${b.name || ''}`.toLowerCase()
+    const key = /week/.test(tag) ? 'weekly' : /5\s*-?h|five|5\s*hour/.test(tag) ? 'fiveHour' : null
+    if (!key) continue
+    const t = Date.parse(b.reset_time)
+    out[key] = { used: Math.min(100, Math.max(0, Math.round((1 - frac) * 100))), resetsAt: Number.isFinite(t) ? t : null, ...(frac <= 0 && { out: true }) }
+  }
+  return out.fiveHour || out.weekly ? out : null
+}
+const isGeminiGroup = (g) => /^gemini\b/i.test(g?.name || '') || (Array.isArray(g?.buckets) && g.buckets.some((b) => String(b?.id || '').startsWith('gemini-')))
+
+/** Pure: parse `agy -p /usage --output-format json` stdout -> { fiveHour, weekly, extra:[{ name, fiveHour, weekly }] } or null. */
+export function parseUsage(text) {
+  let j
+  try { j = JSON.parse(String(text).trim()) } catch { return null }
+  const groups = j?.command?.data?.groups
+  if (!Array.isArray(groups)) return null
+  let main = null
+  const extra = []
+  for (const g of groups) {
+    const w = windowsOf(g)
+    if (!w) continue
+    if (!main && isGeminiGroup(g)) main = w
+    else extra.push({ name: String(g.name || ''), fiveHour: w.fiveHour || null, weekly: w.weekly || null })
+  }
+  if (!main) return null
+  return { fiveHour: main.fiveHour || null, weekly: main.weekly || null, extra }
+}
+
+/**
+ * Real usage: one free headless `agy -p /usage --output-format json` (0 tokens). -> { ok, usage?, missing?, auth?, error? }.
+ * Never throws; hard-killed after `timeoutMs`; never a shell.
+ */
+export function readAgyUsage({ bin, spawn = nodeSpawn, env = process.env, platform = process.platform, timeoutMs = USAGE_TIMEOUT_MS, cwd = os.homedir() } = {}) {
+  return new Promise((resolve) => {
+    if (!bin) return resolve({ ok: false, missing: true, error: AGY_MISSING_MESSAGE })
+    let out = '', err = '', done = false
+    const finish = (r) => { if (!done) { done = true; clearTimeout(timer); resolve(r) } }
+    let child
+    try {
+      const t = launchTarget(bin, ['-p', '/usage', '--output-format', 'json', '--print-timeout', '30s'], { platform, env })
+      child = spawn(t.file, t.args, { ...t.opts, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...runEnv({ base: env }), ...t.env } })
+    } catch (e) { return resolve({ ok: false, error: scrub(e?.message || e) }) }
+    const timer = setTimeout(() => { try { child.kill?.('SIGKILL') } catch { /* gone */ } finish({ ok: false, error: 'The usage check timed out' }) }, timeoutMs)
+    child.stdout?.on?.('data', (b) => { if (out.length < 512 * 1024) out += b })
+    child.stderr?.on?.('data', (b) => { if (err.length < 64 * 1024) err += b })
+    child.on?.('error', (e) => finish({ ok: false, missing: e?.code === 'ENOENT', error: e?.code === 'ENOENT' ? AGY_MISSING_MESSAGE : scrub(e?.message || e) }))
+    child.on?.('close', (code) => {
+      const u = parseUsage(out)
+      if (u) return finish({ ok: true, usage: u })
+      const text = [err, out].filter(Boolean).join('\n')
+      if (isAuthText(text)) return finish({ ok: false, auth: true, error: 'agy says authentication is required' })
+      finish({ ok: false, error: scrub(text.trim().slice(0, 300) || `agy exited with code ${code}`) })
+    })
+  })
+}
+
 /**
  * `dataDir`: Agentville's data folder. `bin()`: resolves the agy path (async, may return null).
  * `probe({ bin })`: the sign-in check (default probeSignIn). `registry` (tests): `{ loadMeta, saveMeta }`.
  * `now`: clock (tests).
  */
-export function createGeminiAccounts({ dataDir, bin = async () => null, probe = probeSignIn, registry, now = Date.now, platform = process.platform } = {}) {
+export function createGeminiAccounts({ dataDir, bin = async () => null, probe = probeSignIn, usageReader = readAgyUsage, registry, now = Date.now, platform = process.platform } = {}) {
   if (!dataDir) throw new Error('createGeminiAccounts: dataDir is required')
   const root = path.join(dataDir, 'accounts', 'gemini')
   const pendingFile = path.join(root, 'pending-add.json')
@@ -154,14 +220,52 @@ export function createGeminiAccounts({ dataDir, bin = async () => null, probe = 
       single: true,
     }
   }
+  // --- real usage (agy /usage) --------------------------------------------------------------
+  let good = null // { reading, at }: last successful reading
+  let failedAt = 0, lastError = null
+  let inflight = null
+  const withIdentity = (u, t) => ({ id: ACCOUNT_ID, fiveHour: u.fiveHour || { none: true }, weekly: u.weekly || { none: true }, extra: u.extra || [], checkedAt: t, source: 'agy-usage' })
+  /** Cached (5 min) reading of agy's /usage; falls back to the errors-only estimate with `error`/`stale`. Never throws. */
+  async function readUsage({ force = false } = {}) {
+    const t = now()
+    if (!force && good && t - good.at < USAGE_CACHE_MS) return good.reading
+    const fallback = async () => {
+      if (good) return { ...good.reading, stale: true, error: lastError }
+      return { ...readingOf(ACCOUNT_ID, (await readLimits()).get(ACCOUNT_ID)), error: lastError, stale: true }
+    }
+    if (!force && failedAt && t - failedAt < FAIL_RETRY_MS) return fallback()
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const b = await bin()
+          const r = await usageReader({ bin: b })
+          if (r?.ok && r.usage) { good = { reading: withIdentity(r.usage, now()), at: now() }; failedAt = 0; lastError = null }
+          else { failedAt = now(); lastError = r?.auth ? 'Not signed in to Antigravity' : (r?.error || 'usage check failed') }
+        } catch (e) { failedAt = now(); lastError = scrub(e?.message || e) }
+      })().finally(() => { inflight = null })
+    }
+    await inflight
+    return good && !failedAt ? good.reading : fallback()
+  }
+  /** `{ until }` while a real window reads 0 remaining (the provider is out until that reset), else null. Never throws. */
+  async function exhaustion() {
+    try {
+      if (!(await signedIn())) return null
+      const r = await readUsage()
+      if (r.stale) return null
+      const t = now()
+      const ends = [r.fiveHour, r.weekly].filter((w) => w?.out && Number.isFinite(w.resetsAt) && w.resetsAt > t).map((w) => w.resetsAt)
+      return ends.length ? { until: Math.max(...ends) } : null
+    } catch { return null }
+  }
   async function usage() {
     const e = await entryOf()
-    return { accounts: e ? [readingOf(ACCOUNT_ID, (await readLimits()).get(ACCOUNT_ID))] : [] }
+    return { accounts: e ? [await readUsage()] : [] }
   }
-  const cachedUsage = () => new Map([...(limits || new Map())].map(([id, at]) => [id, readingOf(id, at)]))
+  const cachedUsage = () => new Map(good ? [[ACCOUNT_ID, good.reading]] : [...(limits || new Map())].map(([id, at]) => [id, readingOf(id, at)]))
   async function activeUsage() {
     if (!(await entryOf())) return null
-    return { ...readingOf(ACCOUNT_ID, (await readLimits()).get(ACCOUNT_ID)), saved: true }
+    return { ...(await readUsage()), saved: true }
   }
 
   /** Record that a Gemini agent stopped on a quota error at `at`. */
@@ -264,7 +368,7 @@ export function createGeminiAccounts({ dataDir, bin = async () => null, probe = 
 
   const accounts = {
     provider: PROVIDER, load, list, usage, cachedUsage, activeUsage, capture, addStart, addFinish, addCancel,
-    rename, remove, readLive, identify, activate, restoreLive, checkActive, headroom, noteLimit, signedIn, noteSignedOut,
+    rename, remove, readLive, identify, activate, restoreLive, checkActive, headroom, noteLimit, signedIn, noteSignedOut, readUsage, exhaustion,
   }
   /** Thin aliases (§1.2). Nothing to write: the agy sign-in lives in the OS keyring and is never touched. */
   const credentials = {

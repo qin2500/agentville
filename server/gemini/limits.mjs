@@ -19,8 +19,8 @@ export function isLimitText(text, _exitCode) {
  */
 export function limitModel(_text, _model = '') { return '' }
 
-/** When to try again after a limit at `now`: a cautious `RETRY_MS` later (the real reset is undocumented). */
-export function nextQuotaReset(now = Date.now()) { return now + RETRY_MS }
+/** When to try again after a limit at `now`: agy's real `reset_time` (ms) when known and ahead, else a cautious `RETRY_MS` later. */
+export function nextQuotaReset(now = Date.now(), resetAt = null) { return Number.isFinite(resetAt) && resetAt > now ? resetAt : now + RETRY_MS }
 
 /**
  * An ESTIMATE from local evidence only. A limit hit within the last RETRY_MS reads 100; otherwise 0, since

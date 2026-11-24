@@ -84,6 +84,8 @@ export function createProviderSwitch({ settings, providers, samplers = {}, agent
       const b = info?.blocked
       return b && b.why === BLOCKED_WHY ? { until: typeof b.until === 'number' ? b.until : null } : null
     }
+    // Real quota data (e.g. agy /usage reading 0 remaining) beats the limit-stop guess.
+    try { const ex = await adapter.accounts?.exhaustion?.(); if (ex) return { until: ex.until ?? null } } catch { /* fall through */ }
     let list
     try { list = await agents(adapter.id) } catch { return UNKNOWN }
     const out = limitStopsOut(list, t)

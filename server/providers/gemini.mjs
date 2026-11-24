@@ -89,7 +89,7 @@ const delegate = (pick, names) => Object.fromEntries(names.map((n) => [n, (...a)
   return o[n](...a)
 }]))
 const ACCOUNT_OPS = ['load', 'list', 'usage', 'cachedUsage', 'activeUsage', 'capture', 'addStart', 'addFinish',
-  'addCancel', 'rename', 'remove', 'readLive', 'identify', 'activate', 'restoreLive', 'checkActive', 'headroom']
+  'addCancel', 'rename', 'remove', 'readLive', 'identify', 'activate', 'restoreLive', 'checkActive', 'headroom', 'exhaustion']
 const accountsProxy = delegate(() => accountsPart().accounts, ACCOUNT_OPS)
 const credentialsProxy = delegate(() => accountsPart().credentials, ['read', 'write', 'identify'])
 
