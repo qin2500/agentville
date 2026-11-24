@@ -46,7 +46,7 @@ const binPath = async () => process.env.AGENTVILLE_AGY_BIN || process.env.AGENTV
 const testing = () => process.env.AGENTVILLE_TEST === '1' || process.env.NODE_ENV === 'test'
 
 // Model slugs come from `agy models` on a real install; until then only the CLI default is offered.
-export const MODELS = ['']
+export const MODELS = ['', 'gemini-4-neon-high', 'gemini-4-neon-xhigh', 'gemini-4-neon-medium', 'gemini-4-neon-low', 'gemini-4-carbon-high', 'gemini-4-carbon-medium', 'gemini-4-carbon-low', 'gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low', 'gemini-pro-orchestrator', 'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low'] // from `agy models` 1.5.16
 // '' = default (agy accept-edits), auto, plan. There is no yolo (--dangerously-skip-permissions is never passed).
 export const MODES = ['', 'auto', 'plan']
 /** Older Gemini CLI / agent-start names that mean the default. */
