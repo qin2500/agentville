@@ -134,7 +134,23 @@ export function startPlan(body, projects) {
   if (mode) args.push(`--permission-mode=${mode}`)
   if (body.worktree) args.push('--worktree')
   args.push('--', prompt)
-  return { kind: 'start', args, cwd: project.dir, name, project: project.name }
+  const env = agentEnv(body.env)
+  return { kind: 'start', provider: 'claude', args, cwd: project.dir, name, project: project.name, ...(env && { env }) }
+}
+
+/**
+ * Extra env for a started agent (docs/providers-design.md §5): only AGENTVILLE_* names with short one-line
+ * values (AGENTVILLE_AGENT_ID, AGENTVILLE_HANDOFF_ID, AGENTVILLE_PORT, AGENTVILLE_PARENT_ID). Anything else is dropped.
+ */
+export function agentEnv(env) {
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return null
+  const out = {}
+  for (const [k, v] of Object.entries(env)) {
+    if (!/^AGENTVILLE_[A-Z_]{1,40}$/.test(k)) continue
+    const s = typeof v === 'number' ? String(v) : v
+    if (typeof s === 'string' && s.length <= 200 && !/[\u0000-\u001f]/.test(s)) out[k] = s
+  }
+  return Object.keys(out).length ? out : null
 }
 
 /** `claude stop <job>`: background jobs only. */
@@ -146,7 +162,7 @@ export function stopPlan(a) {
   if (a.reopened && a.live) throw bad('This job is open in a terminal. Stop it there (Esc to interrupt, /exit to quit).', 409)
   if (!/^[0-9a-f]{8}$/.test(a.jobId || '')) throw bad("This job has no id to stop", 409)
   if (a.bucket === 'resting' && !a.live) throw bad("This job isn't running", 409)
-  return { kind: 'stop', args: ['stop', a.jobId], cwd: HOME, id: a.id, name: a.name, jobId: a.jobId }
+  return { kind: 'stop', provider: 'claude', args: ['stop', a.jobId], cwd: HOME, id: a.id, name: a.name, jobId: a.jobId }
 }
 
 /** `claude --resume <session> --fork-session --bg`: a copy of the conversation as a new background job. */
@@ -161,7 +177,7 @@ export function forkPlan(a, fork, rawName) {
   const name = cleanName(rawName)
   const args = ['--resume', fork.sid, '--fork-session', '--bg']
   if (name) args.push(`--name=${name}`)
-  return { kind: 'fork', args, cwd, id: a.id, name: name || `${a.name} (fork)` }
+  return { kind: 'fork', provider: 'claude', args, cwd, id: a.id, name: name || `${a.name} (fork)` }
 }
 
 /** What the confirm step shows: the command exactly as it will run (with `claude` for the binary). */
@@ -176,7 +192,7 @@ export async function run(plan, { exec = execFile, bin: findBin = claudeBin } = 
   const bin = await findBin()
   if (!bin) return { ok: false, error: 'Claude Code CLI not found' }
   return new Promise((resolve) => {
-    launch(bin, plan.args, { cwd: plan.cwd, timeout: RUN_MS, maxBuffer: 256 * 1024, env: process.env }, (err, stdout, stderr) => {
+    launch(bin, plan.args, { cwd: plan.cwd, timeout: RUN_MS, maxBuffer: 256 * 1024, env: { ...process.env, ...agentEnv(plan.env) } }, (err, stdout, stderr) => {
       const out = `${stdout || ''}\n${stderr || ''}`
       const jobId = /(?:backgrounded ·|claude (?:attach|logs|stop))\s+([0-9a-f]{8})\b/.exec(out)?.[1] || (plan.kind === 'stop' ? plan.jobId : null)
       if (err?.code === 'ECMDUNSAFE') return resolve({ ok: false, error: CMD_UNSAFE })

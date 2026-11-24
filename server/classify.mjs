@@ -12,6 +12,7 @@
 import { currentWait } from './waiting.mjs'
 import { PAUSED, PREP_MS } from './fleet.mjs'
 import { COLOR_NAMES } from './overrides.mjs'
+import { providerOfAgent } from './providers/contract.mjs'
 
 /** Rule 7's "old". One global threshold. */
 export const REST_MS = 24 * 60 * 60 * 1000
@@ -117,8 +118,13 @@ export function classify(a, now = Date.now()) {
  * Facts + overrides -> the `GET /api/agents` agents (hidden ones flagged, not dropped).
  * `overrides` is `{ [id]: { role?, parentId?, name?, hidden?, important?, color? } }`; `parentId: ''` forces top-level.
  * `prep` is the pending fleet prep `{ kind, at, ids }` the user marked as sent, or null.
+ * `notes` (docs/providers-design.md §2.4), all optional: `startedBy(id) -> agentId|null` (launches.json) and
+ * `handoff(id) -> { handoff, handedOffFrom }` (handoff.mjs annotate). A `startedBy` link to a listed agent is
+ * the parent when the scan found none (cross-provider starts have no transcript link).
  */
-export function build(facts, overrides = {}, now = Date.now(), prep = null) {
+export function build(facts, overrides = {}, now = Date.now(), prep = null, notes = {}) {
+  const startedByOf = (id) => { try { return notes.startedBy?.(id) || null } catch { return null } }
+  const handoffOf = (id) => { try { return notes.handoff?.(id) || null } catch { return null } }
   const byId = new Map(facts.map((a) => [a.id, a]))
   const base = new Map(facts.map((a) => [a.id, classify(a, now)]))
 
@@ -127,7 +133,8 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
   const parentOf = new Map()
   for (const a of facts) {
     const o = overrides[a.id] || {}
-    let p = a.parentId || null
+    const started = startedByOf(a.id)
+    let p = a.parentId || (started && started !== a.id && byId.has(started) ? started : null)
     // A prepped parent stays a parent while paused (after a reboot nothing is live).
     if (p && (!byId.has(p) || (base.get(p).bucket === 'resting' && base.get(a.id).bucket !== 'resting' && !prep?.ids?.includes(p)))) p = null
     if (typeof o.parentId === 'string') p = o.parentId && o.parentId !== a.id && byId.has(o.parentId) ? o.parentId : null
@@ -203,9 +210,12 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
     const c = final.get(a.id)
     const detectedRole = roleOf(a.id)
     const role = ROLES.has(o.role) ? o.role : detectedRole
+    const ho = handoffOf(a.id)
     return {
       id: a.id,
       harness: a.harness,
+      // The account family: set by the adapter on the fact, else derived from the harness.
+      provider: providerOfAgent(a),
       kind: a.kind,
       jobId: a.jobId || null,
       // Background jobs only: 'bypassPermissions', another mode, or '' (default). permmode.mjs.
@@ -252,6 +262,9 @@ export function build(facts, overrides = {}, now = Date.now(), prep = null) {
       hidden: o.hidden === true,
       important: o.important === true,
       overrides: Object.keys(o).length ? o : null,
+      handoff: ho?.handoff || null,
+      handedOffFrom: ho?.handedOffFrom || null,
+      startedBy: startedByOf(a.id),
     }
   })
 }

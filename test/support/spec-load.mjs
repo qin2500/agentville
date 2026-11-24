@@ -2,8 +2,11 @@
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+// Paths are relative to test/ (where the spec files live), not to this support folder.
+const TEST_DIR = new URL('../', import.meta.url)
+
 export async function tryLoad(relFromTest) {
-  const url = new URL(relFromTest, import.meta.url)
+  const url = new URL(relFromTest, TEST_DIR)
   if (!fs.existsSync(fileURLToPath(url))) return null
   return import(url.href)
 }

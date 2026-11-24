@@ -1,7 +1,8 @@
 /**
- * Spec tests for docs/providers-design.md section 5: parseAgentStart / checkAgentStart guards. Waiting on P14.
- * The spec fixes the guards but not the ctx shape, so ctx is passed with several plausible key names and the
- * assertions only check "rejected with a 4xx" or "accepted".
+ * Spec tests for docs/providers-design.md section 5: parseAgentStart / checkAgentStart guards.
+ * ctx is the real seam (server/agent-start.mjs): settings { get(), defaultProvider() }, launches { depth(id),
+ * count({ parentAgentId?, via }) }, resolveSession(s), providerStatus(id), knownProjects(). The server's
+ * resolveSession marks sub-agent kinds with `isSubagent`.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,17 +12,15 @@ const mod = await tryLoad('../server/agent-start.mjs')
 const opts = mod ? {} : { todo: 'waiting on P14' }
 
 const caller = { id: 'claude:s1', provider: 'claude', kind: 'session', live: true, cwd: '/work/proj' }
-const settings = { agentStarts: { enabled: true, perHour: 20, maxDepth: 3 }, defaultProvider: 'claude', providerOrder: ['claude', 'gemini'] }
-const baseCtx = (over = {}) => ({
-  settings, caller, now: 1_000_000,
-  resolveSession: () => caller, agent: caller,
-  usable: { claude: { usable: true }, gemini: { usable: true } },
-  providerState: { claude: { usable: true }, gemini: { usable: true } },
-  isUsable: () => true,
-  depthOf: () => 0, depth: 0,
-  startsLastHour: () => 0, recentStarts: [],
-  knownProjects: ['/work/proj'], projects: ['/work/proj'],
-  ...over,
+const cfg = { agentStarts: { enabled: true, perHour: 20, maxDepth: 3 }, defaultProvider: 'claude', providerOrder: ['claude', 'gemini'] }
+const settingsOf = (c) => ({ get: () => c, defaultProvider: () => c.defaultProvider })
+const usableAll = { claude: { usable: true }, gemini: { usable: true } }
+const baseCtx = ({ settings = cfg, resolve = () => caller, state = usableAll, depth = 0, starts = 0 } = {}) => ({
+  settings: settingsOf(settings),
+  resolveSession: resolve,
+  providerStatus: (id) => state[id] || { usable: false, why: 'unknown' },
+  knownProjects: () => ['/work/proj'],
+  launches: { depth: () => depth, count: ({ parentAgentId } = {}) => (parentAgentId ? starts : 0) },
 })
 const input = (over = {}) => ({ session: 'claude:s1', provider: 'gemini', prompt: 'do it', cwd: '/work/proj', ...over })
 const check = (i, c) => outcome(() => mod.checkAgentStart(i, c))
@@ -47,18 +46,18 @@ test('checkAgentStart: happy path is accepted', opts, async () => {
   assert.equal((await check(input(), baseCtx())).rejected, false)
 })
 test('guard: agentStarts.enabled=false is a 4xx', opts, async () => {
-  const s = { ...settings, agentStarts: { ...settings.agentStarts, enabled: false } }
+  const s = { ...cfg, agentStarts: { ...cfg.agentStarts, enabled: false } }
   const r = await check(input(), baseCtx({ settings: s }))
   assert.equal(r.rejected, true)
   if (typeof r.status === 'number') assert.ok(r.status >= 400 && r.status < 500)
 })
 test('guard: caller that does not resolve is a 4xx', opts, async () => {
-  const r = await check(input(), baseCtx({ resolveSession: () => null, caller: null, agent: null }))
+  const r = await check(input(), baseCtx({ resolve: () => null }))
   assert.equal(r.rejected, true)
 })
 test('guard: a subagent caller is a 4xx', opts, async () => {
-  const sub = { ...caller, kind: 'subagent' }
-  assert.equal((await check(input(), baseCtx({ resolveSession: () => sub, caller: sub, agent: sub }))).rejected, true)
+  const sub = { ...caller, kind: 'subagent', isSubagent: true }
+  assert.equal((await check(input(), baseCtx({ resolve: () => sub }))).rejected, true)
 })
 test('guard: cwd outside the caller cwd and known projects is a 4xx', opts, async () => {
   assert.equal((await check(input({ cwd: '/etc' }), baseCtx())).rejected, true)
@@ -71,15 +70,14 @@ test('guard: a ../ escape from the caller cwd is a 4xx', opts, async () => {
 })
 test('guard: unusable target provider is a 4xx', opts, async () => {
   const st = { claude: { usable: true }, gemini: { usable: false, why: 'not found' } }
-  assert.equal((await check(input(), baseCtx({ usable: st, providerState: st, isUsable: (p) => p !== 'gemini' }))).rejected, true)
+  assert.equal((await check(input(), baseCtx({ state: st }))).rejected, true)
 })
 test('guard: start depth at maxDepth is a 4xx', opts, async () => {
-  assert.equal((await check(input(), baseCtx({ depthOf: () => 3, depth: 3 }))).rejected, true)
+  assert.equal((await check(input(), baseCtx({ depth: 3 }))).rejected, true)
 })
 test('guard: depth under maxDepth is accepted', opts, async () => {
-  assert.equal((await check(input(), baseCtx({ depthOf: () => 2, depth: 2 }))).rejected, false)
+  assert.equal((await check(input(), baseCtx({ depth: 2 }))).rejected, false)
 })
 test('guard: perHour reached for the caller is a 4xx', opts, async () => {
-  const recent = Array.from({ length: 20 }, () => ({ parentAgentId: 'claude:s1', at: 999_000, via: 'api' }))
-  assert.equal((await check(input(), baseCtx({ startsLastHour: () => 20, recentStarts: recent }))).rejected, true)
+  assert.equal((await check(input(), baseCtx({ starts: 20 }))).rejected, true)
 })

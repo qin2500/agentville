@@ -24,6 +24,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { writeAtomic } from './accounts.mjs'
+import { providerOfAgent } from './providers/contract.mjs'
 
 export const STAGGER_MS = 2000
 const SUB_KINDS = new Set(['subagent', 'teammate', 'thread'])
@@ -43,7 +44,7 @@ export function shouldPause({ blocked, now = Date.now() } = {}) {
 
 /** Why `a` is not an agent to pause or resume ('' = it is). */
 /** The provider an agent belongs to: its `provider` field, else derived from its harness (claude-code when unset). */
-const providerOf = (a) => a.provider || (a.harness === 'gemini-cli' ? 'gemini' : a.harness === 'codex' ? 'codex' : 'claude')
+const providerOf = (a) => providerOfAgent(a) || 'claude'
 
 function problem(a, selfId, provider = 'claude') {
   if (!a || typeof a.id !== 'string' || !a.id) return 'unknown'
