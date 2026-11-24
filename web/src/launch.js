@@ -7,11 +7,13 @@ const MODEL = { '': 'Default', opus: 'Opus', 'opus[1m]': 'Opus · 1M context', s
 const EFFORT = { '': 'Default', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 const MODE = { '': 'Default (asks before edits and commands)', acceptEdits: 'Accept edits', auto: 'Auto', plan: 'Plan first', manual: 'Manual', dontAsk: "Don't ask (deny what isn't allowed)" };
 
+const PROVIDER = { claude: 'Claude', gemini: 'Gemini' };
+
 export function createLaunch(app) {
   const { S } = app;
   const sheet = document.getElementById('newagent');
   // view: loading | form | review | starting | started | error
-  const L = { view: 'loading', opts: null, form: { cwd: '', prompt: '', name: '', model: '', effort: '', permissionMode: '', worktree: false }, preview: null, result: null, err: '', field: '' };
+  const L = { view: 'loading', opts: null, form: { provider: '', cwd: '', prompt: '', name: '', model: '', effort: '', permissionMode: '', worktree: false }, preview: null, result: null, err: '', field: '' };
   let opener = null;
   sheet.addEventListener('close', () => { (opener?.isConnected ? opener : document.getElementById('btn-new'))?.focus(); opener = null; });
 
@@ -29,6 +31,9 @@ export function createLaunch(app) {
       const sel = S.byId.get(S.selected);
       const guess = L.opts.projects.find(p => sel?.cwd && (sel.cwd === p.dir || sel.cwd.startsWith(`${p.dir}/`)));
       if (!L.opts.projects.some(p => p.dir === L.form.cwd)) L.form.cwd = guess?.dir || L.opts.projects[0]?.dir || '';
+      const provs = L.opts.providers || {};
+      const usable = id => provs[id] ? provs[id].available !== false : id === 'claude';
+      if (!L.form.provider || !usable(L.form.provider)) L.form.provider = usable(L.opts.defaultProvider) ? L.opts.defaultProvider : (Object.keys(provs).find(usable) || L.opts.defaultProvider || 'claude');
       L.view = 'form';
     } catch (e) {
       L.view = 'error';
@@ -38,11 +43,25 @@ export function createLaunch(app) {
     sheet.querySelector('#na-title')?.focus();
   }
   const opt = (map, list, cur) => list.map(v => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(map[v] || v)}</option>`).join('');
+  // Lists for the chosen provider; the top-level lists are Claude's (back-compat when `providers` is absent).
+  const cur = () => L.opts.providers?.[L.form.provider] || L.opts;
+  const provName = id => PROVIDER[id] || id;
   function read() {
     const f = sheet.querySelector('form');
     if (!f) return;
     const folder = f.folder.value.trim();
-    Object.assign(L.form, { folder, cwd: folder || f.cwd?.value || '', prompt: f.prompt.value, name: f.aname.value, model: f.model.value, effort: f.effort.value, permissionMode: f.mode.value, worktree: f.worktree.checked });
+    const prov = f.provider?.value || L.form.provider;
+    Object.assign(L.form, { provider: prov, folder, cwd: folder || f.cwd?.value || '', prompt: f.prompt.value, name: f.aname.value, model: f.model.value, effort: f.effort.value, permissionMode: f.mode.value, worktree: f.worktree.checked });
+  }
+  function providerControl() {
+    const provs = L.opts.providers;
+    if (!provs || !Object.keys(provs).length) return '';
+    const ids = Object.keys(provs);
+    const sel = provs[L.form.provider];
+    return `<fieldset class="provider"><legend>Provider</legend><div class="seg" role="radiogroup">${ids.map(id => {
+      const p = provs[id], off = p.available === false;
+      return `<label class="${id === L.form.provider ? 'on' : ''}" ${off && p.why ? `title="${esc(p.why)}"` : ''}><input type="radio" name="provider" value="${esc(id)}" ${id === L.form.provider ? 'checked' : ''} ${off ? 'disabled' : ''}><span>${esc(provName(id))}</span></label>`;
+    }).join('')}</div>${ids.filter(id => provs[id].available === false).map(id => `<p class="helper">${esc(provName(id))} isn’t available: ${esc(provs[id].why || 'unavailable')}</p>`).join('')}</fieldset>`;
   }
   function render() {
     const head = (t, lede) => `<header><div class="titlerow"><h2 id="na-title" tabindex="-1">${t}</h2></div>${lede ? `<p class="lede">${lede}</p>` : ''}</header>`;
@@ -51,7 +70,7 @@ export function createLaunch(app) {
       sheet.innerHTML = `${head('New agent', L.view === 'loading' ? 'Loading projects…' : `Couldn't load the options: ${esc(L.err)}`)}<footer><span class="spacer"></span><button class="ghost" type="button" data-na="close">Close</button></footer>${live}`;
       return;
     }
-    const o = L.opts, f = L.form;
+    const o = L.opts, f = L.form, c = cur();
     if (L.view === 'started') {
       const a = L.result.jobId && S.agents.find(x => x.jobId === L.result.jobId);
       sheet.innerHTML = `${head(`Started ${esc(L.result.name || 'the agent')}`, `New background job <code>${esc(L.result.jobId || '?')}</code>. ${a ? 'It’s in the list now.' : 'It appears in the list within a few seconds.'}`)}
@@ -71,16 +90,17 @@ export function createLaunch(app) {
       return;
     }
     const inval = k => (L.field === k ? 'aria-invalid="true" aria-describedby="na-err"' : '');
-    sheet.innerHTML = `${head('New agent', 'Starts a Claude Code background job in one of your projects. You’ll see the exact command before anything runs.')}
+    sheet.innerHTML = `${head('New agent', 'Starts a background agent in one of your projects. You’ll see the exact command before anything runs.')}
       <form class="body naform" novalidate>
+        ${providerControl()}
         ${o.projects.length ? `<label>Project<select name="cwd" ${inval('cwd')}>${o.projects.map(p => `<option value="${esc(p.dir)}" ${p.dir === f.cwd ? 'selected' : ''}>${esc(p.name)} — ${esc(p.dir)}</option>`).join('')}</select></label>` : ''}
         <label><span>${o.projects.length ? 'Or another folder <span class="opt">(full path)</span>' : 'Folder <span class="opt">(full path)</span>'}</span><input name="folder" value="${esc(f.folder || '')}" ${o.projects.length ? '' : inval('cwd')} spellcheck="false" placeholder="${navigator.userAgent.includes('Windows') ? 'C:\\Users\\you\\code\\my-project' : '/Users/you/code/my-project'}"></label>
         <label>Prompt<textarea name="prompt" rows="6" maxlength="${o.promptMax}" spellcheck="true" ${inval('prompt')} placeholder="What should it do?">${esc(f.prompt)}</textarea></label>
         <label><span>Name <span class="opt">(optional)</span></span><input name="aname" maxlength="${o.nameMax}" value="${esc(f.name)}" ${inval('name')} placeholder="Shown in the list and in claude agents"></label>
         <div class="row3">
-          <label>Model<select name="model">${opt(MODEL, o.models, f.model)}</select></label>
-          <label>Effort<select name="effort">${opt(EFFORT, o.efforts, f.effort)}</select></label>
-          <label>Permissions<select name="mode">${opt(MODE, o.modes, f.permissionMode)}</select></label>
+          <label>Model<select name="model">${opt(MODEL, c.models || o.models, f.model)}</select></label>
+          <label>Effort<select name="effort">${opt(EFFORT, c.efforts || o.efforts, f.effort)}</select></label>
+          <label>Permissions<select name="mode">${opt(MODE, c.modes || o.modes, f.permissionMode)}</select></label>
         </div>
         <label class="check"><input type="checkbox" name="worktree" ${f.worktree ? 'checked' : ''}><span>Work in a new git worktree (<code>--worktree</code>)</span></label>
       </form>
@@ -102,7 +122,7 @@ export function createLaunch(app) {
     if (miss) { [L.field, L.err] = miss; render(); return sheet.querySelector(`[name="${miss[0]}"]`)?.focus(); }
     L.err = ''; L.field = '';
     try {
-      L.preview = await post('/api/act/preview', { kind: 'start', ...L.form });
+      L.preview = await post('/api/act/preview', { kind: 'start', ...L.form, provider: L.form.provider });
       L.view = 'review';
       render();
       sheet.querySelector('[data-na="start"]')?.focus();
@@ -117,7 +137,7 @@ export function createLaunch(app) {
     L.view = 'starting'; L.err = '';
     render();
     try {
-      L.result = await post('/api/act/run', { confirm: L.preview.confirm });
+      L.result = await post('/api/act/run', { confirm: L.preview.confirm, provider: L.form.provider });
       L.view = 'started';
       L.form.prompt = ''; L.form.name = '';
       render();
@@ -144,6 +164,12 @@ export function createLaunch(app) {
     }
   });
   sheet.addEventListener('submit', e => { e.preventDefault(); review(); });
+  sheet.addEventListener('change', e => {
+    if (e.target.name !== 'provider' || L.view !== 'form') return;
+    read(); L.form.model = ''; L.form.effort = ''; L.form.permissionMode = '';
+    render();
+    sheet.querySelector('input[name="provider"]:checked')?.focus();
+  });
   sheet.addEventListener('input', e => { if (L.field && e.target.name && L.err) { L.err = ''; L.field = ''; e.target.removeAttribute('aria-invalid'); const p = sheet.querySelector('#na-err'); if (p) p.hidden = true; } });
   sheet.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && L.view === 'form') { e.preventDefault(); review(); } });
   // While the result shows, a poll that brings the new job in turns "appears soon" into "Show it".
