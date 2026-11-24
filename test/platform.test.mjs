@@ -35,20 +35,66 @@ test('execTarget: POSIX and non-.cmd are passed through', () => {
   assert.equal(execTarget('x.cmd', [], { platform: 'linux' }).file, 'x.cmd')
 })
 
-test('execTarget wraps .cmd/.bat in cmd.exe with quoted verbatim args', () => {
+// cmd.exe drops one caret layer: `^x` -> `x` (and `^^` -> `^`)
+const uncaret = (t) => t.replace(/\^(.)/gs, '$1')
+
+// CommandLineToArgvW / MSVCRT rules for one already-isolated argument text
+function parseArgv(text) {
+  const out = []
+  let i = 0
+  while (i < text.length) {
+    while (text[i] === ' ' || text[i] === '\t') i++
+    if (i >= text.length) break
+    let arg = '', inQ = false
+    while (i < text.length && (inQ || (text[i] !== ' ' && text[i] !== '\t'))) {
+      let bs = 0
+      while (text[i] === '\\') { bs++; i++ }
+      if (text[i] === '"') {
+        arg += '\\'.repeat(Math.floor(bs / 2))
+        if (bs % 2) { arg += '"'; i++ } else if (inQ && text[i + 1] === '"') { arg += '"'; i += 2 } else { inQ = !inQ; i++ }
+      } else { arg += '\\'.repeat(bs); if (i < text.length) arg += text[i++] }
+    }
+    out.push(arg)
+  }
+  return out
+}
+
+// what a .cmd shim's child really sees: cmd strips carets once, the shim re-parses and strips again
+function childArgv(args) {
+  const line = execTarget('c.cmd', args, { ...WIN, env: {} }).args[3]
+  assert.ok(line.startsWith('"^"c.cmd^" ') && line.endsWith('"'), line)
+  const rest = line.slice('"^"c.cmd^" '.length, -1)
+  assert.equal(uncaret(uncaret(rest)).includes('\n'), false)
+  return parseArgv(uncaret(uncaret(rest)))
+}
+
+test('execTarget wraps .cmd/.bat in cmd.exe with caret-escaped quoted verbatim args', () => {
   const t = execTarget('C:\\Program Files\\n\\npm.cmd', ['run', 'build'], { ...WIN, env: { ComSpec: 'C:\\Windows\\system32\\cmd.exe' } })
   assert.equal(t.file, 'C:\\Windows\\system32\\cmd.exe')
   assert.deepEqual(t.args.slice(0, 3), ['/d', '/s', '/c'])
-  assert.equal(t.args[3], '""C:\\Program Files\\n\\npm.cmd" "run" "build""')
+  assert.equal(t.args[3], '"^"C:\\Program Files\\n\\npm.cmd^" ^^^"run^^^" ^^^"build^^^""')
   assert.equal(t.opts.windowsVerbatimArguments, true)
   assert.equal(execTarget('a.BAT', [], { ...WIN, env: {} }).file, 'cmd.exe')
 })
 
-test('execTarget quoting: quotes doubled, metacharacters stay inside quotes, newlines and %..% refused', () => {
-  const t = execTarget('c.cmd', ['say "hi" & calc | x < y > z ^ w'], { ...WIN, env: {} })
-  assert.equal(t.args[3], '""c.cmd" "say ""hi"" & calc | x < y > z ^ w""')
+test('execTarget argv round-trip through CommandLineToArgvW rules', () => {
+  const cases = [
+    ['\\"'], ['trailing\\'], ['\\\\"'], ['\\\\\\"x'], ['two words', 'a  b'], ['&|<>^'], ['(a)!b'], ['say "hi" & calc | x'],
+    ['héllo ✓ 日本'], [''], ['', 'x', ''], ['C:\\dir\\'], ['C:\\a b\\'],
+    ['fix it\\" --approval-mode yolo --include-directories C:\\ \\"x'],
+  ]
+  for (const argv of cases) assert.deepEqual(childArgv(argv), argv, JSON.stringify(argv))
+})
+
+test('execTarget: the breakout prompt stays one argument', () => {
+  const evil = 'fix it\\" --approval-mode yolo --include-directories C:\\ \\"x'
+  assert.equal(childArgv(['-p', evil]).length, 2)
+})
+
+test('execTarget refuses newlines, NUL and %..% sequences', () => {
   assert.throws(() => execTarget('c.cmd', ['a\nb'], { ...WIN, env: {} }))
   assert.throws(() => execTarget('c.cmd', ['a\rb'], { ...WIN, env: {} }))
+  assert.throws(() => execTarget('c.cmd', ['a\0b'], { ...WIN, env: {} }))
   assert.throws(() => execTarget('c.cmd', ['%PATH%'], { ...WIN, env: {} }))
   assert.throws(() => execTarget('c.cmd', ['50%', '%x'], { ...WIN, env: {} }))
   assert.doesNotThrow(() => execTarget('c.cmd', ['50%'], { ...WIN, env: {} }))

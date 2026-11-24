@@ -29,11 +29,20 @@ export function cliDirs(name, { platform = process.platform, env = process.env, 
   return [path.join(home, '.local', 'bin'), path.join(home, '.claude', 'local'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
 }
 
-/** One cmd.exe argument: double quotes doubled, the whole thing quoted (& | < > ^ are literal inside). */
-function cmdQuote(arg) {
+/**
+ * One argument for a `.cmd`/`.bat` line (the cross-spawn method). Two parsers read it:
+ * 1. the child's argv parser (MSVCRT / CommandLineToArgvW): backslashes only matter before a `"`,
+ *    so double every run that precedes a quote and the run that ends the argument (a closing quote
+ *    follows it), turn `"` into `\"`, and wrap it in quotes;
+ * 2. cmd.exe: caret-escape its metacharacters, including the quotes, so none of them is ever
+ *    interpreted. A `.cmd` shim re-parses the line (%*), so args are escaped twice (`double`).
+ */
+function cmdQuote(arg, double = true) {
   const s = String(arg)
   if (/[\r\n\0]/.test(s)) throw new Error('Argument contains a line break')
-  return '"' + s.replaceAll('"', '""') + '"'
+  let q = '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1') + '"'
+  q = q.replace(/([()%!^"<>&|])/g, '^$1')
+  return double ? q.replace(/([()%!^"<>&|])/g, '^$1') : q
 }
 
 /**
@@ -51,8 +60,8 @@ export function execTarget(bin, args = [], { platform = process.platform, env = 
       const hit = dirs.map((d) => path.win32.join(d, bin)).find((f) => { try { return fs.statSync(f).isFile() } catch { return false } })
       if (hit) bin = hit
     }
-    const line = [bin, ...args].map(cmdQuote).join(' ')
-    if ((line.match(/%/g) || []).length > 1) throw new Error('Argument contains a % sequence cmd.exe would expand')
+    const line = [cmdQuote(bin, false), ...args.map((a) => cmdQuote(a))].join(' ')
+    if (([bin, ...args].join('').match(/%/g) || []).length > 1) throw new Error('Argument contains a % sequence cmd.exe would expand')
     return { file: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], opts: { windowsVerbatimArguments: true } }
   }
   return { file: bin, args, opts: {} }

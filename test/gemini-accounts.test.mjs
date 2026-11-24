@@ -51,7 +51,7 @@ test('add: fresh 0700 home, official sign-in argv, identity from google_accounts
   assert.ok(start.home.startsWith(path.join(dataDir, 'accounts', 'gemini')))
   assert.equal(start.env.GEMINI_CLI_HOME, start.home)
   if (posix) {
-    assert.deepEqual(start.argv, ['/usr/bin/env', `GEMINI_CLI_HOME=${start.home}`, '/opt/bin/gemini'])
+    assert.deepEqual(start.argv, ['/usr/bin/env', `GEMINI_CLI_HOME=${start.home}`, 'GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false', '/opt/bin/gemini'])
     assert.equal(await modeOf(start.home), 0o700)
     assert.equal(await modeOf(path.join(start.home, '.gemini')), 0o700)
   }
@@ -75,7 +75,7 @@ test('add: fresh 0700 home, official sign-in argv, identity from google_accounts
   const env = await g.envFor()
   assert.deepEqual(env, { GEMINI_CLI_HOME: start.home, GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'false' })
   // No token anywhere in what we store or return.
-  for (const text of [JSON.stringify(l), JSON.stringify(rows), await g.accounts.readLive()]) {
+  for (const text of [JSON.stringify(l), JSON.stringify(rows), JSON.stringify(await g.accounts.readLive())]) {
     assert.ok(!text.includes(TOKEN) && !text.includes(REFRESH))
   }
   assert.equal(await g.accounts.identify(await g.accounts.readLive()), account.id)
@@ -155,7 +155,7 @@ test('cancel deletes the pending home; a new start discards an old pending one',
   const g = createGeminiAccounts({ dataDir })
   const s1 = await g.accounts.addStart()
   assert.equal(s1.argv, null)
-  const s2 = await g.accounts.addStart()
+  const s2 = await g.accounts.addStart({ force: true })
   assert.ok(!fs.existsSync(s1.home))
   await g.accounts.addCancel()
   assert.ok(!fs.existsSync(s2.home))
@@ -229,4 +229,94 @@ test('AccountOps and SwitchOps carry every key the provider contract checks', as
   assert.equal(await g.envFor(), null)
   assert.equal(await g.accounts.activeUsage(), null)
   await assert.rejects(g.credentials.write('x'), (e) => e.status === 409)
+})
+
+// --- security review fixes (F7-F11) ---------------------------------------------------------
+
+test('F8: a stale pending file never deletes a saved account home', async () => {
+  const dataDir = await tmpData()
+  const g = createGeminiAccounts({ dataDir })
+  const a = await addAccount(g, 'a@example.com', 'A')
+  const name = path.basename(a.start.home)
+  const pendingFile = path.join(dataDir, 'accounts', 'gemini', 'pending-add.json')
+  await fsp.writeFile(pendingFile, JSON.stringify({ at: 1, home: name }))
+  await g.accounts.addStart()
+  assert.ok(fs.existsSync(path.join(a.start.home, '.gemini', 'oauth_creds.json')), 'addStart kept the saved home')
+  await fsp.writeFile(pendingFile, JSON.stringify({ at: 1, home: name }))
+  await g.accounts.addCancel()
+  assert.ok(fs.existsSync(path.join(a.start.home, '.gemini', 'google_accounts.json')), 'addCancel kept the saved home')
+  assert.ok(!fs.existsSync(pendingFile))
+})
+
+test('F8: addFinish clears the pending file before saving; addStart keeps a fresh sign-in unless forced', async () => {
+  const dataDir = await tmpData()
+  let t = 1_000_000
+  const reg = { loadMeta: async () => [], saveMeta: async () => { assert.ok(!fs.existsSync(pendingFile), 'pending cleared before saveMeta') } }
+  const pendingFile = path.join(dataDir, 'accounts', 'gemini', 'pending-add.json')
+  const g = createGeminiAccounts({ dataDir, registry: reg, now: () => t })
+  const s1 = await g.accounts.addStart()
+  await fakeSignIn(s1.home, 'a@example.com')
+  await g.accounts.addFinish({})
+
+  const s2 = await g.accounts.addStart()
+  await assert.rejects(g.accounts.addStart(), (e) => e.status === 409)
+  assert.ok(fs.existsSync(s2.home))
+  t += 11 * 60_000
+  const s3 = await g.accounts.addStart()
+  assert.ok(!fs.existsSync(s2.home), 'an old pending home is replaced')
+  const s4 = await g.accounts.addStart({ force: true })
+  assert.ok(!fs.existsSync(s3.home) && fs.existsSync(s4.home))
+})
+
+test('F9: envFor and restoreLive honour quarantine on work Wi-Fi; restoreLive checks the sign-in', async () => {
+  const dataDir = await tmpData()
+  let work = false
+  const g = createGeminiAccounts({ dataDir, network: { onWork: async () => work } })
+  const a = await addAccount(g, 'a@example.com', 'A')
+  const b = await addAccount(g, 'b@example.com', 'B')
+  await g.accounts.rename(b.account.id, { quarantine: true })
+  assert.equal((await g.envFor(b.account.id)).GEMINI_CLI_HOME, b.start.home)
+  work = true
+  await assert.rejects(g.envFor(b.account.id), (e) => e.status === 409)
+  await assert.rejects(g.accounts.restoreLive(null, b.account.id), (e) => e.status === 409)
+  work = false
+  await fsp.rm(path.join(b.start.home, '.gemini', 'oauth_creds.json'), { force: true })
+  await assert.rejects(g.accounts.restoreLive(null, b.account.id), (e) => e.code === 'login_expired')
+  assert.equal(await g.accounts.restoreLive(null, a.account.id), false, 'already active')
+})
+
+test('F7: login argv sets the file-storage env; Windows refuses cmd metacharacters', async () => {
+  const dataDir = await tmpData()
+  const posixArgv = createGeminiAccounts({ dataDir, platform: 'linux' }).loginArgv('/opt/gemini', '/h/x')
+  assert.ok(posixArgv.includes('GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false') && posixArgv.includes('GEMINI_CLI_HOME=/h/x'))
+  const w = createGeminiAccounts({ dataDir, platform: 'win32' })
+  const argv = w.loginArgv('C:\\g\\gemini.cmd', 'C:\\d\\h-1')
+  assert.match(argv[3], /GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=false/)
+  for (const c of ['"', '%', '&', '|', '<', '>', '^']) {
+    assert.throws(() => w.loginArgv('C:\\g\\gemini.cmd', `C:\\d\\h${c}x`), (e) => e.status === 400)
+    assert.throws(() => w.loginArgv(`C:\\g${c}\\gemini.cmd`, 'C:\\d\\h'), (e) => e.status === 400)
+  }
+})
+
+test('F11: readLive is just {active}; label and command are hardened; oversized and symlinked identity files are ignored', async () => {
+  const dataDir = await tmpData()
+  const g = createGeminiAccounts({ dataDir })
+  const start = await g.accounts.addStart({ bin: '/opt/bin/gemini' })
+  assert.ok(start.command.includes(`GEMINI_CLI_HOME='${start.home}'`))
+  await fakeSignIn(start.home, `we\u0007ird${'x'.repeat(80)}@example.com`)
+  const { account } = await g.accounts.addFinish({})
+  assert.equal(account.label, 'Gemini account')
+  const live = await g.accounts.readLive()
+  assert.deepEqual(Object.keys(live), ['active'])
+
+  const ga = path.join(start.home, '.gemini', 'google_accounts.json')
+  await fsp.writeFile(ga, JSON.stringify({ active: 'ok@example.com', pad: 'x'.repeat(70_000) }))
+  assert.equal(await g.accounts.readLive(), null, 'over 64 KB')
+  if (posix) {
+    const other = path.join(dataDir, 'other.json')
+    await fsp.writeFile(other, JSON.stringify({ active: 'ok@example.com' }))
+    await fsp.rm(ga)
+    await fsp.symlink(other, ga)
+    assert.equal(await g.accounts.readLive(), null, 'symlink refused')
+  }
 })
