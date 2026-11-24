@@ -30,7 +30,7 @@ function rig({ log = [], state = null, failWith = null, headroom = undefined, re
       env.active = body.to; env.changeAt = clock
       return { restored: false, results: [] }
     },
-    ...(respawn && { respawnStale: async (ids) => { stale.push(ids) } }),
+    ...(respawn && { respawnStale: async (ids) => { stale.push(ids); return { queued: [] } } }),
     accounts: {
       activeUsage: async () => ({ id: env.active, saved: true, ...env.reading }),
       load: async () => list, list: async () => ({ active: env.active }),
@@ -38,7 +38,7 @@ function rig({ log = [], state = null, failWith = null, headroom = undefined, re
       ...(headroom !== undefined && { headroom: async () => env.head }),
     },
   }
-  const sampler = createSampler({ dataDir, account, agents: async () => env.agents, nudge: async (ids) => { nudges.push(ids); return ids }, now: () => clock })
+  const sampler = createSampler({ dataDir, account, agents: async () => env.agents, nudge: async (ids) => { nudges.push(ids); return ids }, now: () => clock, sleep: async (ms) => { clock += ms } })
   return { sampler, env, calls, nudges, stale, tick: () => sampler.tick(), advance: (ms) => { clock += ms }, now: () => clock,
     state: () => JSON.parse(fs.readFileSync(path.join(dataDir, 'autoswitch.json'), 'utf8')), done: () => fs.rmSync(dataDir, { recursive: true, force: true }) }
 }
@@ -76,16 +76,22 @@ test('a limit stop newer than the wait still counts', async () => {
   } finally { r.done() }
 })
 
-test('a limit stop right after a switch with room left respawns the stale jobs instead of switching', async () => {
+test('a limit stop right after a switch with room left: "continue" first, a restart only if it stops again (never a switch)', async () => {
   const r = rig({ log: [AUTO(NOW - 4 * MIN)] })
   try {
     r.env.changeAt = NOW - 4 * MIN
     r.env.agents = [job('j1', NOW - MIN)]
     assert.equal((await r.tick()).why, 'not out')
-    assert.deepEqual(r.stale, [['j1']])
+    assert.deepEqual(r.nudges, [['j1']], 'a plain "continue": the credential cache has let go of the old login by now')
+    assert.equal(r.stale.length, 0)
     assert.equal(r.calls.length, 0)
     await r.tick()
-    assert.equal(r.stale.length, 1, 'once per switch')
+    assert.equal(r.nudges.length, 1, 'once per switch')
+    r.advance(MIN)
+    r.env.agents = [job('j1', NOW + 30e3)] // stopped on the limit again after that "continue"
+    await r.tick()
+    assert.deepEqual(r.stale, [['j1']], 'then restarted at its next turn boundary')
+    assert.equal(r.calls.length, 0)
   } finally { r.done() }
   const pool = rig({ log: [AUTO(NOW - 4 * MIN, { from: 'pool' })] }) // not account to account
   try {

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createAccounts, keychainStore, usageReader, ACTIVE_BACKOFF_CAP_MS, withOauth } from '../server/accounts.mjs'
+import { createAccounts, keychainStore, usageReader, ACTIVE_BACKOFF_CAP_MS, withOauth, KEYCHAIN_MAX_BYTES } from '../server/accounts.mjs'
 
 process.env.AGENTVILLE_TEST = '1'
 
@@ -80,7 +80,7 @@ test('old slots are migrated on load to claudeAiOauth only, staying 0600', async
     await t.accounts.load()
     assert.deepEqual(Object.keys(t.slot('B')), ['claudeAiOauth'])
     assert.equal(t.slot('B').claudeAiOauth.accessToken, `${MARK}at-B-1`)
-    assert.equal(t.slotMode('B'), 0o600)
+    process.platform !== 'win32' && assert.equal(t.slotMode('B'), 0o600)
   } finally { t.done() }
 })
 
@@ -204,24 +204,29 @@ function fakeSecurity() {
     if (args[0] === 'find-generic-password' && args.includes('-w')) return secret === null ? { code: 44, stdout: '' } : { code: 0, stdout: Buffer.from(secret).toString('hex') + '\n' }
     if (args[0] === 'find-generic-password') return { code: 0, stdout: 'keychain: "x"\n    "acct"<blob>="tester"\n' }
     if (args[0] === '-i') { const hex = / -X ([0-9a-f]+)\n$/.exec(input)?.[1]; if (hex) secret = Buffer.from(hex, 'hex').toString('utf8'); return { code: 0, stdout: '' } }
+    if (args[0] === 'add-generic-password' && args.at(-2) === '-X') { secret = Buffer.from(args.at(-1), 'hex').toString('utf8'); return { code: 0, stdout: '' } }
     return { code: 1, stdout: '' }
   }
   return { run, calls, get secret() { return secret } }
 }
 
-test('Keychain writes go over stdin only; an item too big for the helper is refused before anything is written', async () => {
+test('Keychain writes: over stdin when the line fits `security -i`, else in argv like Claude Code; past the cap refused before anything is written', async () => {
   const sec = fakeSecurity()
   const kc = keychainStore('Test-credentials', { run: sec.run })
   const small = JSON.stringify({ claudeAiOauth: oauth('A', 1, 5), mcpOAuth: MCP_NOW })
   await kc.write(small)
   assert.equal(sec.secret, small)
   assert.equal(await kc.read(), small)
-  const big = JSON.stringify({ claudeAiOauth: oauth('A', 2, 5), mcpOAuth: { pad: { accessToken: `${MARK}${'x'.repeat(2500)}` } } })
-  const before = sec.calls.filter((c) => c.args[0] === '-i').length
-  await assert.rejects(kc.write(big), (e) => e.tooLarge === true && /too big to update safely/.test(e.message) && !e.message.includes(MARK))
-  assert.equal(sec.calls.filter((c) => c.args[0] === '-i').length, before, 'nothing sent to the helper')
-  assert.equal(sec.secret, small, 'item unchanged')
-  for (const c of sec.calls) assert.ok(!c.args.join(' ').includes(MARK) && !c.args.some((a) => /^[0-9a-f]{40,}$/i.test(a)), 'no secret in argv')
+  for (const c of sec.calls) assert.ok(!c.args.join(' ').includes(MARK) && !c.args.some((a) => /^[0-9a-f]{40,}$/i.test(a)), 'a small item never puts the secret in argv')
+  const mid = JSON.stringify({ claudeAiOauth: oauth('A', 2, 5), mcpOAuth: { pad: { accessToken: `${MARK}${'x'.repeat(2500)}` } } })
+  await kc.write(mid)
+  assert.equal(sec.secret, mid, 'a 2.5 KB item is written whole')
+  assert.deepEqual(sec.calls.filter((c) => c.args[0] === 'add-generic-password').at(-1).args, ['add-generic-password', '-U', '-a', 'tester', '-s', 'Test-credentials', '-X', Buffer.from(mid).toString('hex')])
+  const huge = JSON.stringify({ claudeAiOauth: oauth('A', 3, 5), pad: `${MARK}${'x'.repeat(KEYCHAIN_MAX_BYTES)}` })
+  const before = sec.calls.length
+  await assert.rejects(kc.write(huge), (e) => e.tooLarge === true && e.code === 'too_big' && /unusually large/.test(e.message) && !e.message.includes(MARK))
+  assert.equal(sec.calls.length, before, 'nothing sent to the helper')
+  assert.equal(sec.secret, mid, 'item unchanged')
 })
 
 test('writeOauthAccount changes only oauthAccount and keeps the file mode', async () => {
@@ -233,7 +238,7 @@ test('writeOauthAccount changes only oauthAccount and keeps the file mode', asyn
     assert.equal(await t.accounts.writeOauthAccount({ accountUuid: UUID.B }), true)
     const json = JSON.parse(fs.readFileSync(file, 'utf8'))
     assert.deepEqual(json, { numStartups: 3, projects: { x: 1 }, oauthAccount: { accountUuid: UUID.B } })
-    assert.equal(fs.statSync(file).mode & 0o777, 0o644)
+    process.platform !== 'win32' && assert.equal(fs.statSync(file).mode & 0o777, 0o644)
     assert.deepEqual(fs.readdirSync(t.home).filter((f) => f.endsWith('.tmp')), [])
   } finally { t.done() }
 })
@@ -277,7 +282,7 @@ test('an unreadable live login: nothing is written anywhere, and checkActive say
   } finally { t.done() }
 })
 
-test('helper limit: headroom() gives { size, max, left } from the item length; one character over is refused with code too_big', async () => {
+test('size cap: headroom() gives { size, max, left } from the item length; one character over the cap is refused with code too_big', async () => {
   const sec = fakeSecurity()
   const kc = keychainStore('Test-credentials', { run: sec.run })
   const small = JSON.stringify({ claudeAiOauth: oauth('A', 1, 5) })
@@ -285,15 +290,14 @@ test('helper limit: headroom() gives { size, max, left } from the item length; o
   const h = await kc.headroom()
   assert.deepEqual(Object.keys(h), ['size', 'max', 'left'])
   assert.equal(h.size, small.length)
+  assert.equal(h.max, KEYCHAIN_MAX_BYTES)
   assert.equal(h.left, h.max - h.size)
-  const prefix = 'add-generic-password -U -a "tester" -s "Test-credentials" -X '
-  assert.equal(h.max, Math.floor((4000 - prefix.length - 1) / 2))
   assert.ok(!JSON.stringify(h).includes(MARK))
   const sized = (n) => { const base = JSON.stringify({ claudeAiOauth: oauth('A', 2, 5), pad: '' }); return JSON.stringify({ claudeAiOauth: oauth('A', 2, 5), pad: 'x'.repeat(n - base.length) }) }
-  await kc.write(sized(h.max)) // exactly at the limit: fits
+  await kc.write(sized(h.max)) // exactly at the cap: fits
   assert.equal(sec.secret.length, h.max)
   const before = sec.secret
-  await assert.rejects(kc.write(sized(h.max + 1)), (e) => e.status === 409 && e.code === 'too_big' && e.tooLarge === true && !e.message.includes(MARK))
+  await assert.rejects(kc.write(sized(h.max + 1)), (e) => e.status === 409 && e.code === 'too_big' && e.tooLarge === true && e.max === KEYCHAIN_MAX_BYTES && !e.message.includes(MARK))
   assert.equal(sec.secret, before, 'unchanged')
   assert.equal((await kc.headroom()).left, 0)
   // The file store (Linux, tests) has no limit.

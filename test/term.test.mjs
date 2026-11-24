@@ -4,7 +4,8 @@
  * Every CLI here is test/fixtures/bin's fake (it prints a prompt and echoes lines); every terminal
  * window is the fake recorder. No real claude or codex is ever run.
  */
-import test, { mock } from 'node:test'
+import baseTest, { mock } from 'node:test'
+import { posixTest, shortTmp, LIVE_PID } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -14,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import { createServer } from '../server/serve.mjs'
 import { createTerminals, ptyEnv } from '../server/pty.mjs'
+const test = posixTest(baseTest, 'fixtures/bin fake CLIs and the fake terminal are node-shebang scripts that Windows cannot exec; Windows PTY coverage is in plain-term-win.test.mjs')
 
 const FAKES = fileURLToPath(new URL('./fixtures/bin', import.meta.url))
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-term-'))
@@ -45,7 +47,7 @@ for (const sid of [ids.job, ids.closed, ids.live, ids.closed2, ids.idle]) {
 fs.mkdirSync(path.join(claudeHome, 'jobs', 'aaaaaaa1'), { recursive: true })
 fs.writeFileSync(path.join(claudeHome, 'jobs', 'aaaaaaa1', 'state.json'), JSON.stringify({ sessionId: ids.job, resumeSessionId: ids.job, cwd: ws, state: 'working', tempo: 'idle', createdAt: ts, updatedAt: ts }))
 fs.mkdirSync(path.join(claudeHome, 'sessions'), { recursive: true })
-fs.writeFileSync(path.join(claudeHome, 'sessions', 'live.json'), JSON.stringify({ pid: 1, sessionId: ids.live, status: 'idle' }))
+fs.writeFileSync(path.join(claudeHome, 'sessions', 'live.json'), JSON.stringify({ pid: LIVE_PID, sessionId: ids.live, status: 'idle' }))
 const subs = path.join(project, ids.job, 'subagents')
 fs.mkdirSync(subs, { recursive: true })
 fs.writeFileSync(path.join(subs, 'agent-s1.jsonl'), JSON.stringify({ type: 'user', timestamp: ts, message: { content: 'x' } }) + '\n')
@@ -423,7 +425,7 @@ test('rate limit: at most 30 terminal requests a minute', async () => {
   assert.equal(last.status, 429)
 })
 
-test('the PTY env drops nesting markers from the server\'s own terminal or agent', () => {
+baseTest('the PTY env drops nesting markers from the server\'s own terminal or agent', () => {
   const env = ptyEnv({ PATH: '/bin', HOME: '/h', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', TERM_PROGRAM: 'ghostty', GHOSTTY_RESOURCES_DIR: '/x', TMUX: 't', TERM: 'dumb', ANTHROPIC_BASE_URL: 'keep' })
   assert.deepEqual(env, { PATH: '/bin', HOME: '/h', ANTHROPIC_BASE_URL: 'keep', TERM: 'xterm-256color', COLORTERM: 'truecolor' })
 })

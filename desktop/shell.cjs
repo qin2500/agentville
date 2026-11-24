@@ -51,7 +51,7 @@ function resolveSettings({ env = process.env, configFile, bakedRepoFile, devRepo
   let repo = null, repoFrom = null
   for (const [from, dir] of candidates) {
     if (!dir) continue
-    const abs = path.resolve(dir.replace(/^~(?=$|\/)/, os.homedir()))
+    const abs = path.resolve(dir.replace(/^~(?=$|[\\/])/, os.homedir()))
     if (isCheckout(abs)) { repo = abs; repoFrom = from; break }
     problems.push(`${from} checkout ${abs} has no server/cli.mjs`)
   }
@@ -69,8 +69,9 @@ function resolveSettings({ env = process.env, configFile, bakedRepoFile, devRepo
   return { repo, port, sources: { repo: repoFrom, port: portFrom }, problems }
 }
 
-/** The folders a Finder-launched app should also search for node, git, claude and codex. */
-function extraPath(home = os.homedir()) {
+/** The folders a Finder-launched app should also search for node, git, claude and codex (as launch.sh). */
+function extraPath(home = os.homedir(), { platform = process.platform, env = process.env } = {}) {
+  if (platform === 'win32') return winExtraPath(home, env)
   let nvm = null
   try {
     const base = path.join(home, '.nvm', 'versions', 'node')
@@ -83,6 +84,32 @@ function extraPath(home = os.homedir()) {
     path.join(home, '.fnm', 'aliases', 'default', 'bin'), ...(nvm ? [nvm] : []),
     '/opt/homebrew/bin', '/usr/local/bin',
   ]
+}
+/** Windows: where Node installers put node.exe (and the claude/codex CLIs installed through npm). */
+function winExtraPath(home, env) {
+  const local = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local')
+  const roaming = env.APPDATA || path.join(home, 'AppData', 'Roaming')
+  const dirs = [
+    env.ProgramFiles && path.join(env.ProgramFiles, 'nodejs'),
+    path.join(local, 'Volta', 'bin'),
+    env.NVM_SYMLINK,
+    // nvm-windows keeps versions in %APPDATA%\nvm\vX.Y.Z (the symlink above is the active one).
+    ...newestSubdirs(path.join(roaming, 'nvm'), /^v\d+\.\d+\.\d+$/),
+    path.join(roaming, 'npm'),
+    // fnm: one folder per shell session, newest first.
+    ...newestSubdirs(path.join(local, 'fnm_multishells'), /./, true),
+    path.join(home, '.local', 'bin'),
+  ]
+  return dirs.filter(Boolean)
+}
+/** Subfolders of `dir` matching `re`: newest version first, or newest modified first (`byTime`); [] when missing. */
+function newestSubdirs(dir, re, byTime = false) {
+  try {
+    const names = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && re.test(e.name)).map((e) => e.name)
+    if (byTime) names.sort((a, b) => fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs)
+    else names.sort((a, b) => compareVersions(b.slice(1), a.slice(1)))
+    return names.slice(0, 3).map((n) => path.join(dir, n))
+  } catch { return [] }
 }
 /** PATH with the usual install folders first, without duplicates. */
 function augmentedPath(envPath = process.env.PATH || '', home = os.homedir()) {
@@ -106,7 +133,7 @@ const nodeOk = (v) => !!v && compareVersions(v, MIN_NODE.join('.')) >= 0
  */
 function findNode({ env = process.env, home = os.homedir(), version = nodeVersion } = {}) {
   const pinned = env[envKey('DESKTOP_NODE')]
-  const dirs = augmentedPath(env.PATH || '', home).split(path.delimiter)
+  const dirs = augmentedPath(envPathOf(env), home).split(path.delimiter)
   const bins = pinned ? [pinned] : dirs.map((d) => path.join(d, process.platform === 'win32' ? 'node.exe' : 'node'))
   for (const bin of bins) {
     try { fs.accessSync(bin, fs.constants.X_OK) } catch { continue }
@@ -115,8 +142,14 @@ function findNode({ env = process.env, home = os.homedir(), version = nodeVersio
   }
   return null
 }
+/** The PATH value of `env`; on Windows the key is usually spelled `Path`. */
+function envPathOf(env) {
+  if (env.PATH != null) return env.PATH
+  const k = Object.keys(env).find((n) => n.toUpperCase() === 'PATH')
+  return k ? env[k] : ''
+}
 function nodeVersion(bin) {
-  const r = spawnSync(bin, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH || '' } })
+  const r = spawnSync(bin, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 10_000, env: { PATH: envPathOf(process.env), ...(process.env.SystemRoot && { SystemRoot: process.env.SystemRoot }) } })
   return r.status === 0 ? r.stdout.trim() : null
 }
 
@@ -179,6 +212,6 @@ function placeWindow(saved, displays, fallback = { width: 1440, height: 900 }) {
 }
 
 module.exports = {
-  BRAND, RESTART_EXIT, envKey, parsePort, resolveSettings, extraPath, augmentedPath, compareVersions,
+  BRAND, RESTART_EXIT, envKey, parsePort, resolveSettings, extraPath, augmentedPath, envPathOf, compareVersions,
   findNode, probe, waitReady, isLocal, isExternal, ALLOWED_PERMISSIONS, placeWindow, readJSON,
 }

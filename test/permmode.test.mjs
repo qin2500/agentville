@@ -45,6 +45,8 @@ function setup(flags, { runResult = { code: 0, stdout: '', stderr: '' }, registe
   const calls = []
   const run = async (bin, args) => {
     calls.push(args)
+    // Windows file times can lag Date.now() by ~15 ms, so a file written at once can look older than `since`.
+    if (process.platform === 'win32') await new Promise((r) => setTimeout(r, 60))
     // The respawned job registers itself with a live pid (this test process).
     if (runResult.code === 0 && register) fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, jobId: short }))
     return { timedOut: false, ...runResult }
@@ -52,7 +54,7 @@ function setup(flags, { runResult = { code: 0, stdout: '', stderr: '' }, registe
   // A fake clock for the wait for a turn boundary: sleeping advances it, nothing really waits.
   const clock = { t: 0 }
   const sw = createPermSwitch({
-    claudeHome: () => home, dataDir: path.join(root, 'data'), run, bin: async () => '/fake/claude', blocked: () => '', verifyMs: () => 500,
+    claudeHome: () => home, dataDir: path.join(root, 'data'), run, bin: async () => '/fake/claude', blocked: () => '', verifyMs: () => (process.platform === 'win32' ? 5000 : 500),   // the registry file lands slower on a Windows runner
     ...(activity && { activity: async () => activity(clock.t) }), idleMs: () => 120_000, pollMs: () => 2_000, now: () => clock.t, sleep: async (ms) => { clock.t += ms },
   })
   return { sw, short, file, original, calls, root, clock, read: () => JSON.parse(fs.readFileSync(file, 'utf8')) }

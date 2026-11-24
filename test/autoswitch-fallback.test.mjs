@@ -100,7 +100,7 @@ function rig() {
       usage: async () => ({ accounts: [...env.usage].map(([id, x]) => ({ id, ...x })) }),
     },
   }
-  const sampler = createSampler({ dataDir, account, network: null, agents: async () => env.agents, nudge: async (ids) => { nudges.push(ids); return ids }, now: () => clock })
+  const sampler = createSampler({ dataDir, account, network: null, agents: async () => env.agents, nudge: async (ids) => { nudges.push(ids); return ids }, now: () => clock, sleep: async (ms) => { clock += ms } })
   const logLines = () => fs.readFileSync(path.join(dataDir, 'account-log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
   return { sampler, env, calls, nudges, logLines, advance: (ms) => { clock += ms }, at: (t) => { clock = t }, done: () => fs.rmSync(dataDir, { recursive: true, force: true }) }
 }

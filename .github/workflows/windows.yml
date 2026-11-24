@@ -1,0 +1,47 @@
+name: windows
+
+on:
+  push:
+    branches: ['win-*', 'windows-*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Install scripts stay on: node-pty builds (or fetches a prebuild of) its ConPTY native module.
+      - run: npm ci
+      - name: ConPTY smoke test
+        shell: bash
+        run: node -e "const p=require('node-pty').spawn('powershell.exe',['-NoLogo','-Command','exit 0'],{});p.onExit(e=>process.exit(e.exitCode))"
+      - run: npm run build
+      - run: npm test
+      - name: Server boot smoke test
+        run: node test/support/boot-smoke.mjs 5275
+
+  package:
+    # Packaging is new on Windows: it may fail without failing the run, until it is proven.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node desktop/build.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentville-win-unpacked
+          path: dist-app/win-unpacked
+          if-no-files-found: error

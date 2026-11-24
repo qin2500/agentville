@@ -7,10 +7,12 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const S = require('../desktop/shell.cjs')
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const NODE = process.platform === 'win32' ? 'node.exe' : 'node'
 const K = (k) => `${S.BRAND.env}_${k}`
 
 function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-desktop-')) }
@@ -56,16 +58,16 @@ test('parsePort and compareVersions', () => {
 test('findNode: first new-enough node on the augmented PATH; a pinned one wins', (t) => {
   const d = tmp(); t.after(() => fs.rmSync(d, { recursive: true, force: true }))
   const old = path.join(d, 'old'), fresh = path.join(d, 'fresh')
-  for (const dir of [old, fresh]) { fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'node'), ''); fs.chmodSync(path.join(dir, 'node'), 0o755) }
-  const versions = { [path.join(old, 'node')]: '20.11.0', [path.join(fresh, 'node')]: '24.1.0' }
+  for (const dir of [old, fresh]) { fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, NODE), ''); fs.chmodSync(path.join(dir, NODE), 0o755) }
+  const versions = { [path.join(old, NODE)]: '20.11.0', [path.join(fresh, NODE)]: '24.1.0' }
   const version = (bin) => versions[bin] ?? null
   const home = path.join(d, 'home')
-  assert.deepEqual(S.findNode({ env: { PATH: `${old}:${fresh}` }, home, version }), { bin: path.join(fresh, 'node'), version: '24.1.0' })
+  assert.deepEqual(S.findNode({ env: { PATH: `${old}${path.delimiter}${fresh}` }, home, version }), { bin: path.join(fresh, NODE), version: '24.1.0' })
   assert.equal(S.findNode({ env: { PATH: old }, home, version }), null)
-  assert.equal(S.findNode({ env: { PATH: fresh, [K('DESKTOP_NODE')]: path.join(old, 'node') }, home, version }), null)
+  assert.equal(S.findNode({ env: { PATH: fresh, [K('DESKTOP_NODE')]: path.join(old, NODE) }, home, version }), null)
 })
 
-test('augmentedPath puts the usual install folders first, once each', () => {
+test('augmentedPath puts the usual install folders first, once each', { skip: process.platform === 'win32' && 'POSIX folder list (the Windows list is covered in platform tests)' }, () => {
   const p = S.augmentedPath('/usr/bin:/opt/homebrew/bin:/bin', '/h').split(':')
   assert.equal(p[0], '/h/.local/bin')
   assert.equal(p.filter((x) => x === '/opt/homebrew/bin').length, 1)

@@ -14,7 +14,7 @@ test('mark and unmark the current network; offline is never work', async () => {
     assert.deepEqual((await net.status()).current, { id: 'gw:aa:bb:cc:dd:ee:ff', gateway: '10.0.0.1', work: false })
     assert.equal((await net.mark({ work: true })).current.work, true)
     assert.equal(await net.onWork(), true)
-    assert.equal(fs.statSync(path.join(dataDir, 'networks.json')).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(dataDir, 'networks.json')).mode & 0o777, 0o600)
     cur = { id: 'gw:11:22:33:44:55:66', gateway: '192.168.1.1' } // somewhere else
     assert.equal(await net.onWork(), false)
     cur = { id: null } // offline

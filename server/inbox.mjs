@@ -26,6 +26,9 @@ export const dryRun = () => process.env.AGENTVILLE_FLEET_DRY_RUN === '1'
 
 /** Why sending is impossible here, or '' when it is allowed. */
 export function sendingBlocked() {
+  // Stays off on Windows, even with AGENTVILLE_WINDOWS_ACTIONS on: Claude Code's peer inbox there is a
+  // named pipe (\\.\pipe\cc-…) whose auth would mean reading Claude's per-pipe key files. Whether
+  // the village may read those is a security decision for the user, not made here.
   if (process.platform === 'win32') return 'Sending to agents is not supported on Windows'
   if (testing() && !process.env.AGENTVILLE_FLEET_SOCKET_ROOT) return 'Sending is disabled in tests'
   return ''

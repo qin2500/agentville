@@ -1,14 +1,16 @@
 // Fleet sending, end to end against fake Claude sessions: unix sockets under a temp
 // AGENTVILLE_FLEET_SOCKET_ROOT that record each frame. No real session is ever reachable here.
-import test from 'node:test'
+import baseTest from 'node:test'
+import { posixTest, shortTmp, LIVE_PID, sockPath } from './support/posix.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { makeHome, IDS } from './fixtures/make-home.mjs'
 import { createServer } from '../server/serve.mjs'
+const test = posixTest(baseTest, 'unix-domain-socket inboxes (the Fleet/Claude messaging socket) have no Windows equivalent here')
 
-const root = fs.mkdtempSync('/tmp/vfs-') // short: unix socket paths are limited to ~104 bytes
+const root = shortTmp('vfs-') // short: unix socket paths are limited to ~104 bytes
 const env = makeHome(root)
 const sockRoot = path.join(root, 's')
 fs.mkdirSync(sockRoot)
@@ -28,7 +30,7 @@ const frames = {}
 const peers = []
 function peer(key, { ack }) {
   const sid = IDS[key]
-  const sock = path.join(sockRoot, `${key}.sock`)
+  const sock = sockPath(sockRoot, key)
   frames[key] = []
   const srv = net.createServer((c) => {
     let buf = ''
@@ -43,7 +45,7 @@ function peer(key, { ack }) {
   })
   peers.push(srv)
   fs.writeFileSync(path.join(claudeHome, 'sessions', `${sid.slice(0, 8)}.json`),
-    JSON.stringify({ pid: 1, sessionId: sid, kind: 'bg', status: 'idle', messagingSocketPath: sock, peerProtocol: 1 }))
+    JSON.stringify({ pid: LIVE_PID, sessionId: sid, kind: 'bg', status: 'idle', messagingSocketPath: sock, peerProtocol: 1 }))
   return new Promise((r) => srv.listen(sock, r))
 }
 await peer('soloTurn', { ack: true })

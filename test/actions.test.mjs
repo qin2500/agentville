@@ -7,10 +7,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeHome, IDS } from './fixtures/make-home.mjs'
+import { stubBin } from './support/posix.mjs'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'va-act-'))
 const env = makeHome(root)
-const STUB = fileURLToPath(new URL('./fixtures/bin/claude-bg', import.meta.url))
+const STUB = stubBin('claude-bg')
 const log = path.join(root, 'claude-bg.log')
 Object.assign(process.env, env, { AGENTVILLE_CLAUDE_BIN: STUB, AGENTVILLE_FAKE_CLAUDE_LOG: log })
 const { createServer } = await import('../server/serve.mjs')

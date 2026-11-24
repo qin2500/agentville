@@ -18,6 +18,11 @@ async function serve(fake = {}) {
 }
 const sheet = (page) => page.locator('#acct')
 const menu = (page) => page.locator('#pop-account')
+/** Choose an item from a saved account row's right-click menu. */
+async function rowMenu(page, row, item) {
+  await row.click({ button: 'right' })
+  await page.locator('#acctctx').getByRole('menuitem', { name: item, exact: true }).click()
+}
 /** The pre-accounts path: the menu's "Claude login" row switches the pool to the stored login. */
 async function openPersonal(page) {
   await page.locator('#btn-account').click()
@@ -148,7 +153,7 @@ test('saved accounts: save the login, add another, usage bars, switch account to
     await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-account-menu.png` })
 
     // Rename inline.
-    await side.getByRole('button', { name: 'Rename Side' }).click()
+    await rowMenu(page, side, 'Rename')
     await menu(page).locator('#acct-rename').fill('Side job')
     await menu(page).locator('#acct-rename').press('Enter')
     await expect(menu(page).locator('.acct-row', { hasText: 'Side job' })).toBeVisible()
@@ -166,7 +171,10 @@ test('saved accounts: save the login, add another, usage bars, switch account to
 
     await btn.click()
     await expect(menu(page).locator('.acct-row.on')).toContainText('Side job')
-    await expect(menu(page).locator('.acct-row', { hasText: 'Side job' }).getByRole('button', { name: /Remove/ })).toHaveCount(0) // the signed-in one can't be removed
+    await expect(menu(page).locator('.acct-row', { hasText: 'Side job' }).getByRole('button', { name: /Remove/ })).toHaveCount(0)
+    await menu(page).locator('.acct-row', { hasText: 'Side job' }).click({ button: 'right' }) // the signed-in one can't be removed
+    await expect(page.locator('#acctctx').getByRole('menuitem', { name: 'Remove' })).toHaveCount(0)
+    await page.keyboard.press('Escape')
     const html = await page.content()
     for (const secret of [TOKEN_MARK, s.home.TOKEN, 'gateway.example']) expect(html).not.toContain(secret)
   } finally { await s.stop(); await api.close() }
@@ -189,7 +197,7 @@ test('quarantine accounts: mark one, mark the work Wi-Fi, and it can no longer b
     await expect(side).toBeVisible()
     await expect(menu(page).locator('.acct-net')).toContainText('Not the work Wi-Fi · quarantine accounts come first')
 
-    await side.getByRole('button', { name: 'Make Side a quarantine account' }).click()
+    await rowMenu(page, side, 'Quarantine')
     await expect(side.locator('.acct-badge.q')).toHaveText('Quarantine')
     await expect(side.getByRole('button', { name: 'Switch to Side' })).toBeVisible() // fine off the work Wi-Fi
 
@@ -199,10 +207,97 @@ test('quarantine accounts: mark one, mark the work Wi-Fi, and it can no longer b
     await expect(side.getByRole('button', { name: 'Switch to Side' })).toHaveCount(0)
     await page.screenshot({ path: `${SHOTS}/${testInfo.project.name}-account-quarantine.png` })
 
-    await side.getByRole('button', { name: 'Make Side a regular account' }).click()
+    await rowMenu(page, side, 'Make regular')
     await expect(side.locator('.acct-badge.q')).toHaveCount(0)
     await expect(side.getByRole('button', { name: 'Switch to Side' })).toBeVisible()
     await menu(page).getByRole('button', { name: 'Not the work Wi-Fi' }).click()
     await expect(menu(page).getByRole('button', { name: 'This is the work Wi-Fi' })).toBeVisible()
   } finally { await s.stop(); await api.close() }
+})
+
+// The account row menu and hover, against a mocked accounts API (no real accounts, Keychain or network).
+test('account rows: hover highlight, right-click menu, Low priority sends the PATCH and shows the badge', async ({ page }) => {
+  const accounts = [
+    { id: 'A', label: 'Work', email: 'work@example.com', subscriptionType: 'max', quarantine: false, lowPriority: false, active: true, signedIn: true },
+    { id: 'B', label: 'Side', email: 'side@example.com', subscriptionType: 'pro', quarantine: false, lowPriority: false, active: false, signedIn: false },
+  ]
+  const patches = []
+  await page.route('**/api/accounts', (route) => route.fulfill({ json: { active: 'A', pool: { available: false }, login: { id: 'A', present: true }, accounts, network: null, autoSwitch: null } }))
+  await page.route('**/api/accounts/usage*', (route) => route.fulfill({ json: { accounts: [] } }))
+  await page.route('**/api/accounts/B', async (route) => {
+    const body = route.request().postDataJSON()
+    patches.push({ method: route.request().method(), body })
+    Object.assign(accounts[1], body)
+    await route.fulfill({ json: { ok: true } })
+  })
+  const dir = '/tmp/va-acct-menu'
+  fs.mkdirSync(dir, { recursive: true })
+  const s = await startServer({ AGENTVILLE_DATA_DIR: tmpDir('acct-menu') }, nextPort())
+  try {
+    await page.goto(s.url)
+    await page.locator('#btn-account').click()
+    const row = menu(page).locator('.acct-row', { hasText: 'Side' })
+    await expect(row).toBeVisible()
+    await expect(row.getByRole('button', { name: /^(Quarantine|Rename|Remove)/ })).toHaveCount(0) // nothing inline any more
+
+    await page.mouse.move(5, 5)
+    await expect.poll(async () => (await row.boundingBox())?.height ?? 0).toBeGreaterThan(40)
+    const before = await row.evaluate((e) => ({ bg: getComputedStyle(e).backgroundColor }))
+    const h0 = (await row.boundingBox()).height
+    await row.hover()
+    await expect.poll(() => row.evaluate((e) => getComputedStyle(e).backgroundColor)).not.toBe(before.bg)
+    expect((await row.boundingBox()).height).toBe(h0) // no layout shift
+    await page.screenshot({ path: `${dir}/row-hover.png` })
+
+    await row.click({ button: 'right' })
+    const ctx = page.locator('#acctctx')
+    await expect(ctx.getByRole('menuitem')).toHaveText(['Rename', 'Quarantine', 'Low priority', 'Remove'])
+    await expect(ctx).toBeVisible()
+    await expect(ctx.getByRole('menuitem', { name: 'Rename' })).toBeFocused()
+    await page.screenshot({ path: `${dir}/menu-open.png` })
+    await ctx.getByRole('menuitem', { name: 'Low priority' }).click()
+    await expect(row.locator('.acct-badge.lp')).toHaveText('Low priority')
+    expect(patches).toEqual([{ method: 'PATCH', body: { lowPriority: true } }])
+    await expect(menu(page)).toBeVisible() // the Account menu stays open
+
+    // Keyboard: Shift+F10 on the focused row, then the label flips.
+    await row.focus()
+    await page.keyboard.press('Shift+F10')
+    await expect(ctx.getByRole('menuitem', { name: 'Rename' })).toBeFocused()
+    await expect(ctx.getByRole('menuitem', { name: 'Make regular priority' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(ctx).toBeHidden()
+    await expect(row).toBeFocused()
+
+    // The signed-in account has no Remove.
+    await menu(page).locator('.acct-row', { hasText: 'Work' }).click({ button: 'right' })
+    await expect(ctx.getByRole('menuitem', { name: 'Remove' })).toHaveCount(0)
+  } finally { await s.stop() }
+})
+
+// Expired saved login: "Sign in again" only on that row, and it calls the same login route as Add account.
+test('expired login shows Sign in again on that row only, and it starts the login', async ({ page }) => {
+  const accounts = [
+    { id: 'A', label: 'Work', email: 'work@example.com', subscriptionType: 'max', quarantine: false, lowPriority: false, active: true, signedIn: true },
+    { id: 'B', label: 'Work', email: 'someone@example.com', subscriptionType: 'max', quarantine: false, lowPriority: false, active: false, signedIn: false },
+    { id: 'C', label: 'Other', email: 'other@example.com', subscriptionType: 'pro', quarantine: false, lowPriority: false, active: false, signedIn: false },
+  ]
+  const starts = []
+  await page.route('**/api/accounts', (route) => route.fulfill({ json: { active: 'A', pool: { available: false }, login: { id: 'A', present: true }, adding: starts.length > 0, accounts, network: null, autoSwitch: null } }))
+  await page.route('**/api/accounts/usage*', (route) => route.fulfill({ json: { accounts: [
+    { id: 'B', error: 'Login expired — sign in again' },
+    { id: 'C', error: "Couldn't reach Anthropic" },
+  ] } }))
+  await page.route('**/api/accounts/add/start', (route) => { starts.push(route.request().method()); route.fulfill({ json: { command: 'claude auth login', opened: true, terminal: 'Terminal' } }) })
+  const s = await startServer({ AGENTVILLE_DATA_DIR: tmpDir('acct-relogin') }, nextPort())
+  try {
+    await page.goto(s.url)
+    await page.locator('#btn-account').click()
+    const again = menu(page).getByRole('button', { name: /Sign in again/ })
+    await expect(again).toHaveCount(1)
+    await expect(menu(page).locator('.acct-row', { hasText: 'Work' }).getByRole('button', { name: /Sign in again/ })).toBeVisible()
+    await again.click()
+    await expect.poll(() => starts).toEqual(['POST'])
+    await expect(menu(page)).toContainText('Sign in as someone@example.com')
+  } finally { await s.stop() }
 })

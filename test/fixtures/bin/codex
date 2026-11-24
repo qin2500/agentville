@@ -11,7 +11,7 @@
 // fullscreen renderer does: alternate screen, mouse tracking (SGR), a frame drawn with absolute
 // positions that is fully redrawn on every SIGWINCH and counts wheel events, in raw mode; "quit" leaves it.
 const fs = process.getBuiltinModule('node:fs')
-const cli = process.argv[1].split('/').pop()
+const cli = process.argv[1].split(/[\\/]/).pop().replace(/\.(cjs|cmd)$/, '')
 const argv = process.argv.slice(2)
 const log = (event, extra = {}) => { if (process.env.AGENTVILLE_FAKE_CLAUDE_LOG) fs.appendFileSync(process.env.AGENTVILLE_FAKE_CLAUDE_LOG, JSON.stringify({ cli, event, argv, at: Date.now(), ...extra }) + '\n') }
 if (!process.stdin.isTTY) { process.stderr.write(`fake ${cli}: not a real CLI\n`); process.exit(3) }

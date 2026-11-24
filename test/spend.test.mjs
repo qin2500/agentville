@@ -102,7 +102,7 @@ test('truncation or replacement re-reads from the start without double counting;
     await sp.update()
     assert.equal(totals(sp).tokens, 4460)
     const saved = path.join(t.root, 'data', 'spend.json')
-    assert.equal(fs.statSync(saved).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(saved).mode & 0o777, 0o600)
     assert.ok(!fs.readFileSync(saved, 'utf8').includes('secret content'), 'no transcript content is kept')
   } finally { t.done() }
 })
@@ -152,7 +152,7 @@ test('a week of spend: records up to 7 days old count; 24 h and 7 d ranges are a
   } finally { t.done() }
 })
 
-test('a data dir that refuses writes (a full disk) never fails an update; it keeps counting and saves once it can', async () => {
+test('a data dir that refuses writes (a full disk) never fails an update; it keeps counting and saves once it can', { skip: process.platform === 'win32' && 'a read-only directory (chmod 0o500) still accepts new files on Windows' }, async () => {
   const t = setup()
   try {
     fs.writeFileSync(t.main, claudeRec('m1', 1))

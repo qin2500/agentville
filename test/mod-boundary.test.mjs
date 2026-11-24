@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LINT = path.join(ROOT, 'tools/mod-lint.mjs');
 const HAVE = fs.existsSync(LINT);
 const SKIP = HAVE ? false : 'needs P9';
-const lint = HAVE ? await import(LINT) : null;
+const lint = HAVE ? await import(pathToFileURL(LINT).href) : null;
 
 function write(root, rel, body) {
   const p = path.join(root, rel);

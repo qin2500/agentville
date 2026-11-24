@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import './support/ensure-mods-index.mjs';
 // tools/mod.mjs: `new` into a temp dir, `check`, and the `shots --dry-run` plan. Synthetic fixtures only; no browser, no server.
 import test from 'node:test';
@@ -8,7 +9,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 const { newMod, checkMod, shotsPlan, validateNewId } = await import('../tools/mod.mjs');
 
-const TOOL = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'tools', 'mod.mjs');
+const TOOL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'mod.mjs');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'mod-tool-'));
 
 test('new copies the template, sets id, name and extends, and leaves no placeholder behind', async () => {

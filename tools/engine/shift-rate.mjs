@@ -11,21 +11,24 @@
 // Run: node tools/engine/shift-rate.mjs [--label before|after] [--fixtures busy,stress] [--classic]
 // Prints JSON and merges it into /tmp/enginev2/m7-shift-rate.json under the label.
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const imp = p => import(pathToFileURL(ROOT + p).href);   // a bare absolute path is not importable on Windows
 const argv = process.argv.slice(2), arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
 const LABEL = arg('--label', 'current'), FIXTURES = arg('--fixtures', 'busy,stress').split(','), CLASSIC = argv.includes('--classic');
-const STAGES = Number(arg('--stages', 14)), OUT = arg('--out', '/tmp/enginev2/m7-shift-rate.json');
+const STAGES = Number(arg('--stages', 14)), OUT = arg('--out', path.join(os.tmpdir(), 'enginev2', 'm7-shift-rate.json'));
 
-const { writeModsIndex } = await import(`${ROOT}tools/mods-index.mjs`);
+const { writeModsIndex } = await imp('tools/mods-index.mjs');
 writeModsIndex(ROOT);   // mods/index.js is generated (gitignored); the registry imports it
-const { runRules } = await import(`${ROOT}web/src/engine/world/rules-phase.js`);
-const { planSettlements, placeBlocks } = await import(`${ROOT}web/src/engine/world/sites.js`);
-const { makeView } = await import(`${ROOT}web/src/engine/snapshot.js`);
-const { toWorldInput } = await import(`${ROOT}web/src/engine/mod/input.js`);
-const { default: fantasy } = await import(`${ROOT}mods/agentville.fantasy/index.js`);
-const { modCtx } = await import(`${ROOT}web/src/engine/mod/registry.js`);
+const { runRules } = await imp('web/src/engine/world/rules-phase.js');
+const { planSettlements, placeBlocks } = await imp('web/src/engine/world/sites.js');
+const { makeView } = await imp('web/src/engine/snapshot.js');
+const { toWorldInput } = await imp('web/src/engine/mod/input.js');
+const { default: fantasy } = await imp('mods/agentville.fantasy/index.js');
+const { modCtx } = await imp('web/src/engine/mod/registry.js');
 
 const SEED = 7;
 const prng = seed => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
@@ -116,7 +119,7 @@ async function classicRate(fx, stages = STAGES) {
   globalThis.window ||= globalThis;
   const mem = {};
   globalThis.localStorage = { getItem: k => mem[k] ?? null, setItem: (k, v) => { mem[k] = String(v); }, removeItem: k => { delete mem[k]; } };
-  const W = await import(`${ROOT}web/src/world.js`);
+  const W = await imp('web/src/world.js');
   const T = tally(), KEY = 'va.world9';
   for (let k = 0; k < stages; k++) {
     const src = stageOf(fx, k, stages), now = fx.now + k * 3600e3;

@@ -7,6 +7,7 @@ import { makeHome, EXPECTED, IDS } from './fixtures/make-home.mjs'
 import { scan as scanClaude } from '../server/claude-code.mjs'
 import { scan as scanCodex } from '../server/codex.mjs'
 import { build } from '../server/classify.mjs'
+import { LIVE_PID } from './support/posix.mjs'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentville-adapters-'))
 Object.assign(process.env, makeHome(root))
@@ -119,7 +120,7 @@ test('a superseded copy of a session folds into the newest one; unreadable files
     const facts = await scanClaude()
     const ids = facts.map((a) => a.id)
     assert.ok(ids.includes(`claude-code:${copy}`) && !ids.includes(`claude-code:${orig}`))
-    if (process.getuid?.() !== 0) assert.equal(facts.unreadable, 1)
+    if (process.getuid?.() !== 0 && process.platform !== 'win32') assert.equal(facts.unreadable, 1) // chmod 000 does not block reads on Windows
   } finally { fs.chmodSync(denied, 0o644) }
 })
 
@@ -133,7 +134,7 @@ test('live session registry status: busy, asking, idle-with-pending-tool, unknow
     records[0] = { ...records[0], sessionId: sid, cwd: '/work/demo-app', uuid: `${sid}-u` }
     fs.writeFileSync(file, records.map((r) => JSON.stringify(r)).join('\n') + '\n')
     fs.utimesSync(file, new Date(Date.now() - quietMs), new Date(Date.now() - quietMs))
-    fs.writeFileSync(path.join(claude, 'sessions', `${sid.slice(0, 8)}.json`), JSON.stringify({ pid: 1, sessionId: sid, ...(status && { status }), ...extra }))
+    fs.writeFileSync(path.join(claude, 'sessions', `${sid.slice(0, 8)}.json`), JSON.stringify({ pid: LIVE_PID, sessionId: sid, ...(status && { status }), ...extra }))
     return `claude-code:${sid}`
   }
   const user = { type: 'user', timestamp: ago(3_600_000), message: { content: 'go' } }
@@ -206,17 +207,17 @@ test('API errors: scheduler-blocked API failure and the synthetic error message 
   fs.mkdirSync(path.join(claude, 'jobs', jobSid.slice(0, 8)), { recursive: true })
   fs.writeFileSync(path.join(claude, 'jobs', jobSid.slice(0, 8), 'state.json'), JSON.stringify({ sessionId: jobSid, resumeSessionId: jobSid, cwd: '/work/demo-app',
     name: 'Sync Job', state: 'blocked', tempo: 'blocked', createdAt: iso(200_000), updatedAt: iso(90_000), detail: 'API Error: 503 {"error":"Member authorization unavailable"}' }))
-  fs.writeFileSync(path.join(claude, 'sessions', 'sync.json'), JSON.stringify({ pid: 1, sessionId: jobSid, status: 'idle' }))
+  fs.writeFileSync(path.join(claude, 'sessions', 'sync.json'), JSON.stringify({ pid: LIVE_PID, sessionId: jobSid, status: 'idle' }))
   const id = `claude-code:${jobSid}`
   let a = (await agents()).find((x) => x.id === id)
   assert.deepEqual([a.bucket, a.reason, a.severity], ['stalled', 'API error (503)', 'error'])
   assert.doesNotMatch(JSON.stringify(a), /Member authorization/, 'only the status code is surfaced')
   // Still mid-turn (registry busy): Claude Code is retrying on its own; still red, but says so.
   const regFile = path.join(claude, 'sessions', 'sync.json')
-  fs.writeFileSync(regFile, JSON.stringify({ pid: 1, sessionId: jobSid, status: 'busy' }))
+  fs.writeFileSync(regFile, JSON.stringify({ pid: LIVE_PID, sessionId: jobSid, status: 'busy' }))
   a = (await agents()).find((x) => x.id === id)
   assert.deepEqual([a.bucket, a.reason, a.severity], ['stalled', 'Retrying — API error (503)', 'error'])
-  fs.writeFileSync(regFile, JSON.stringify({ pid: 1, sessionId: jobSid, status: 'idle' }))
+  fs.writeFileSync(regFile, JSON.stringify({ pid: LIVE_PID, sessionId: jobSid, status: 'idle' }))
   // A newer, non-blocked scheduler state clears it.
   const stateFile = path.join(claude, 'jobs', jobSid.slice(0, 8), 'state.json')
   const saved = fs.readFileSync(stateFile, 'utf8')
@@ -323,7 +324,7 @@ test('a job restarted mid-turn ("send a prompt to start", its last tool call lef
   const sess = fs.existsSync(sessFile) ? fs.readFileSync(sessFile, 'utf8') : null
   const t = Date.now()
   fs.appendFileSync(file, JSON.stringify({ type: 'assistant', timestamp: new Date(t - 5000).toISOString(), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'make' } }] } }) + '\n')
-  fs.writeFileSync(sessFile, JSON.stringify({ pid: 1, sessionId: id, kind: 'bg', status: 'idle', jobId: id.slice(0, 8) }))
+  fs.writeFileSync(sessFile, JSON.stringify({ pid: LIVE_PID, sessionId: id, kind: 'bg', status: 'idle', jobId: id.slice(0, 8) }))
   fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(saved), state: 'working', tempo: 'blocked', detail: 'Inserting tables', needs: 'send a prompt to start', updatedAt: new Date(t).toISOString() }))
   try {
     const a = (await agents()).find((x) => x.id === `claude-code:${id}`)
@@ -344,7 +345,7 @@ test('a live session whose transcript has no cwd (a fork) takes its project from
     { type: 'user', timestamp: t, sessionId: sid, uuid: 'u1', message: { content: 'go' } },
     { type: 'assistant', timestamp: t, sessionId: sid, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n')
-  fs.writeFileSync(path.join(claude, 'sessions', 'fork.json'), JSON.stringify({ pid: 1, sessionId: sid, status: 'idle', cwd: '/work/demo-app' }))
+  fs.writeFileSync(path.join(claude, 'sessions', 'fork.json'), JSON.stringify({ pid: LIVE_PID, sessionId: sid, status: 'idle', cwd: '/work/demo-app' }))
   try {
     const a = (await agents()).find((x) => x.id === `claude-code:${sid}`)
     assert.deepEqual([a.project, a.cwd], ['demo-app', '/work/demo-app'])
@@ -372,7 +373,7 @@ test('fewer false stalls: a live job that reports done rests; an older stopped c
   ].map((r) => JSON.stringify(r)).join('\n') + '\n')
   const doneId = job('d0000001', { name: 'Wallets Lead', state: 'done', tempo: 'idle', detail: 'retired; checks handed over' })
   talk('d0000001-0000-4000-8000-000000000000')
-  fs.writeFileSync(path.join(claude, 'sessions', 'd0000001.json'), JSON.stringify({ pid: 1, sessionId: 'd0000001-0000-4000-8000-000000000000', status: 'idle', jobId: 'd0000001' }))
+  fs.writeFileSync(path.join(claude, 'sessions', 'd0000001.json'), JSON.stringify({ pid: LIVE_PID, sessionId: 'd0000001-0000-4000-8000-000000000000', status: 'idle', jobId: 'd0000001' }))
   const oldId = job('d0000002', { name: 'Phase 9 Lead', state: 'blocked', tempo: 'blocked', detail: 'awaiting your decisions', createdAt: new Date(t - 86_400_000).toISOString() })
   talk('d0000002-0000-4000-8000-000000000000')
   job('d0000003', { name: 'Phase 9 Lead', state: 'working', tempo: 'active', createdAt: new Date(t - 3_600_000).toISOString(), updatedAt: new Date(t).toISOString() })
@@ -466,7 +467,7 @@ test('a stale "done" job reopened in a terminal is that live interactive session
   const id = `claude-code:${IDS.leadDone}` // job record: state done, tempo idle, written 10 min ago
   const reg = path.join(claude, 'sessions', 'reopened.json')
   const t = Date.now()
-  const open = (extra) => fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: IDS.leadDone, kind: 'interactive', startedAt: t - 60_000, statusUpdatedAt: t - 1000, ...extra }))
+  const open = (extra) => fs.writeFileSync(reg, JSON.stringify({ pid: LIVE_PID, sessionId: IDS.leadDone, kind: 'interactive', startedAt: t - 60_000, statusUpdatedAt: t - 1000, ...extra }))
   const get = async () => (await agents()).find((x) => x.id === id)
   try {
     const before = await get()
@@ -508,7 +509,7 @@ test('reopened in a terminal: a stale failed or blocked job record raises no API
   const reg = path.join(claude, 'sessions', 'reopened.json')
   const t = Date.now()
   try {
-    fs.writeFileSync(reg, JSON.stringify({ pid: 1, sessionId: id, kind: 'interactive', status: 'idle', startedAt: t - 60_000, statusUpdatedAt: t - 1000 }))
+    fs.writeFileSync(reg, JSON.stringify({ pid: LIVE_PID, sessionId: id, kind: 'interactive', status: 'idle', startedAt: t - 60_000, statusUpdatedAt: t - 1000 }))
     for (const patch of [
       { state: 'failed', tempo: 'idle', detail: 'API Error: 529 overloaded' },
       { state: 'blocked', tempo: 'blocked', detail: 'Your computer went to sleep', needs: 'Pick one' },

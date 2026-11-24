@@ -11,7 +11,7 @@
  */
 const fs = require('node:fs')
 const path = require('node:path')
-const { spawn } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 const { app, BrowserWindow, Menu, shell, dialog, screen, clipboard, nativeImage } = require('electron')
 const S = require('./shell.cjs')
 
@@ -54,7 +54,10 @@ function log(...parts) {
 /** Start `node server/cli.mjs` in the checkout. Output goes to server.log in the app's profile. */
 function startServer() {
   const node = S.findNode({ env })
-  const childEnv = { ...env, PATH: S.augmentedPath(env.PATH || ''), [S.envKey('PORT')]: String(settings.port), [S.envKey('DESKTOP')]: '1' }
+  // On Windows the variable is spelled Path; drop it so the child doesn't get both spellings.
+  const baseEnv = { ...env }
+  for (const k of Object.keys(baseEnv)) if (k.toUpperCase() === 'PATH') delete baseEnv[k]
+  const childEnv = { ...baseEnv, PATH: S.augmentedPath(S.envPathOf(env)), [S.envKey('PORT')]: String(settings.port), [S.envKey('DESKTOP')]: '1' }
   delete childEnv.ELECTRON_RUN_AS_NODE
   let bin = node?.bin
   if (!bin) { // last resort: Electron's own Node (native modules may not load, npm isn't next to it)
@@ -64,7 +67,7 @@ function startServer() {
   }
   fs.mkdirSync(USER_DATA, { recursive: true })
   const out = fs.openSync(LOG_FILE, 'w')
-  const child = spawn(bin, [path.join('server', 'cli.mjs')], { cwd: settings.repo, env: childEnv, stdio: ['ignore', out, out] })
+  const child = spawn(bin, [path.join('server', 'cli.mjs')], { cwd: settings.repo, env: childEnv, stdio: ['ignore', out, out], windowsHide: true })
   fs.closeSync(out)
   const me = { child, exited: false, code: null }
   owned = me
@@ -91,8 +94,15 @@ function stopServer(ms = 8000) {
   return new Promise((resolve) => {
     const done = () => { clearTimeout(t); resolve() }
     me.child.once('exit', done)
-    const t = setTimeout(() => { try { me.child.kill('SIGKILL') } catch {} resolve() }, ms)
-    try { me.child.kill('SIGTERM') } catch { done() }
+    // Windows has no SIGTERM: child.kill() ends the process abruptly, and after the timeout
+    // taskkill /T /F also takes the server's own children (terminals) down with it.
+    const t = setTimeout(() => {
+      if (process.platform === 'win32' && me.child.pid) {
+        try { spawnSync('taskkill', ['/pid', String(me.child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }) } catch {}
+      } else { try { me.child.kill('SIGKILL') } catch {} }
+      resolve()
+    }, ms)
+    try { me.child.kill(process.platform === 'win32' ? undefined : 'SIGTERM') } catch { done() }
   })
 }
 

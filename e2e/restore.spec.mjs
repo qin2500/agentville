@@ -64,7 +64,7 @@ const runs = () => { const f = path.join(dir, 'claude-bg.log'); return fs.exists
 test('the notice names the restart; Dismiss hides it for this boot', async ({ page }) => {
   await page.goto(s.url)
   const nudge = page.locator('#nudge')
-  await expect(nudge).toContainText('Your Mac restarted — 4 agents were running.', { timeout: 15_000 })
+  await expect(nudge).toContainText('Your Mac restarted — 5 agents were running.', { timeout: 15_000 })
   await expect(nudge.locator('[data-restore="open"]')).toHaveText('Restore…')
   await nudge.locator('[data-restore="dismiss"]').click()
   await expect(nudge).toBeHidden()
@@ -86,11 +86,12 @@ test('sheet: lost crown and Important jobs checked, terminals to copy; confirm s
   const sheet = page.locator('#sheet')
   await expect(sheet.locator('#sheet-title')).toHaveText('Restore after crash')
   const cards = sheet.locator('[data-restore-job]')
-  await expect(cards).toHaveCount(2)
+  await expect(cards).toHaveCount(3) // every lost background job, Important or not
+  await expect(sheet.locator(`[data-restore-job="${claudeId('leadBuilding')}"] .who`)).toContainText('API Lead')
   await expect(sheet.locator(`[data-restore-job="${claudeId('boss')}"] .who`)).toContainText('Big Boss')
   await expect(sheet.locator(`[data-restore-job="${claudeId('boss')}"] .who small`)).toContainText('Boss · demo-app')
   await expect(sheet.locator(`[data-restore-job="${claudeId('leadBlocked')}"] .who small`)).toContainText('★ Important')
-  await expect(sheet.locator('[data-restore-pick]:checked')).toHaveCount(2)
+  await expect(sheet.locator('[data-restore-pick]:checked')).toHaveCount(3)
   await expect(sheet.locator(`[data-restore-job="${claudeId('boss')}"] .reach`)).toContainText('last seen')
   const ses = sheet.locator(`[data-restore-session="${claudeId('soloTurn')}"]`)
   await expect(ses.locator('code')).toContainText(`claude --resume ${IDS.soloTurn}`)
@@ -99,12 +100,15 @@ test('sheet: lost crown and Important jobs checked, terminals to copy; confirm s
   await expect(cx).toContainText('Release notes')
   await expect(cx).toContainText('Codex thread — reopen it in the Codex app')
   await expect(cx.locator('code, button')).toHaveCount(0)
-  await expect(sheet.locator('.menunote')).toContainText('1 still running, 1 not a crown agent or Important')
+  await expect(sheet.locator('.menunote')).toContainText('1 still running')
+  await expect(sheet.locator('.menunote')).not.toContainText('not a crown')
   await shot(page, ti, 'restore-sheet')
   if (!isMobile(ti)) {
     const axe = await new AxeBuilder({ page }).include('#sheet').analyze()
     expect(axe.violations.filter((v) => ['serious', 'critical'].includes(v.impact)).map((v) => v.id)).toEqual([])
   }
+  // Leave API Lead out of this run (the rest of the test restores two).
+  await sheet.locator(`[data-restore-pick="${claudeId('leadBuilding')}"]`).uncheck()
   // Untick and re-tick: the button counts.
   await sheet.locator(`[data-restore-pick="${claudeId('leadBlocked')}"]`).uncheck()
   await expect(sheet.locator('[data-restore-act="review"]')).toHaveText('Review 1 agent…')
@@ -128,8 +132,8 @@ test('sheet: lost crown and Important jobs checked, terminals to copy; confirm s
   expect(frames).toHaveLength(1)
   await shot(page, ti, 'restore-done')
   await sheet.locator('[data-restore-act="close"]').click()
-  // Both are back: the notice goes away.
-  await expect(page.locator('#nudge')).not.toContainText('Your Mac restarted — 4', { timeout: 15_000 })
+  // Both are back: the notice no longer counts them.
+  await expect(page.locator('#nudge')).not.toContainText('Your Mac restarted — 5', { timeout: 15_000 })
 })
 
 test('Important: a toggle in the agent menu, a star on its row, kept on disk', async ({ page }) => {

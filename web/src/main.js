@@ -826,7 +826,7 @@ function toast(text, action, ms = 6000) {
 document.addEventListener('click', e => {
   const t = e.target;
   // A control a menu just re-rendered away is no longer in the page: that click was inside it.
-  if (openPop && t.isConnected && !t.closest('.pop') && !t.closest(`#${popBtn[openPop].id}`)) closePops();
+  if (openPop && t.isConnected && !t.closest('.pop') && !t.closest('.acctctx') && !t.closest(`#${popBtn[openPop].id}`)) closePops();
   const bucket = t.closest('[data-bucket]')?.dataset.bucket;
   if (bucket) {
     S.filters.bucket = S.filters.bucket === bucket ? null : bucket;

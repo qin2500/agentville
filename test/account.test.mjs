@@ -72,7 +72,7 @@ test('round trip pool -> personal -> pool restores every file byte for byte; not
     assert.deepEqual(JSON.parse(t.read('aaaa0004')).respawnFlags, ['--model', 'claude-opus-5-5'], 'a dormant job gets the new settings…')
     assert.ok(!t.respawns().some((a) => a[1] === 'aaaa0004'), '…but is never restarted')
     const stash = path.join(t.dataDir, 'pool-profile.json')
-    assert.equal(fs.statSync(stash).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(stash).mode & 0o777, 0o600)
     assert.ok(fs.readFileSync(stash, 'utf8').includes(TOKEN), 'the token is kept only in the 0600 stash')
     assert.equal((await t.status()).profile, 'personal')
     assert.doesNotMatch(r.text, new RegExp(TOKEN))
@@ -83,8 +83,8 @@ test('round trip pool -> personal -> pool restores every file byte for byte; not
     assert.ok(!fs.existsSync(stash))
     // Backups are private, and no log or response carries a secret.
     const backups = path.join(t.dataDir, 'account-backups')
-    assert.equal(fs.statSync(backups).mode & 0o777, 0o700)
-    for (const set of fs.readdirSync(backups)) assert.equal(fs.statSync(path.join(backups, set, 'settings.json')).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(backups).mode & 0o777, 0o700)
+    for (const set of fs.readdirSync(backups)) process.platform !== 'win32' && assert.equal(fs.statSync(path.join(backups, set, 'settings.json')).mode & 0o777, 0o600)
     assert.doesNotMatch(fs.readFileSync(path.join(t.dataDir, 'account-log.jsonl'), 'utf8'), new RegExp(TOKEN))
   } finally { t.done() }
 })

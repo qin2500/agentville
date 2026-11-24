@@ -99,6 +99,7 @@ svg.role { width: 14px; height: 14px; }
 .empty-note[hidden] { display: none; }
 .quiet-note .ghost { border-color: transparent; padding: 2px 8px; }
 .acct-badge.q { color: var(--waiting); }
+.acct-badge.lp { color: var(--text-muted); }
 .acct-net { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; font-size: 12px; color: var(--text-muted); padding: 6px 2px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .acct-net.work { color: var(--text); }
 .acct-warn { margin: 0 0 8px; padding: 8px 10px; border-radius: var(--radius); background: color-mix(in srgb, var(--error, #e5383b) 18%, transparent); color: var(--text); font-size: 12px; }
@@ -511,6 +512,17 @@ li:hover > .openbtn, li:focus-within > .openbtn, .tw:hover > .openbtn, .tw:focus
 .acct-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
 .acct-row { display: grid; gap: 6px; padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius); }
 .acct-row.on { border-color: var(--line); background: var(--surface-2); }
+/* Saved-account rows: a quiet highlight on hover (the border is already reserved, so nothing shifts), a menu cursor, and the "⋯" fallback. */
+.acct-row[data-acct-menu] { cursor: context-menu; transition: background-color .12s ease-out; }
+.acct-row[data-acct-menu]:hover { background: var(--surface-2); }
+.acct-row.on[data-acct-menu]:hover { background: var(--surface-3); }
+.acct-row[data-acct-menu]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.acct-row.cm-target { background: var(--surface-3); border-color: var(--line); }
+.acct-row[data-acct-menu] { position: relative; }
+.acct-more { position: absolute; top: 6px; right: 6px; width: 24px; height: 22px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--text-muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.acct-more:hover, .acct-more:focus-visible, .acct-more[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
+.reduce-motion .acct-row[data-acct-menu] { transition: none; }
+@media (prefers-reduced-motion: reduce) { .acct-row[data-acct-menu] { transition: none; } }
 .acct-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); min-width: 0; }
 .acct-main b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .acct-sub { flex-basis: 100%; color: var(--text-muted); overflow-wrap: anywhere; }

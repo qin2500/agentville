@@ -2,6 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import { execFile } from 'node:child_process'
@@ -50,7 +51,7 @@ test('resolveSession accepts ids, bare session ids and fork sids', () => {
 })
 
 test('store: count, clear, cap, prune, rate limit', async () => {
-  const dir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || '/tmp'), 'village-notify-'))
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'village-notify-'))
   let t = 1_000_000
   const n = createNotifications(dir, { now: () => t })
   try {

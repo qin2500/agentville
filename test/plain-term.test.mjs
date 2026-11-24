@@ -20,7 +20,7 @@ fs.writeFileSync(shellBin, '#!/bin/sh\n'); fs.chmodSync(shellBin, 0o755)
 test.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
 const mk = (over = {}) => createPlainTerms({
-  home, shell: () => shellBin, findBin: async (n) => `/fake/bin/${n}`,
+  home, shell: () => shellBin, platform: 'linux', findBin: async (n) => `/fake/bin/${n}`,
   procs: async () => [], cwd: async () => null, registry: async () => [], ...over,
 })
 const projects = [{ dir: proj }]

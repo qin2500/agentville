@@ -6,6 +6,8 @@
 // value ever reaches the browser; we only show labels, emails, plans, usage, names and folders.
 import { icon, esc } from './ui.js';
 import { pauseToggleHTML } from './usage-pause.js';
+import { createAccountMenu } from './acctmenu.js';
+import { patchAccount, LOW_PRIORITY_TIP, isLoginExpired } from './acct-items.js';
 
 const LOGIN = 'claude auth login';
 const RELOGIN = 'claude auth logout && claude auth login';
@@ -24,7 +26,7 @@ export function createAccount(app, { open: openAgent, termName }) {
   const sheet = $('acct'), btn = $('btn-account'), pop = $('pop-account');
   // Menu state, then the sheet's. view: loading | error | confirm | busy | results
   const A = {
-    list: null, listErr: '', usage: new Map(), usageBusy: false, edit: null, menuErr: '', working: '', addInfo: null, addLabel: '',
+    list: null, listErr: '', usage: new Map(), usageBusy: false, edit: null, menuErr: '', working: '', addInfo: null, addLabel: '', reloginId: '',
     target: null, status: null, view: null, error: '', err: '', result: null, undone: null, undoErr: '', undoBusy: false,
   };
   const say = text => { const l = $('live'); if (l) l.textContent = text; };
@@ -46,7 +48,7 @@ export function createAccount(app, { open: openAgent, termName }) {
   }
   const send = (method, path, body) => json(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
   const why = e => (e instanceof TypeError ? "the Agentville server isn't reachable" : e.code === 'too_big' ? tooBigText(e.size, e.max) : e.message);
-  const tooBigText = (size, max) => `Can't switch accounts: your Claude login entry is too big (${size ?? '?'} of ${max ?? 4000}). Sign out of MCP servers you don't use to make room.`;
+  const tooBigText = (size, max) => `Can't switch accounts: your Claude login entry is too big (${size ?? '?'} of ${max ?? 65536}). Sign out of MCP servers you don't use to make room.`;
   /** Auto-switch has nowhere to go (blocked.why / blocked.until), or the active account is nearly out (>= 95%). No emails or labels. */
   function trouble() {
     const b = A.list?.autoSwitch?.blocked;
@@ -107,14 +109,18 @@ export function createAccount(app, { open: openAgent, termName }) {
   function usageHTML(id) {
     const u = A.usage.get(id);
     if (!u) return `<p class="acct-note">${A.usageBusy ? 'Checking usage…' : 'Usage not checked'}</p>`;
-    if (u.error) return `<p class="acct-note bad">${esc(u.error)}</p>`;
+    if (u.error) {
+      const a = accountOf(id);
+      const again = isLoginExpired(u) && a ? `<button class="ghost" type="button" ${k('relogin', id)} ${A.working || A.view === 'busy' || A.list?.adding ? 'disabled' : ''} aria-label="Sign in again as ${esc(a.email || a.label)}">Sign in again</button>` : '';
+      return `<p class="acct-note bad">${esc(u.error)}</p>${again}`;
+    }
     const stale = u.stale ? `<p class="acct-note">As of ${esc(ago(u.asOf))} · ${esc(u.note || 'not refreshed')}</p>` : '';
     return bar('5-hour', u.fiveHour) + bar('Weekly', u.weekly) + stale;
   }
   const k = (act, id = '') => `data-am="${act}" data-id="${esc(id)}" data-key="${act}:${esc(id)}"`;
-  function rowHTML({ id, name, sub, active, actions, usage, edit, quarantine }) {
-    return `<li class="acct-row${active ? ' on' : ''}" data-row="${esc(id)}">
-      <div class="acct-main"><b>${esc(name)}</b>${active ? '<span class="acct-badge">Active</span>' : ''}${quarantine ? '<span class="acct-badge q" title="Never used on the work Wi-Fi; preferred everywhere else">Quarantine</span>' : ''}${sub ? `<span class="acct-sub">${esc(sub)}</span>` : ''}</div>
+  function rowHTML({ id, name, sub, active, actions, usage, edit, quarantine, lowPriority, menu }) {
+    return `<li class="acct-row${active ? ' on' : ''}" data-row="${esc(id)}"${menu ? ` data-acct-menu tabindex="0" data-key="row:${esc(id)}" aria-label="${esc(name)}: press the context menu key or Shift+F10 for actions"` : ''}>
+      <div class="acct-main"><b>${esc(name)}</b>${active ? '<span class="acct-badge">Active</span>' : ''}${quarantine ? '<span class="acct-badge q" title="Never used on the work Wi-Fi; preferred everywhere else">Quarantine</span>' : ''}${lowPriority ? `<span class="acct-badge lp" title="${esc(LOW_PRIORITY_TIP)}">Low priority</span>` : ''}${sub ? `<span class="acct-sub">${esc(sub)}</span>` : ''}${menu ? `<button class="acct-more" type="button" data-more="${esc(id)}" data-key="more:${esc(id)}" aria-haspopup="menu" aria-label="Actions for ${esc(name)}" title="Rename, quarantine, low priority, remove (or right-click)">⋯</button>` : ''}</div>
       ${usage ? `<div class="acct-usage" data-usage="${esc(id)}">${usageHTML(id)}</div>` : ''}
       ${edit || (actions ? `<div class="acct-acts">${actions}</div>` : '')}</li>`;
   }
@@ -148,22 +154,19 @@ export function createAccount(app, { open: openAgent, termName }) {
         const plan = PLAN[a.subscriptionType] || a.subscriptionType || '';
         const banned = onWork && a.quarantine;
         rows += rowHTML({
-          id: a.id, name: a.label, sub: [a.email !== a.label && a.email, plan].filter(Boolean).join(' · '), active: cur === a.id, usage: true, edit: editHTML(a), quarantine: a.quarantine,
-          actions: (cur === a.id ? '' : banned ? '<span class="acct-note">Not on the work Wi-Fi</span>' : sw(a.id, a.label)) +
-            `<button class="linkbtn" type="button" ${k('quarantine', a.id)} aria-label="${a.quarantine ? `Make ${esc(a.label)} a regular account` : `Make ${esc(a.label)} a quarantine account`}">${a.quarantine ? 'Make regular' : 'Quarantine'}</button>` +
-            `<button class="linkbtn" type="button" ${k('rename', a.id)} aria-label="Rename ${esc(a.label)}">Rename</button>` +
-            (a.signedIn ? '' : `<button class="linkbtn" type="button" ${k('remove', a.id)} aria-label="Remove ${esc(a.label)}">Remove</button>`),
+          id: a.id, name: a.label, sub: [a.email !== a.label && a.email, plan].filter(Boolean).join(' · '), active: cur === a.id, usage: true, edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true,
+          actions: (cur === a.id ? '' : banned ? '<span class="acct-note">Not on the work Wi-Fi</span>' : sw(a.id, a.label))
         });
       }
     }
-    const info = A.addInfo;
+    const info = A.addInfo, relogin = A.reloginId ? accountOf(A.reloginId) : null;
     const add = L?.adding
-      ? `<div class="acct-add" role="group" aria-labelledby="acct-add-h"><p id="acct-add-h"><b>Add account · step 2 of 2</b></p>
+      ? `<div class="acct-add" role="group" aria-labelledby="acct-add-h"><p id="acct-add-h"><b>${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} · step 2 of 2` : 'Add account · step 2 of 2'}</b></p>
           <p>${info?.opened ? `A ${esc(termName() || 'terminal')} window is running <code>${LOGIN}</code>.` : `Run <code>${LOGIN}</code> in a terminal${info?.error ? ` (${esc(info.error)})` : ''}.`}
-          Sign in with the other account in your browser (sign out of claude.ai there first if it picks the current one), then come back.</p>
+          ${relogin ? `Sign in as ${esc(relogin.email || relogin.label)} in your browser (sign out of claude.ai there first if it picks another account), then come back. Its saved login is renewed; what's running doesn't change.` : 'Sign in with the other account in your browser (sign out of claude.ai there first if it picks the current one), then come back.'}</p>
           ${info?.opened ? '' : `<div class="acts"><button class="ghost" type="button" data-copy="${LOGIN}" data-key="copy-login">Copy</button></div>`}
-          <label class="acct-field" for="acct-add-label">Name (optional)</label>
-          <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. Work" value="${esc(A.addLabel)}" data-key="add-label">
+          ${relogin ? '' : `<label class="acct-field" for="acct-add-label">Name (optional)</label>
+          <input id="acct-add-label" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. Work" value="${esc(A.addLabel)}" data-key="add-label">`}
           <div class="acts"><button class="primary" type="button" ${k('finish')} ${A.working ? 'disabled' : ''}>${A.working === 'finish' ? 'Saving…' : "I've logged in"}</button>
           <button class="ghost" type="button" ${k('add-cancel')} ${A.working ? 'disabled' : ''}>Cancel</button></div></div>`
       : `<button class="menuitem" type="button" ${k('add')} ${busy || !L ? 'disabled aria-disabled="true"' : ''}><b>${A.working === 'add' ? 'Opening a terminal…' : 'Add account…'}</b><span>Sign in to another Claude account in a terminal. What's running doesn't change.</span></button>`;
@@ -256,32 +259,51 @@ export function createAccount(app, { open: openAgent, termName }) {
       case 'switch': app.closePops(); return openSheet(id);
       case 'show': app.closePops(); sheet.showModal(); return focusTitle();
       case 'capture': return act('save', () => send('POST', '/api/accounts/capture', {}), 'Login saved').then(() => loadUsage(false));
-      case 'add': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; }, 'Step 2: sign in, then choose I\'ve logged in')
+      case 'add': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = ''; }, 'Step 2: sign in, then choose I\'ve logged in')
         .then(() => pop.querySelector('#acct-add-label')?.focus());
       case 'finish': return act('finish', async () => {
         const r = await send('POST', '/api/accounts/add/finish', { label: A.addLabel.trim() });
         A.addInfo = null; A.addLabel = '';
-        say(`Added ${r.account.label}`);
+        say(A.reloginId === r.account.id ? `Signed in again as ${r.account.label}` : `Added ${r.account.label}`);
+        A.reloginId = '';
       }).then(() => { pop.querySelector('[data-am="add"]')?.focus(); return loadUsage(false); });
-      case 'add-cancel': return act('add-cancel', async () => { await send('POST', '/api/accounts/add/cancel'); A.addInfo = null; }, 'Adding cancelled')
+      case 'relogin': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = id; }, 'Step 2: sign in again, then choose I\'ve logged in')
+        .then(() => pop.querySelector('[data-am="finish"]')?.focus());
+      case 'add-cancel': return act('add-cancel', async () => { await send('POST', '/api/accounts/add/cancel'); A.addInfo = null; A.reloginId = ''; }, 'Adding cancelled')
         .then(() => pop.querySelector('[data-am="add"]')?.focus());
-      case 'rename': A.edit = { id, mode: 'rename', value: accountOf(id)?.label || '' }; renderMenu(); return pop.querySelector('#acct-rename')?.select();
-      case 'quarantine': {
-        const q = !accountOf(id)?.quarantine;
-        return act('update', () => send('PATCH', `/api/accounts/${encodeURIComponent(id)}`, { quarantine: q }), `${accountOf(id)?.label} is now a ${q ? 'quarantine' : 'regular'} account`)
-          .then(() => pop.querySelector(`[data-am="quarantine"][data-id="${CSS.escape(id)}"]`)?.focus());
-      }
       case 'net-work': {
         const work = t.dataset.work === '1';
         return act('mark the network', () => send('POST', '/api/network/work', { work }), work ? 'Marked as the work Wi-Fi' : 'No longer marked as the work Wi-Fi')
           .then(() => pop.querySelector('[data-am="net-work"]')?.focus());
       }
-      case 'remove': A.edit = { id, mode: 'remove' }; renderMenu(); return pop.querySelector('[data-am="remove-confirm"]')?.focus();
-      case 'edit-cancel': A.edit = null; renderMenu(); return pop.querySelector(`[data-am="rename"][data-id="${CSS.escape(id)}"]`)?.focus();
       case 'remove-confirm': return act('remove', async () => { await send('DELETE', `/api/accounts/${encodeURIComponent(id)}`); A.edit = null; A.usage.delete(id); }, 'Account removed')
         .then(() => pop.querySelector('[data-am="refresh"]')?.focus());
     }
   });
+  // ---------- the row menu (right-click, ContextMenu key, Shift+F10, or the row's "⋯") ----------
+  const focusRow = id => (pop.querySelector(`[data-key="more:${CSS.escape(id)}"]`) || pop.querySelector(`.acct-row[data-row="${CSS.escape(id)}"]`))?.focus();
+  const rowMenu = createAccountMenu(pop, {
+    accountOf,
+    pick(action, id) {
+      const a = accountOf(id);
+      if (!a) return;
+      switch (action) {
+        case 'rename': A.edit = { id, mode: 'rename', value: a.label || '' }; renderMenu(); return pop.querySelector('#acct-rename')?.select();
+        case 'remove': A.edit = { id, mode: 'remove' }; renderMenu(); return pop.querySelector('[data-am="remove-confirm"]')?.focus();
+        case 'quarantine': {
+          const q = !a.quarantine;
+          return act('update', () => patchAccount(fetch, id, { quarantine: q }), `${a.label} is now a ${q ? 'quarantine' : 'regular'} account`).then(() => focusRow(id));
+        }
+        case 'lowpriority': {
+          const lp = !a.lowPriority;
+          return act('update', () => patchAccount(fetch, id, { lowPriority: lp }), `${a.label} is now ${lp ? 'low' : 'regular'} priority`).then(() => focusRow(id));
+        }
+      }
+    },
+  });
+  // The row menu belongs to the open Account menu: closing one closes the other.
+  new MutationObserver(() => { if (pop.hidden) rowMenu.close(); }).observe(pop, { attributes: true, attributeFilter: ['hidden'] });
+
   async function copy(t) {
     let ok = true;
     try { await navigator.clipboard.writeText(t.dataset.copy); } catch { ok = false; }

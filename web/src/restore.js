@@ -1,11 +1,11 @@
 // Restore after crash (README "Restore after crash"). After a reboot, the crown agents and the ones
-// marked Important that were running before it are listed here; on one confirm the server restarts
+// marked Important (and every background job) that were running before it are listed here; on one confirm the server restarts
 // them one at a time and tells each restored crown agent to check its own workers. Interactive
 // sessions can't be reopened from a web page: they get a "Copy resume command".
 import { ROLE_NAME, esc, clock } from './ui.js';
 
 const STATUS = { restored: 'Restored', running: 'Already running', failed: 'Failed', delivered: 'Message delivered', 'sent-unconfirmed': 'Message sent, unconfirmed', skipped: 'No message' };
-const EXCLUDED = { running: 'still running', stopped: 'stopped on purpose', removed: 'removed', 'no-transcript': 'without a saved conversation', 'not-chosen': 'not a crown agent or Important' };
+const EXCLUDED = { running: 'still running', stopped: 'stopped on purpose', removed: 'removed', 'no-transcript': 'without a saved conversation', 'not-chosen': 'a terminal session not marked Important' };
 const agents = n => `${n} agent${n === 1 ? '' : 's'}`;
 function ago(ms) {
   const m = Math.floor(Math.max(0, ms) / 60e3);
@@ -30,7 +30,7 @@ export function createRestore(app, sheet) {
   }
   function menuItemHTML() {
     const n = count();
-    const line = n ? `${agents(n)} that ${n === 1 ? 'was' : 'were'} running before the restart: crown agents and ones you marked Important.` : 'Nothing to restore: no crown or Important agent was lost in a restart.';
+    const line = n ? `${agents(n)} that ${n === 1 ? 'was' : 'were'} running before the restart: every background agent, plus terminal sessions you marked Important.` : 'Nothing to restore: no background agent was lost in a restart.';
     return `<button class="menuitem${n ? ' promo' : ''}" type="button" data-restore="open" ${n ? '' : 'disabled aria-disabled="true"'}><b>Restore after crash…</b><span>${esc(line)}</span></button>`;
   }
 
@@ -110,8 +110,8 @@ export function createRestore(app, sheet) {
     if (R.view === 'list') {
       const none = !jobs().length && !(d.sessions || []).length && !(d.codex || []).length;
       const lede = !d.crashBoot ? 'No restart since the agents were last seen running.'
-        : none ? `Your Mac restarted ${esc(ago(Date.now() - d.boot))}. No crown or Important agent needs restoring.`
-        : `Your Mac restarted ${esc(ago(Date.now() - d.boot))}. These were running before it: crown agents and the ones you marked Important.${d.blocked ? ` Restoring isn't available here: ${esc(d.blocked)}.` : ''}`;
+        : none ? `Your Mac restarted ${esc(ago(Date.now() - d.boot))}. No background agent needs restoring.`
+        : `Your Mac restarted ${esc(ago(Date.now() - d.boot))}. These were running before it: every background agent, plus terminal sessions you marked Important.${d.blocked ? ` Restoring isn't available here: ${esc(d.blocked)}.` : ''}`;
       const n = chosen().length;
       sheet.innerHTML = `${head(title, lede)}
         <div class="body">${jobs().length ? `<section><h3>Background jobs · ${jobs().length}</h3><div id="restore-jobs">${jobs().map(jobCard).join('')}</div></section>` : ''}

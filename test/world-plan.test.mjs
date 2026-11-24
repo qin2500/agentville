@@ -29,7 +29,7 @@ test('read on a fresh dir is empty; put creates rev 1 and persists across instan
   assert.deepEqual(await plan.put('va.engine2.seed', 100, 1), { ok: true, rev: 2 })
   const disk = JSON.parse(fs.readFileSync(fileIn(dir), 'utf8'))
   assert.deepEqual(disk, { v: 1, keys: { 'va.engine2.seed': { rev: 2, at: 1234, value: 100 } } })
-  assert.equal(fs.statSync(fileIn(dir)).mode & 0o777, 0o600)
+  process.platform !== 'win32' && assert.equal(fs.statSync(fileIn(dir)).mode & 0o777, 0o600)
   assert.deepEqual((await createWorldPlan(dir).read()).keys['va.engine2.seed'], { rev: 2, at: 1234, value: 100 })
   assert.deepEqual(fs.readdirSync(dir), [WORLD_PLAN_FILE], 'no tmp files left behind')
 })

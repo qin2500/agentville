@@ -3,6 +3,7 @@
  * Render the app icon (tools/icon/art.mjs) into every file that uses it:
  *
  *   desktop/icons/icon.icns              the desktop app's icon (electron-builder mac.icon)
+ *   desktop/icons/icon.ico               the Windows icon (16, 32, 48, 64, 128, 256; electron-builder win.icon)
  *   desktop/icons/icon-<size>.png        16 … 1024
  *   web/public/icon-16.png, icon-32.png  favicon and the mark next to the name in the top bar
  *
@@ -14,7 +15,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Img, roundRectCoverage, shadow, encodeICNS } from './raster.mjs'
+import { Img, roundRectCoverage, shadow, encodeICNS, encodeICO } from './raster.mjs'
 import { big, small } from './art.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -30,8 +31,8 @@ export function renderBig() {
   return img
 }
 /** The 16×16 picture, full bleed in a rounded square, at `scale` px a cell (corners antialiased). */
-export function renderSmall(scale) {
-  const f = 16, S = 16 * f, tile = roundRectCoverage(0, 0, S, S, 3.2 * f)
+export function renderSmall(scale, f = 16) {
+  const S = 16 * f, tile = roundRectCoverage(0, 0, S, S, 3.2 * f)
   const img = new Img(S, S)
   img.grid(small(), 0, 0, f, tile)
   return img.shrink(f / scale)
@@ -44,6 +45,8 @@ export function renderAll() {
   const files = {}
   for (const [s, buf] of Object.entries(png)) files[`desktop/icons/icon-${s}.png`] = buf
   files['desktop/icons/icon.icns'] = encodeICNS(png)
+  // 48 px is not a whole fraction of 1024, so draw the small picture at 24 px a cell and shrink by 8.
+  files['desktop/icons/icon.ico'] = encodeICO({ 16: png[16], 32: png[32], 48: renderSmall(3, 24).png(), 64: png[64], 128: png[128], 256: png[256] })
   files['web/public/icon-16.png'] = png[16]
   files['web/public/icon-32.png'] = png[32]
   return files

@@ -56,8 +56,10 @@ test('decide: guards — toggle off, on the pool, unsaved login, busy, cooldown,
   assert.equal(decide({ ...base, active: 'pool' }).why, 'on the pool', 'never from the pool back to an account')
   assert.equal(decide({ ...base, active: 'X' }).why, 'not a saved account')
   assert.equal(decide({ ...base, busy: true }).why, 'a switch is running')
-  assert.equal(decide({ ...base, lastAutoAt: NOW - COOLDOWN_MS + 1000 }).why, 'cooldown')
-  assert.equal(decide({ ...base, lastAutoAt: NOW - COOLDOWN_MS - 1 }).action, 'switch')
+  const soft = { fiveHour: w(96), weekly: w(10) } // SWITCH_AT, not really out: the cooldown holds
+  assert.equal(decide({ ...base, activeUsage: soft, lastAutoAt: NOW - COOLDOWN_MS + 1000 }).why, 'cooldown')
+  assert.equal(decide({ ...base, activeUsage: soft, lastAutoAt: NOW - COOLDOWN_MS - 1 }).action, 'switch')
+  assert.equal(decide({ ...base, lastAutoAt: NOW - COOLDOWN_MS + 1000 }).action, 'switch', 'really out (OUT_AT): the cooldown does not hold')
   assert.equal(decide({ ...base, activeUsage: { fiveHour: w(94.9), weekly: w(10) } }).why, 'not out')
 })
 
@@ -152,10 +154,10 @@ test('sampler: samples the active account only; when it runs out, switches to an
     assert.deepEqual([log.action, log.auto, log.account, log.restored], ['switch', true, UUID.B, false])
     spend = (await t.req('GET', '/api/spend')).json
     assert.deepEqual([spend.autoSwitch.last.to, spend.autoSwitch.last.toLabel, spend.autoSwitch.last.fromLabel, spend.autoSwitch.last.why, spend.autoSwitch.last.respawned], [UUID.B, 'b@example.com', 'a@example.com', 'five_hour', 0])
-    assert.equal(fs.statSync(path.join(t.dataDir, 'autoswitch.json')).mode & 0o777, 0o600)
+    process.platform !== 'win32' && assert.equal(fs.statSync(path.join(t.dataDir, 'autoswitch.json')).mode & 0o777, 0o600)
 
-    // B runs out too, inside the cooldown: nothing happens.
-    t.people.B.five = 100
+    // B nears its limit inside the cooldown (SWITCH_AT, not really out): nothing happens.
+    t.people.B.five = 96
     d = await t.server.sampler.sample()
     assert.equal(d.why, 'cooldown')
     assert.equal(t.live(), t.creds.B)

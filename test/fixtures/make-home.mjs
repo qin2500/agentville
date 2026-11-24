@@ -10,6 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { LIVE_PID } from '../support/posix.mjs'
 
 const uuid = (n) => `${String(n).padStart(8, 'a')}-0000-4000-8000-000000000000`
 export const IDS = {
@@ -93,7 +94,7 @@ export function makeHome(root, now = Date.now()) {
   // Interactive sessions default to the settings model.
   write(path.join(claude, 'settings.json'), { model: 'opus[1m]' })
   write(path.join(claude, 'gh-pr-status-cache.json'), PR_STATUS)
-  const live = (sid) => write(path.join(claude, 'sessions', `${short(sid)}.json`), { pid: 1, sessionId: sid, kind: 'bg' })
+  const live = (sid) => write(path.join(claude, 'sessions', `${short(sid)}.json`), { pid: LIVE_PID, sessionId: sid, kind: 'bg' })
 
   // Boss: launched three leads with `claude --bg`, now idle with its turn finished.
   const launch = (n, sid) => [
