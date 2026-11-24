@@ -1,5 +1,5 @@
 // Gemini provider adapter (docs/providers-design.md section 1.4). Composes server/gemini/*:
-//   runner.mjs     createRunner({ dataDir, bin }) -> { start, resume, stop, refresh, get, list, dirOf }; startArgs, APPROVAL_MODES
+//   runner.mjs     createRunner({ dataDir, bin, port }) -> { start, resume, stop, refresh, get, list, dirOf, prune }; startArgs
 //   scan.mjs       scan(now, { runs }), configure({ dataDir, homes }), home
 //   transcript.mjs readTranscript(agent, { maxBytes })   (agent.transcriptFile, kept server-side here)
 //   accounts.mjs   createGeminiAccounts({ dataDir, busyHomes }) -> { accounts, switcher, credentials, envFor, homes, accountOfHome, loginArgv }
@@ -40,22 +40,23 @@ export const PROMPT_MAX = 8000
 export const NAME_MAX = 80
 
 let dataDir = null
+let port = null // Agentville's port, injected into every run as AGENTVILLE_PORT (§5)
 let runner = null // createRunner() result, built on first use once dataDir and the bin are known
 let runnerBin = null
 let bound = null // createGeminiAccounts() result: { accounts, switcher, credentials, envFor, homes, accountOfHome, loginArgv }
 const noted = new Set() // runId:limitAt already reported to accounts.noteLimit
 let privateOf = new Map() // agent id -> { transcriptFile, runId, sessionId } from the last scan
 
-async function getRunner(extraEnv = null) {
+async function getRunner() {
   if (!runnerMod?.createRunner) throw missing('runner', R)
   if (!dataDir) throw bad('The Gemini adapter is not configured yet', 503)
   const bin = await binPath()
   if (!bin) throw bad('Gemini CLI not found', 409)
-  // A start on a saved account needs that account's env; the runner is cheap (state lives on disk).
-  if (extraEnv) return runnerMod.createRunner({ dataDir, bin, env: { ...process.env, ...extraEnv } })
-  if (!runner || runnerBin !== bin) { runner = runnerMod.createRunner({ dataDir, bin }); runnerBin = bin }
+  if (!runner || runnerBin !== bin) { runner = runnerMod.createRunner({ dataDir, bin, port }); runnerBin = bin }
   return runner
 }
+/** The active account's env for a new turn (null: no saved account, the CLI's own home). */
+const accountEnv = async () => (HAS_ACCOUNTS ? accountsPart().envFor() : null)
 /** Runner states without spawning anything (no bin needed): list() only reads and refreshes state files. */
 function listRuns() {
   if (!runnerMod?.createRunner || !dataDir) return []
@@ -179,7 +180,7 @@ export default {
       if (f.runId) f.id = `gemini:${f.runId}`
       f.provider = 'gemini'; f.harness = f.harness || 'gemini-cli'
       applyRun(f, byRun.get(f.runId), now)
-      priv.set(f.id, { transcriptFile: f.transcriptFile || null, runId: f.runId || null, sessionId: f.sessionId || sid })
+      priv.set(f.id, { transcriptFile: f.transcriptFile || null, runId: f.runId || null, sessionId: byRun.get(f.runId)?.sessionId || f.sessionId || sid })
       const t = facts.titles?.[`gemini:${sid}`]
       if (t) titles.push({ id: f.id, names: [f.name, t].filter(Boolean), project: f.project, at: f.lastActivityAt || 0 })
     }
@@ -190,7 +191,11 @@ export default {
   },
   /** `{ dataDir, account? }`. Binds the account module to dataDir and points the scan at every account home. */
   configure(opts = {}) {
-    if (opts.dataDir !== undefined && opts.dataDir !== dataDir) { dataDir = opts.dataDir; runner = null; bound = null }
+    if (opts.port !== undefined) { port = opts.port || null; runner = null }
+    if (opts.dataDir !== undefined && opts.dataDir !== dataDir) {
+      dataDir = opts.dataDir; runner = null; bound = null
+      try { runnerMod?.createRunner?.({ dataDir }).prune?.() } catch { /* best effort, once per data folder */ }
+    }
     if (opts.account) bound = opts.account
     if (HAS_ACCOUNTS && dataDir) {
       const part = accountsPart()
@@ -229,7 +234,8 @@ export default {
     const name = cleanName(body.name)
     const model = pick(body.model, MODELS, 'model')
     const mode = pick(body.permissionMode, MODES, 'permission mode')
-    const args = runnerMod?.startArgs ? runnerMod.startArgs({ prompt: body.prompt, model, mode }) : ['-p', body.prompt]
+    let args
+    try { args = runnerMod?.startArgs ? runnerMod.startArgs({ prompt: body.prompt, model, mode }) : [`--prompt=${body.prompt}`] } catch (e) { throw bad(e.message) }
     // body.env is never forwarded (security review). Only the handoff id the engine sets is kept, as a field.
     const hid = typeof body.env?.AGENTVILLE_HANDOFF_ID === 'string' && /^[0-9a-f]{16}$/.test(body.env.AGENTVILLE_HANDOFF_ID) ? body.env.AGENTVILLE_HANDOFF_ID : null
     return stamp({ kind: 'start', args, cwd: project.dir, name, project: project.name, prompt: body.prompt, model, mode,
@@ -243,7 +249,8 @@ export default {
     if (!runId) throw bad('Only Gemini agents started from Agentville can be resumed here', 409)
     const text = String(prompt || 'continue')
     const sid = privateOf.get(agent.id)?.sessionId
-    const args = runnerMod?.startArgs ? runnerMod.startArgs({ prompt: text, resume: sid || runId }) : ['-r', runId, '-p', text]
+    let args
+    try { args = runnerMod?.startArgs ? runnerMod.startArgs({ prompt: text, resume: sid || undefined }) : [`--prompt=${text}`] } catch (e) { throw bad(e.message) }
     return stamp({ kind: 'resume', args, cwd: agent.cwd || '', id: agent.id, name: agent.name, runId, prompt: text })
   },
   stopPlan(agent) {
@@ -260,16 +267,14 @@ export default {
     try {
       const r = await getRunner()
       if (plan.kind === 'start') {
-        let env = null
-        if (HAS_ACCOUNTS) env = await accountsPart().envFor() // null: no saved account, the CLI's own home
-        const port = /^[0-9]{1,5}$/.test(plan.env?.AGENTVILLE_PORT || '') ? plan.env.AGENTVILLE_PORT : null
-        const extra = env || port ? { ...env, ...(port && { AGENTVILLE_PORT: port }) } : null
-        const rr = extra ? await getRunner(extra) : r
-        const st = rr.start({ home: env?.GEMINI_CLI_HOME || undefined, cwd: plan.cwd, prompt: plan.prompt, model: plan.model || undefined, mode: plan.mode || undefined, name: plan.name,
+        const env = await accountEnv()
+        // Never allowYolo: MODES has no yolo, and agent starts must not get it (security review).
+        const st = r.start({ home: env?.GEMINI_CLI_HOME || undefined, accountEnv: env || undefined, cwd: plan.cwd, prompt: plan.prompt,
+          model: plan.model || undefined, mode: plan.mode || undefined, name: plan.name,
           parentAgentId: plan.parentAgentId || null, handoffId: plan.handoffId || null })
         return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } }
       }
-      if (plan.kind === 'resume') { const st = r.resume(plan.runId, plan.prompt); return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } } }
+      if (plan.kind === 'resume') { const env = await accountEnv(); const st = r.resume(plan.runId, plan.prompt, { accountEnv: env || undefined }); return { ok: true, id: st.agentId, ref: { runId: st.runId, sessionId: st.sessionId } } }
       if (plan.kind === 'stop') { await r.stop(plan.runId); return { ok: true, ref: { runId: plan.runId } } }
       return { ok: false, error: `Unknown plan kind ${plan.kind}` }
     } catch (e) { return { ok: false, error: String(e?.message || e) } }

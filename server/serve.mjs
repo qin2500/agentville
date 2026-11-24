@@ -1244,6 +1244,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     pFirst.unref(); pEvery.unref()
     server.on('close', () => { clearTimeout(pFirst); clearInterval(pEvery) })
   }
+  // Adapters that start processes inject AGENTVILLE_PORT; the port is known once listening.
+  server.on('listening', () => { for (const p of providers()) { try { if (p.id !== 'claude') p.configure({ port: server.address()?.port }) } catch (e) { logSafely(e) } } })
   updater.start().catch(() => {})
   server.on('close', () => updater.stop())
   prPoll.start(30_000) // after the first scans have filled in the PRs; no-op when the interval is 0 (the default under test)
