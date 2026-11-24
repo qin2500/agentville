@@ -44,6 +44,10 @@ const REPO = repoAt < 0 ? ROOT : path.resolve(args[repoAt + 1] || '')
 if (!fs.existsSync(path.join(REPO, 'server', 'cli.mjs'))) { console.error(`${REPO} isn't a checkout (no server/cli.mjs).`); process.exit(1) }
 const installDir = installAt < 0 ? null : (args[installAt + 1] && !args[installAt + 1].startsWith('--') ? path.resolve(args[installAt + 1]) : windows ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', NAME) : path.join(os.homedir(), 'Applications'))
 
+// Build the page now, so the app's first start doesn't sit on "Starting…" while the server builds it.
+console.log('Building the web app…')
+execFileSync(windows ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: REPO, stdio: 'inherit', shell: windows })
+
 fs.rmSync(BUILD, { recursive: true, force: true })
 fs.mkdirSync(BUILD, { recursive: true })
 // The checkout this app runs, read verbatim by main.cjs (a plain file: any character is safe).
