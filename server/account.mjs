@@ -114,6 +114,9 @@ export function withModel(flags, saved) {
 }
 
 /** A registry entry for job `short` (or its sessions) written after `since` whose process is alive. */
+// Windows file times can trail Date.now() by ~15 ms; allow a little slack so a just-written file counts.
+const MTIME_SLACK_MS = 50
+
 export async function liveSince(home, short, state, since) {
   const ids = new Set([state.sessionId, state.resumeSessionId].filter(Boolean))
   const dir = path.join(home, 'sessions')
@@ -121,7 +124,7 @@ export async function liveSince(home, short, state, since) {
     if (!f.endsWith('.json')) continue
     const file = path.join(dir, f)
     const st = await fsp.stat(file).catch(() => null)
-    if (!st || st.mtimeMs < since) continue
+    if (!st || st.mtimeMs < since - MTIME_SLACK_MS) continue
     let s
     try { s = JSON.parse(await fsp.readFile(file, 'utf8')) } catch { continue }
     if (s.jobId !== short && !ids.has(s.sessionId)) continue
