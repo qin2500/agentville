@@ -24,6 +24,7 @@ import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { usageWindows } from './research.mjs'
 import { renameRetry } from './fsutil.mjs'
+import { createAccountRegistry } from './account-registry.mjs'
 import { windowsActionsOff } from './actions.mjs'
 
 export const KEYCHAIN_SERVICE = 'Claude Code-credentials'
@@ -295,7 +296,6 @@ const usageWindow = (w) => (w && typeof w.utilization === 'number'
  */
 export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onReading, store, fetch: fetchImpl }) {
   const dir = path.join(dataDir, 'accounts')
-  const metaFile = path.join(dataDir, 'accounts.json')
   const pendingFile = path.join(dir, 'pending-add.json')
   const usageCache = new Map() // id -> { at, value }: `at` = when last attempted (for the TTL)
   const usageReading = usageReader(onReading, { fetchImpl })
@@ -314,9 +314,8 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
     await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
     await fsp.chmod(dir, 0o700)
   }
-  async function loadMeta() {
-    try { const list = JSON.parse(await fsp.readFile(metaFile, 'utf8')); return Array.isArray(list) ? list.filter((a) => ID_RE.test(a?.id || '')) : [] } catch { return [] }
-  }
+  const registry = createAccountRegistry({ dataDir })
+  const loadMeta = () => registry.loadMeta('claude')
   /**
    * Saved accounts. On first sight each slot is migrated: older versions stored the whole live item
    * (including `mcpOAuth`), now only `claudeAiOauth` is kept. The file stays 0600.
@@ -337,10 +336,7 @@ export function createAccounts({ dataDir, claudeHome, exclusive, poolState, onRe
     }
     return list
   }
-  async function saveMeta(list) {
-    await fsp.mkdir(dataDir, { recursive: true })
-    await writeAtomic(metaFile, JSON.stringify(list, null, 2) + '\n', 0o600)
-  }
+  const saveMeta = (list) => registry.saveMeta('claude', list)
   const readSlot = (id) => (ID_RE.test(id) ? fsp.readFile(slotFile(id), 'utf8').catch(() => null) : Promise.resolve(null))
   /** Write a slot (call under slotLock): the login only, never any other key of the live item. */
   async function writeSlot(id, oauth) {
