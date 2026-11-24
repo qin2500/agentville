@@ -23,7 +23,7 @@ test('default provider moves to front and persists', () => {
   s.set({ defaultProvider: 'gemini' })
   assert.deepEqual(s.order(), ['gemini', 'claude'])
   assert.equal(createProviderSettings({ dataDir: dir }).defaultProvider(), 'gemini')
-  assert.equal(fs.statSync(path.join(dir, 'providers.json')).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'providers.json')).mode & 0o777, 0o600)
 })
 
 test('order is deduped and default-first', () => {

@@ -29,7 +29,7 @@ test('first save migrates with one backup, and keeps the other provider', async 
   await r.saveMeta('claude', [])
   assert.equal(fs.readFileSync(f + '.pre-providers', 'utf8'), orig) // not overwritten
   assert.deepEqual((await r.loadMeta('gemini')).map((a) => a.id), ['gemini-cccccccc'])
-  assert.equal((fs.statSync(f).mode & 0o777).toString(8), '600')
+  if (process.platform !== 'win32') assert.equal((fs.statSync(f).mode & 0o777).toString(8), '600')
 })
 
 test('concurrent writers of different providers do not drop rows', async () => {

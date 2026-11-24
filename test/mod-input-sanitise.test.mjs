@@ -63,7 +63,7 @@ test('§3.1 allowed fields: names (agent, project) pass; agent shape is exactly 
   const a = byName(r, ids, 'solo');
   assert.equal(a.name, 'Name solo'.replace('solo', 'solo'));
   assert.equal(a.project, 'alpha');
-  assert.deepEqual(Object.keys(a).sort(), ['crown', 'harness', 'id', 'important', 'lastActive', 'name', 'needs', 'parent', 'project', 'prs', 'role', 'since', 'status', 'stopped'].sort());
+  assert.deepEqual(Object.keys(a).sort(), ['crown', 'harness', 'id', 'important', 'lastActive', 'name', 'needs', 'parent', 'project', 'provider', 'prs', 'role', 'since', 'status', 'stopped'].sort());
   assert.ok(['claude', 'codex', 'other'].includes(a.harness));
   assert.equal(typeof a.since, 'number');
   assert.equal(typeof a.lastActive, 'number');
