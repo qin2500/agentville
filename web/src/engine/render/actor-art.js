@@ -38,6 +38,18 @@ export const FOLK_KEY = 'va.engine2.folk';
 export const SEEN_MAX = 3000;
 const LOOK_CACHE_MAX = 4096;
 
+const MARK_W = 7, MARK_H = 7;
+const MARK = [   // 7x7 four-point sparkle: 1 body, 2 bright core
+  '...1...', '...1...', '..111..', '1112111', '..111..', '...1...', '...1...'];
+/** Draws the sparkle with its top-left at (x, y): ink outline, violet body, pale core. */
+export function drawSparkle(g, x, y) {
+  const cells = [];
+  MARK.forEach((row, j) => [...row].forEach((ch, i) => { if (ch !== '.') cells.push([i, j, ch]); }));
+  g.fillStyle = '#140f1c';
+  for (const [i, j] of cells) for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) g.fillRect(x + i + dx, y + j + dy, 1, 1);
+  for (const [i, j, ch] of cells) { g.fillStyle = ch === '2' ? '#f1e8ff' : '#9b7bff'; g.fillRect(x + i, y + j, 1, 1); }
+}
+
 /** A fallback table with every field present (lists copied, names as strings). */
 export function normaliseFallback(fb) {
   const list = v => (Array.isArray(v) ? v.filter(x => typeof x === 'string' && x) : []);
@@ -263,6 +275,10 @@ export function createActorArt({ mod, styleOf = null, store = localStore, folk, 
   /** The key of the frame frame(a, { selected }) returns (equal keys: the same pixels), without making it; null when
    *  frame() would return null. */
   function frameKey(a, { selected = false } = {}) {
+    const k = plainKey(a, selected);
+    return k != null && isGemini(a) ? 'g|' + k : k;
+  }
+  function plainKey(a, selected) {
     if (!a) return null;
     if (doll && !broken) {
       const look = lookFor(a);
@@ -275,7 +291,33 @@ export function createActorArt({ mod, styleOf = null, store = localStore, folk, 
     return `s|${look}|${col}|${row}|${flip ? 1 : 0}|${selected ? 1 : 0}`;
   }
 
+  // Provider marker: a generic violet four-point sparkle above the head of a Gemini agent (not a logo). It is part of the
+  // frame (and its key), so it shows at every zoom; the base frame gets extra headroom for it.
+  const marked = new Map();   // base frame key -> marked frame
+  function isGemini(a) { return a?.kind === 'agent' && a.input?.provider === 'gemini'; }
+  function withMarker(f, key) {
+    if (!f) return f;
+    const mk = `${key}`;
+    let m = marked.get(mk);
+    if (m && m.base === f.img) return m.out;
+    const E = MARK_H + 2, w = f.w ?? f.img.width, h = f.h ?? f.img.height;
+    const c = createCanvas(w, h + E), g = c.getContext('2d', READ);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(f.img, 0, E);
+    const top = (f.head?.y ?? Math.round(2 * SCALE)) + E;
+    drawSparkle(g, Math.round(f.pivot.x) - (MARK_W >> 1), Math.max(0, top - MARK_H - 1));
+    const out = Object.freeze({ img: c, pivot: Object.freeze({ x: f.pivot.x, y: f.pivot.y + E }), head: f.head ? Object.freeze({ x: f.head.x, y: Math.max(0, top - MARK_H - 1) }) : undefined, w, h: h + E });
+    marked.set(mk, { base: f.img, out });
+    if (marked.size > LOOK_CACHE_MAX) marked.delete(marked.keys().next().value);
+    return out;
+  }
+
   function frame(a, { selected = false } = {}) {
+    const f = plainFrame(a, selected);
+    return f && isGemini(a) ? withMarker(f, plainKey(a, selected)) : f;
+  }
+
+  function plainFrame(a, selected) {
     if (!a) return null;
     if (doll && !broken) {
       const look = lookFor(a);
