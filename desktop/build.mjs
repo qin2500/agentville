@@ -46,7 +46,8 @@ const installDir = installAt < 0 ? null : (args[installAt + 1] && !args[installA
 
 // Build the page now, so the app's first start doesn't sit on "Starting…" while the server builds it.
 console.log('Building the web app…')
-execFileSync(windows ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: REPO, stdio: 'inherit', shell: windows })
+execFileSync(process.execPath, [path.join('tools', 'mods-index.mjs')], { cwd: REPO, stdio: 'inherit' })
+execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', 'web'], { cwd: REPO, stdio: 'inherit' })
 
 fs.rmSync(BUILD, { recursive: true, force: true })
 fs.mkdirSync(BUILD, { recursive: true })

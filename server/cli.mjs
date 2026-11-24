@@ -42,9 +42,11 @@ const built = fs.statSync(path.join(WEB, 'dist', 'index.html'), { throwIfNoEntry
 const hasSources = fs.existsSync(path.join(WEB, 'index.html'))
 if (!built || (hasSources && newestSource() > built)) {
   console.log(built ? 'Web sources changed; rebuilding…' : 'Building the web app (first run)…')
-  const npm = execTarget(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'])
-  const r = spawnSync(npm.file, npm.args, { cwd: ROOT, stdio: 'inherit', ...npm.opts })
-  if (r.status !== 0) console.error('Build failed; serving the API only. Run `npm install && npm run build` to see the village.')
+  // Run the build's two steps with this Node directly (no npm, no cmd.exe on Windows).
+  const step = (args) => spawnSync(process.execPath, args, { cwd: ROOT, stdio: 'inherit', windowsHide: true }).status
+  const vite = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js')
+  const ok = step([path.join('tools', 'mods-index.mjs')]) === 0 && fs.existsSync(vite) && step([vite, 'build', 'web']) === 0
+  if (!ok) console.error('Build failed; serving the API only. Run `npm install && npm run build` to see the village.')
 }
 // A local dashboard should outlive one bad request or a full disk: log and keep serving.
 // (Writing the log can itself fail when the disk is full, so the logging can't throw either.)

@@ -2,6 +2,7 @@
  * Small OS-portability helpers shared by the server. Every function takes an optional
  * `{ platform, env, home }` so tests can simulate Windows on any host.
  */
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -43,6 +44,13 @@ function cmdQuote(arg) {
  */
 export function execTarget(bin, args = [], { platform = process.platform, env = process.env } = {}) {
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(bin)) {
+    // A bare name must become a full path: cmd.exe gives a quoted batch file found on PATH the wrong
+    // %~dp0 (the current folder), so npm.cmd then can't find npm-cli.js (MODULE_NOT_FOUND).
+    if (!/[\\/]/.test(bin)) {
+      const dirs = String(env.PATH ?? env.Path ?? '').split(';').filter(Boolean)
+      const hit = dirs.map((d) => path.win32.join(d, bin)).find((f) => { try { return fs.statSync(f).isFile() } catch { return false } })
+      if (hit) bin = hit
+    }
     const line = [bin, ...args].map(cmdQuote).join(' ')
     if ((line.match(/%/g) || []).length > 1) throw new Error('Argument contains a % sequence cmd.exe would expand')
     return { file: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], opts: { windowsVerbatimArguments: true } }
