@@ -42,23 +42,26 @@ export function shouldPause({ blocked, now = Date.now() } = {}) {
 }
 
 /** Why `a` is not an agent to pause or resume ('' = it is). */
-function problem(a, selfId) {
+/** The provider an agent belongs to: its `provider` field, else derived from its harness (claude-code when unset). */
+const providerOf = (a) => a.provider || (a.harness === 'gemini-cli' ? 'gemini' : a.harness === 'codex' ? 'codex' : 'claude')
+
+function problem(a, selfId, provider = 'claude') {
   if (!a || typeof a.id !== 'string' || !a.id) return 'unknown'
   if (a.hidden) return 'hidden'
   if (a.role === 'sub' || SUB_KINDS.has(a.kind) || a.id.includes(':sub:')) return 'sub-agent'
   if (a.self || (selfId && a.id === selfId)) return 'self'
-  if (a.harness && a.harness !== 'claude-code') return 'not Claude Code'
+  if (provider === 'claude' ? (a.harness && a.harness !== 'claude-code') || providerOf(a) !== 'claude' : providerOf(a) !== provider) return provider === 'claude' ? 'not Claude Code' : 'other provider'
   if (!a.live) return 'not running'
   if (a.bucket === 'resting' || a.bucket === 'done' || a.done) return 'resting'
   return ''
 }
 
 /** Top-level live agents to tell to pause: `[{ id, name }]`. Pure. */
-export function pauseTargets(agents, selfId = null) {
+export function pauseTargets(agents, selfId = null, provider = 'claude') {
   const seen = new Set()
   const out = []
   for (const a of agents || []) {
-    if (problem(a, selfId) || seen.has(a.id)) continue
+    if (problem(a, selfId, provider) || seen.has(a.id)) continue
     seen.add(a.id)
     out.push({ id: a.id, name: typeof a.name === 'string' ? a.name : '' })
   }
@@ -70,7 +73,7 @@ export function pauseTargets(agents, selfId = null) {
  * ones that are gone, hidden, no longer live, or otherwise not messageable now (resting ones are included:
  * a paused agent usually looks idle). Pure.
  */
-export function resumeTargets(record, agents, selfId = null) {
+export function resumeTargets(record, agents, selfId = null, provider = 'claude') {
   const byId = new Map((agents || []).filter((a) => a && a.id).map((a) => [a.id, a]))
   const done = new Set((record?.resumed || []).map((r) => r.id))
   const out = []
@@ -78,7 +81,7 @@ export function resumeTargets(record, agents, selfId = null) {
     if (!r?.id || done.has(r.id)) continue
     const a = byId.get(r.id)
     if (!a) continue
-    const why = problem(a, selfId)
+    const why = problem(a, selfId, provider)
     if (why && why !== 'resting') continue
     done.add(r.id)
     out.push({ id: r.id, name: r.name || a.name || '' })
@@ -94,9 +97,10 @@ const fresh = () => ({ state: 'running', since: null, until: null, reason: null,
  * active account has room; `log(entry)`: one fleet-log line (object, ids and statuses only); `selfId`:
  * Agentville's own agent id; `sleep(ms)`: for the resume stagger (tests pass a fake).
  */
-export function createUsagePause({ dataDir, agents, blocked, deliverTo, canRequest, log = () => {}, now = Date.now, selfId = null,
+export function createUsagePause({ dataDir, provider = 'claude', file: fileName = 'usage-pause.json', text = {}, agents, blocked, deliverTo, canRequest, log = () => {}, now = Date.now, selfId = null,
   staggerMs = STAGGER_MS, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-  const file = path.join(dataDir, 'usage-pause.json')
+  const file = path.join(dataDir, fileName)
+  const pauseText = text.pause ?? PAUSE_TEXT, resumeText = text.resume ?? RESUME_TEXT
   let state = loadSync()
   let running = null
 
@@ -120,7 +124,7 @@ export function createUsagePause({ dataDir, agents, blocked, deliverTo, canReque
     await fsp.mkdir(dataDir, { recursive: true })
     await writeAtomic(file, JSON.stringify(state) + '\n', 0o600)
   }
-  const safeLog = (entry) => { try { Promise.resolve(log(entry)).catch(() => {}) } catch { /* never let logging break a tick */ } }
+  const safeLog = (entry) => { try { Promise.resolve(log(provider === 'claude' ? entry : { ...entry, provider })).catch(() => {}) } catch { /* never let logging break a tick */ } }
   async function send(id, text) {
     try { return Boolean(await deliverTo(id, text)) } catch { return false }
   }
@@ -134,7 +138,7 @@ export function createUsagePause({ dataDir, agents, blocked, deliverTo, canReque
     for (const t of targets) {
       state.agents.push(t)
       await save()
-      results.push({ id: t.id, status: (await send(t.id, PAUSE_TEXT)) ? 'sent' : 'failed' })
+      results.push({ id: t.id, status: (await send(t.id, pauseText)) ? 'sent' : 'failed' })
     }
     return results
   }
@@ -142,14 +146,14 @@ export function createUsagePause({ dataDir, agents, blocked, deliverTo, canReque
   async function enter(b, t) {
     Object.assign(state, fresh(), { state: 'paused', since: t, until: Number(b.until) || null, reason: String(b.why) })
     await save()
-    const results = await tellPause(pauseTargets(await list(), selfId))
+    const results = await tellPause(pauseTargets(await list(), selfId, provider))
     safeLog({ at: t, action: 'usage-pause', source: 'usage-pause', why: state.reason, until: state.until, results })
   }
 
   /** Agents that came up during the pause: told once too (never the ones already recorded). */
   async function joiners(t) {
     const known = new Set(state.agents.map((a) => a.id))
-    const extra = pauseTargets(await list(), selfId).filter((a) => !known.has(a.id))
+    const extra = pauseTargets(await list(), selfId, provider).filter((a) => !known.has(a.id))
     if (!extra.length) return
     const results = await tellPause(extra)
     safeLog({ at: t, action: 'usage-pause', source: 'usage-pause', joined: true, results })
@@ -157,7 +161,7 @@ export function createUsagePause({ dataDir, agents, blocked, deliverTo, canReque
 
   async function resume() {
     const current = await list()
-    const targets = resumeTargets(state, current, selfId)
+    const targets = resumeTargets(state, current, selfId, provider)
     const results = []
     for (let i = 0; i < targets.length; i++) {
       if (i && staggerMs > 0) await sleep(staggerMs)
@@ -165,7 +169,7 @@ export function createUsagePause({ dataDir, agents, blocked, deliverTo, canReque
       const entry = { id: targets[i].id, status: 'sending' }
       state.resumed.push(entry)
       await save()
-      entry.status = (await send(entry.id, RESUME_TEXT)) ? 'sent' : 'failed'
+      entry.status = (await send(entry.id, resumeText)) ? 'sent' : 'failed'
       await save()
       results.push({ ...entry })
     }

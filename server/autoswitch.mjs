@@ -171,7 +171,8 @@ export function extrapolate(u, { ageMs = 0, perHour = 0, ratio = 0 } = {}) {
  * attempt before this time (backoff after a failed switch). `lowPriority`: Set of low-priority account ids; a
  * switch to one (or a rebalance off one) also carries `note`, a short plain-words reason.
  */
-export function decide({ enabled, active, saved, activeUsage, usage, limitHit, busy, lastAutoAt, poolAvailable, now, onWork = false, quarantine = new Set(), prefer = false, rebalance = false, projectedMs = null, manual = false, retryAt = 0, lowPriority = new Set() }) {
+export function decide({ enabled, active, saved, activeUsage, usage, limitHit, busy, lastAutoAt, poolAvailable, now, onWork = false, quarantine = new Set(), prefer = false, rebalance = false, projectedMs = null, manual = false, retryAt = 0, lowPriority = new Set(), tuning = {} }) {
+  const T = { SWITCH_AT, OUT_AT, SOON_WEEK_MS, WAIT_RESET_MS, TARGET_MIN_ROOM, ...tuning } // a provider's overrides; Claude passes none
   if (active === 'pool') return { action: 'none', why: 'on the pool' }
   if (!saved.includes(active)) return { action: 'none', why: 'not a saved account' }
   const banned = onWork && quarantine.has(active)
@@ -179,27 +180,27 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
   if (busy) return { action: 'none', why: 'a switch is running' }
   if (retryAt && now < retryAt) return { action: 'none', why: 'backoff' } // after a failed attempt, on every path
   // Really out: the only thing that moves us off an account picked by hand.
-  const hard = hardOut(activeUsage, limitHit)
+  const hard = hardOut(activeUsage, limitHit, T)
   // The cooldown stops back-and-forth on soft reasons. Really out, staying only stalls the fleet: it
   // doesn't hold (2026-11-15 00:26: every lead sat on the weekly limit 2 min until the cooldown ended).
   if (!banned && !hard && lastAutoAt && now - lastAutoAt < COOLDOWN_MS) return { action: 'none', why: 'cooldown' }
   const five = activeUsage?.fiveHour?.used, week = activeUsage?.weekly?.used
-  const soft = manual ? '' : five >= SWITCH_AT ? 'five_hour' : week >= SWITCH_AT ? 'weekly' : projectedMs != null && projectedMs <= PROJECT_WITHIN_MS ? 'projected' : ''
+  const soft = manual ? '' : five >= T.SWITCH_AT ? 'five_hour' : week >= T.SWITCH_AT ? 'weekly' : projectedMs != null && projectedMs <= PROJECT_WITHIN_MS ? 'projected' : ''
   const out = hard || soft
   const why = banned ? 'quarantine' : out || (prefer && !onWork && !quarantine.has(active) ? 'prefer' : '') || (rebalance && !manual ? 'rebalance' : '')
   if (!why) return { action: 'none', why: 'not out' }
   // Only the 5-hour window is the problem and it resets very soon: agents can wait, so stay.
-  if (out && !banned && !(week >= SWITCH_AT)) {
+  if (out && !banned && !(week >= T.SWITCH_AT)) {
     const resets = activeUsage?.fiveHour?.resetsAt
-    if (resets != null && resets - now <= WAIT_RESET_MS) return { action: 'none', why: 'waiting for the 5-hour reset', waitUntil: resets }
+    if (resets != null && resets - now <= T.WAIT_RESET_MS) return { action: 'none', why: 'waiting for the 5-hour reset', waitUntil: resets }
   }
-  const ok = (u) => u && !u.error && u.fiveHour && u.weekly && (u.fiveHour.none || 100 - u.fiveHour.used >= TARGET_MIN_ROOM) && 100 - u.weekly.used >= TARGET_MIN_ROOM
+  const ok = (u) => u && !u.error && u.fiveHour && u.weekly && (u.fiveHour.none || 100 - u.fiveHour.used >= T.TARGET_MIN_ROOM) && 100 - u.weekly.used >= T.TARGET_MIN_ROOM
   // Off the work Wi-Fi quarantine accounts rank first; on it they aren't candidates at all.
   // Then, among accounts whose week resets within SOON_WEEK_MS, the soonest weekly reset (use it before it
   // expires), then the 5-hour reset; any other account ranks after those, by most weekly room.
   const rank = (id) => (onWork ? 0 : quarantine.has(id) ? 0 : 1)
   const at = (id, k) => usage.get(id)[k].resetsAt ?? Infinity
-  const soon = (id) => at(id, 'weekly') - now <= SOON_WEEK_MS
+  const soon = (id) => at(id, 'weekly') - now <= T.SOON_WEEK_MS
   const week_ = (a, b) => { const d = at(a, 'weekly') - at(b, 'weekly'); return Math.abs(d) < 3600e3 ? 0 : d } // within the hour: a tie
   const order = (a, b) => rank(a) - rank(b) || (soon(a) ? 0 : 1) - (soon(b) ? 0 : 1)
     || (soon(a) ? week_(a, b) : usage.get(a).weekly.used - usage.get(b).weekly.used) || at(a, 'fiveHour') - at(b, 'fiveHour')
@@ -254,9 +255,10 @@ export function decide({ enabled, active, saved, activeUsage, usage, limitHit, b
 }
 
 /** Really out: either window at OUT_AT, or the harness said "You've hit your … limit". -> the reason, or ''. */
-export function hardOut(activeUsage, limitHit) {
+export function hardOut(activeUsage, limitHit, tuning = {}) {
+  const OUT = tuning.OUT_AT ?? OUT_AT
   const five = activeUsage?.fiveHour?.used, week = activeUsage?.weekly?.used
-  return five >= OUT_AT ? 'five_hour' : week >= OUT_AT ? 'weekly' : limitHit ? 'limit' : ''
+  return five >= OUT ? 'five_hour' : week >= OUT ? 'weekly' : limitHit ? 'limit' : ''
 }
 
 /** Not out itself: a known reading with FALLBACK_MIN_ROOM % of the week and FALLBACK_MIN_FIVE_ROOM % of the 5-hour window (or no 5-hour limit). */
@@ -289,8 +291,10 @@ export function blockedUntil({ active, activeUsage, saved, usage, now, onWork = 
  * `account`: createAccount(); `agents()`: the current scan's agents; `nudge(ids)`: send "continue" to those jobs (serve.mjs);
  * `holding()`: true while the fleet is paused for usage (usage-pause.mjs): no "continue" nudge and no stale-login respawn then.
  */
-export function createSampler({ dataDir, account, agents, network, nudge = null, holding = () => false, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-  const file = path.join(dataDir, 'autoswitch.json')
+export function createSampler({ dataDir, provider = 'claude', file: fileName = 'autoswitch.json', tuning = {}, account, agents, network, nudge = null, holding = () => false, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  const file = path.join(dataDir, fileName)
+  const T = { SWITCH_AT, ...tuning }
+  const decideT = (o) => decide({ ...o, tuning })
   const samples = new Map() // account id ('personal' when unknown) -> [{ at, five, week }]
   let state = null // { enabled, lastAutoAt, last }
   let latest = null // the latest reading { id, saved, at, fiveHour, weekly, error? }
@@ -319,7 +323,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
   async function lastChange() {
     const log = await fsp.readFile(path.join(dataDir, 'account-log.jsonl'), 'utf8').catch(() => '')
     for (const line of log.trim().split('\n').reverse()) {
-      try { const e = JSON.parse(line); if (e.action === 'undo' || (e.action === 'switch' && !e.restored)) return { at: e.at, auto: e.action === 'switch' && e.auto === true, viaPool: e.from === 'pool' || e.to === 'pool' } } catch { /* skip */ }
+      try { const e = JSON.parse(line); if ((e.provider || 'claude') !== provider) continue; if (e.action === 'undo' || (e.action === 'switch' && !e.restored)) return { at: e.at, auto: e.action === 'switch' && e.auto === true, viaPool: e.from === 'pool' || e.to === 'pool' } } catch { /* skip */ }
     }
     return null
   }
@@ -358,7 +362,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
       state.stuck = { why: d.blocked.why, until: d.blocked.until, at: was?.at ?? now() }
       await save()
       if (!was) { // one line per episode: no ids beyond the account's, no emails, nothing secret
-        const line = { at: now(), action: 'autoswitch_blocked', why: d.blocked.why, until: d.blocked.until, account: d.blocked.account ?? null, accounts: d.blocked.accounts }
+        const line = { at: now(), ...(provider !== 'claude' && { provider }), action: 'autoswitch_blocked', why: d.blocked.why, until: d.blocked.until, account: d.blocked.account ?? null, accounts: d.blocked.accounts }
         await fsp.mkdir(dataDir, { recursive: true })
         await fsp.appendFile(path.join(dataDir, 'account-log.jsonl'), JSON.stringify(line) + '\n', { mode: 0o600 }).catch(() => {})
       }
@@ -451,7 +455,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     // has expired, each such job gets one "continue" for this switch; a job that stops on the limit again
     // after that is restarted at its next turn boundary (respawnStale), and nudged once it has been.
     if (limitAgents.length && change && !change.viaPool && at - since <= STALE_LOGIN_MS && !isHolding()
-      && !(eff.fiveHour?.used >= SWITCH_AT) && !(eff.weekly?.used >= SWITCH_AT)) {
+      && !(eff.fiveHour?.used >= T.SWITCH_AT) && !(eff.weekly?.used >= T.SWITCH_AT)) {
       if (at - since >= CRED_CACHE_MS) await staleLogin(limitAgents, since, at, u.id)
       limitAgents = []
     }
@@ -464,7 +468,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
       onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)), lowPriority: lowOf(list), projectedMs, manual, retryAt: state.retryAt || 0 }
     const info = { active: { id: u.id, fiveHour: eff.fiveHour?.used ?? null, weekly: eff.weekly?.used ?? null, ageMs }, limitHit: limitIds, model }
     // Not out, or a guard says no: nothing else to check.
-    const pre = decide({ ...base, usage: new Map() })
+    const pre = decideT({ ...base, usage: new Map() })
     if (pre.waitUntil && state.waitUntil !== pre.waitUntil) { state.waitUntil = pre.waitUntil; state.waitSetAt = at; await save() }
     // With no usage known, an out account lands on NO_TARGET_WHY ("out, check the others"); any other "none" is a guard.
     if (pre.action === 'none' && pre.why !== NO_TARGET_WHY) {
@@ -473,15 +477,15 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
       if (manual) return pre
       state.lastRebalanceCheck = at // a fresh read of the others, at most every 15 min
       const all = await account.accounts.usage({ fresh: true })
-      const d = decide({ ...base, usage: new Map(all.accounts.map((x) => [x.id, fresh(x, at)])), busy: account.isBusy(), rebalance: true })
+      const d = decideT({ ...base, usage: new Map(all.accounts.map((x) => [x.id, fresh(x, at)])), busy: account.isBusy(), rebalance: true })
       return d.action === 'switch' ? autoSwitch(d, u.id, at, info, all) : d
     }
     // Out: check every saved account now (this may refresh inactive ones; never the active one).
     const all = await account.accounts.usage({ fresh: true })
     const usage = new Map(all.accounts.map((x) => [x.id, fresh(x, at)]))
-    const d = decide({ ...base, usage, busy: account.isBusy() })
+    const d = decideT({ ...base, usage, busy: account.isBusy() })
     if (d.waitUntil && state.waitUntil !== d.waitUntil) { state.waitUntil = d.waitUntil; state.waitSetAt = at; await save() }
-    if (d.why === NO_TARGET_WHY && hardOut(eff, base.limitHit)) { // really out, and every other account is too: say so
+    if (d.why === NO_TARGET_WHY && hardOut(eff, base.limitHit, tuning)) { // really out, and every other account is too: say so
       return { ...d, blocked: { why: 'all accounts low', until: blockedUntil({ ...base, activeUsage: eff, usage }), account: u.id, accounts: saved.length } }
     }
     return d.action === 'switch' ? autoSwitch(d, u.id, at, info, all) : d
@@ -546,7 +550,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     if (state.tooBig) return { action: 'none', why: 'login entry too big' }
     const all = await account.accounts.usage()
     const at = now()
-    const d = decide({ enabled: state.enabled, active, saved: list.map((a) => a.id), activeUsage: null, usage: new Map(all.accounts.map((x) => [x.id, x])), limitHit: false,
+    const d = decideT({ enabled: state.enabled, active, saved: list.map((a) => a.id), activeUsage: null, usage: new Map(all.accounts.map((x) => [x.id, x])), limitHit: false,
       busy: account.isBusy(), lastAutoAt: state.lastAutoAt, retryAt: state.retryAt || 0, poolAvailable: false, now: at, onWork: st.current.work, quarantine, lowPriority: lowOf(list), prefer: true })
     const mine = all.accounts.find((x) => x.id === active)
     return d.action === 'switch' ? autoSwitch(d, active, at, { active: { id: active, fiveHour: mine?.fiveHour?.used ?? null, weekly: mine?.weekly?.used ?? null, ageMs: null }, limitHit: [] }, all) : d
@@ -580,7 +584,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
     if (!state.enabled || !latest?.saved || !account.accounts.cachedUsage) return null
     const list = await account.accounts.load()
     const net = network ? (await network.status()).current : { work: false }
-    const d = decide({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, manual: false, usage: new Map([...account.accounts.cachedUsage()].map(([id, x]) => [id, fresh(x, now())])),
+    const d = decideT({ enabled: true, active: latest.id, saved: list.map((a) => a.id), activeUsage: { fiveHour: { used: 100 } }, manual: false, usage: new Map([...account.accounts.cachedUsage()].map(([id, x]) => [id, fresh(x, now())])),
       limitHit: false, busy: false, lastAutoAt: null, poolAvailable: false, now: now(), onWork: net.work, quarantine: new Set(list.filter((a) => a.quarantine).map((a) => a.id)), lowPriority: lowOf(list) })
     if (d.action !== 'switch') return null
     return { to: d.to, label: list.find((a) => a.id === d.to)?.label || 'another saved account', ...(d.note && { note: d.note }) }
@@ -588,7 +592,7 @@ export function createSampler({ dataDir, account, agents, network, nudge = null,
   async function info() {
     await load()
     const tb = state.tooBig
-    return { enabled: state.enabled, last: state.last || null, cooldownUntil: state.lastAutoAt ? state.lastAutoAt + COOLDOWN_MS : null,
+    return { provider, enabled: state.enabled, last: state.last || null, cooldownUntil: state.lastAutoAt ? state.lastAutoAt + COOLDOWN_MS : null,
       // too_big (the Keychain item is full) first; otherwise every account is out: { why, until (ms, or null when unknown) }.
       blocked: tb ? { reason: 'too_big', size: tb.size ?? headroom?.size ?? null, max: tb.max ?? headroom?.max ?? null }
         : state.stuck ? { why: state.stuck.why, until: state.stuck.until ?? null } : null,
