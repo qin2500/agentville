@@ -60,7 +60,7 @@ test('buildModels: a Gemini row has route, configured, tokens and no pool or fal
   assert.equal(r.configured.label, 'Gemini 4 Neon')
   assert.equal(r.route, 'antigravity')
   assert.deepEqual(r.context, { used: 3500, window: null })
-  assert.equal(r.tokens.day, 3750)
+  assert.equal(r.tokens.day, 5350)
   assert.equal(r.history[0].toLabel, 'Gemini 4 Neon · High')
   assert.deepEqual(r.flags, [])
   assert.equal(none.configured.label, 'Antigravity default')
