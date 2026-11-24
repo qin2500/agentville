@@ -10,7 +10,20 @@
  *   weekly:{used:number,resetsAt:number|null}|null, error?:string, stale?:boolean, asOf?:number }} Reading */
 
 export const PROVIDER_IDS = ['claude', 'gemini', 'codex'];
-export const USAGE_MODES = ['api', 'errors', 'none'];
+// 'estimate': the Gemini adapter synthesizes readings from limit hits (errors-only mode, §1.4).
+// Pure provider lookups live here (no imports) so modules on an adapter's import chain (classify.mjs,
+// usage-pause.mjs) can use them without a cycle through index.mjs's top-level await. index.mjs re-exports them.
+const HARNESS_TO_PROVIDER = { 'claude-code': 'claude', 'gemini-cli': 'gemini', codex: 'codex' };
+/** 'claude-code' -> 'claude', etc. Null for harnesses with no provider (opencode, cursor, ...). */
+export function providerOfHarness(h) { return HARNESS_TO_PROVIDER[h] || null; }
+/** The provider id of an agent: its `provider` field, else derived from `harness`. Null if neither maps. */
+export function providerOfAgent(a) {
+  if (!a) return null;
+  if (PROVIDER_IDS.includes(a.provider)) return a.provider;
+  return providerOfHarness(a.harness);
+}
+
+export const USAGE_MODES = ['api', 'errors', 'estimate', 'none'];
 
 const FUNCTIONS = ['home', 'available', 'bin', 'scan', 'configure', 'activity', 'options', 'startPlan',
   'resumePlan', 'stopPlan', 'display', 'run', 'isLimitText', 'limitModel', 'readTranscript'];
@@ -46,14 +59,21 @@ export function assertAdapter(a) {
     bad.push('sessionEnv must be string[]');
   }
   if (!isObj(a.tuning)) bad.push('tuning must be an object');
-  if (!isObj(a.credentials)) bad.push('credentials missing');
-  else for (const f of ['read', 'write', 'identify']) if (!isFn(a.credentials[f])) bad.push(`credentials.${f} must be a function`);
-  if (c && c.accounts === true) {
-    if (!isObj(a.accounts)) bad.push('accounts missing');
-    else for (const f of ACCOUNT_OPS) if (!isFn(a.accounts[f])) bad.push(`accounts.${f} must be a function`);
-  }
-  if (!isObj(a.switcher)) { if (c && c.accounts === true) bad.push('switcher missing'); }
-  else for (const f of SWITCH_OPS) if (!isFn(a.switcher[f])) bad.push(`switcher.${f} must be a function`);
+  const hasAccounts = !!(c && c.accounts === true);
+  // A lazy getter (Claude binds its account module in configure()) is checked by presence only: invoking it
+  // here would throw before configure() runs. A plain value is checked in full.
+  const lazy = (k) => typeof Object.getOwnPropertyDescriptor(a, k)?.get === 'function';
+  const opsOk = (k, ops, required) => {
+    if (lazy(k)) return;
+    const v = a[k];
+    if (v == null) { if (required) bad.push(`${k} missing`); return; }
+    if (!isObj(v)) { bad.push(`${k} must be an object`); return; }
+    for (const f of ops) if (!isFn(v[f])) bad.push(`${k}.${f} must be a function`);
+  };
+  // Without accounts (capabilities.accounts=false) credentials, accounts and switcher may be null.
+  opsOk('credentials', ['read', 'write', 'identify'], hasAccounts);
+  opsOk('accounts', ACCOUNT_OPS, hasAccounts);
+  opsOk('switcher', SWITCH_OPS, hasAccounts);
   if (bad.length) throw new Error(`adapter ${a && a.id}: ${bad.join('; ')}`);
   return a;
 }

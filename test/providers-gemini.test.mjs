@@ -4,8 +4,7 @@ import gemini from '../server/providers/gemini.mjs'
 import { assertAdapter } from '../server/providers/contract.mjs'
 
 test('gemini adapter conforms and degrades without its modules', async () => {
-  // contract.mjs USAGE_MODES does not list 'estimate' yet (P0 owns it); check the rest with usage swapped.
-  assertAdapter({ ...gemini, capabilities: { ...gemini.capabilities, usage: 'errors' } })
+  assertAdapter(gemini)
   assert.deepEqual(gemini.sessionEnv, ['GEMINI_SESSION_ID', 'AGENTVILLE_AGENT_ID'])
   assert.equal(gemini.capabilities.usage, 'estimate')
   const a = await gemini.available()

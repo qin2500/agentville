@@ -75,6 +75,7 @@ if (cmd === 'start') {
   for (const k of ['provider', 'cwd', 'name', 'model']) if (opts[k]) body[k] = opts[k]
   if (opts.mode) body.permissionMode = opts.mode
   if (!body.cwd) body.cwd = process.cwd()
+  if (process.env.AGENTVILLE_AGENT_TOKEN) body.token = process.env.AGENTVILLE_AGENT_TOKEN // per-launch token (launches.mjs TOKEN_ENV)
   call('POST', '/api/agents/start', body, (status, data) => {
     if (status === 200 && data.ok) {
       const id = data.id || (data.ref && data.ref.runId)

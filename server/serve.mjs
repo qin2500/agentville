@@ -46,6 +46,33 @@ import { createPlainTerms } from './plain-term.mjs'
 import { canRestartSelf, createUpdater, restartSelf } from './update.mjs'
 import * as claude from './claude-code.mjs'
 import * as codex from './codex.mjs'
+import { getProvider, providers, providerOfAgent } from './providers/index.mjs'
+import { createProviderSettings } from './provider-settings.mjs'
+import { createProviderSwitch, fallbackTarget } from './provider-switch.mjs'
+import { createLaunches, newToken, TOKEN_ENV } from './launches.mjs'
+import { parseAgentStart, checkAndRecord, rollback } from './agent-start.mjs'
+import { buildNote, notePrompt } from './handoff-note.mjs'
+import { readChanges } from './changes.mjs'
+import { createHandoffRefs } from './handoff-refs.mjs'
+
+// The handoff engine (P12) is optional: a build without server/handoff.mjs runs with handoffs off.
+const handoffMod = await import('./handoff.mjs').catch((e) => {
+  if (e?.code === 'ERR_MODULE_NOT_FOUND' && String(e.message).includes('handoff.mjs')) return null
+  throw e
+})
+const SCAN_LABEL = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' }
+const SUB_KIND = new Set(['subagent', 'teammate', 'thread'])
+/** A page or API body never sets env, lineage or handoff fields: only the server does (handoffs, agent starts). */
+const fromPage = (body) => {
+  if (!body || typeof body !== 'object') return body
+  const { env: _e, parentAgentId: _p, handoffId: _h, args: _a, bin: _b, home: _ho, account: _ac, accountEnv: _ae, ...rest } = body
+  return rest
+}
+/** Hard ceilings for agent starts, whatever providers.json says (security review). */
+export const AGENT_STARTS_MAX_PER_HOUR = 60
+export const AGENT_STARTS_MAX_DEPTH = 3
+/** Flip to true once server/gemini/runner.mjs start() takes `skipTrust` (then untrusted folders run without it). */
+const GEMINI_RUNNER_SKIP_TRUST = false
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.join(ROOT, 'web', 'dist')
@@ -143,14 +170,123 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const spend = createSpend({ dataDir, claudeHome: claude.home, codexHome: codex.home, research })
   const sampler = createSampler({ dataDir, account, network,
     // The scan's agents plus, privately, when each job's scheduler record last said the harness limit (claude-code.mjs).
-    agents: async () => (await snapshot()).agents.map((a) => ({ ...a, limitStopAt: limitStops.get(a.id)?.at || 0, limitText: limitStops.get(a.id)?.text || '' })),
-    nudge: (ids) => nudgeAgents(ids), holding: () => usagePause.holding() })
+    agents: async () => agentsOf('claude'),
+    // A stale-login nudge skips agents in a non-terminal handoff (§3.6).
+    nudge: (ids) => nudgeAgents(ids.filter((id) => !handoffs?.inFlight(id))), holding: () => usagePause.holding() })
+  // ---- providers (docs/providers-design.md §2, §3, §5) ----
+  const providerSettings = createProviderSettings({ dataDir }) // get() is synchronous
+  const launches = createLaunches({ dataDir })
+  const handoffRefs = createHandoffRefs({ dataDir })
+  let privateFacts = new Map() // server-private per agent: { limitStop, limitStopAt, handoffId, runId, sessionId, transcriptFile }
+  /** One provider's agents (API records plus the private limit/handoff fields the samplers and handoffs read). */
+  async function agentsOf(provider) {
+    return (await snapshot()).agents.filter((a) => !provider || providerOfAgent(a) === provider).map(withPrivate)
+  }
+  const withPrivate = (a) => {
+    const f = privateFacts.get(a.id) || {}
+    return { ...a, limitStopAt: limitStops.get(a.id)?.at || 0, limitText: limitStops.get(a.id)?.text || '',
+      ...(f.limitStop && !a.limitStop && { limitStop: f.limitStop }), ...(f.handoffId && { handoffId: f.handoffId }),
+      ...(f.runId && { runId: f.runId }), ...(f.sessionId && { sessionId: f.sessionId }), ...(f.transcriptFile && { transcriptFile: f.transcriptFile }) }
+  }
+  // Claude binds its account module here; the other adapters only need the data folder.
+  for (const p of providers()) {
+    try { p.configure(p.id === 'claude' ? { dataDir, account } : { dataDir }) } catch (e) { logSafely(e) }
+  }
+  // One sampler per provider with accounts (§3.1). Claude's is the existing one, under its old file name.
+  const samplers = { claude: sampler }
+  for (const p of providers()) {
+    if (p.id === 'claude' || !p.capabilities?.accounts) continue
+    try {
+      samplers[p.id] = createSampler({ dataDir, provider: p.id, file: `autoswitch-${p.id}.json`, tuning: p.tuning || {}, account: p.switcher, network,
+        agents: async () => agentsOf(p.id) })
+    } catch (e) { logSafely(e) }
+  }
+  const providerSwitch = createProviderSwitch({ settings: providerSettings, providers: () => providers(), samplers,
+    // Without accounts a provider is out when its agents stopped on the limit (§3.2). A Gemini run that stopped on
+    // its quota has exited, so a recent limit stop counts as live for this check.
+    agents: async (id) => (await agentsOf(id)).map((a) => (a.limitStop && !a.live ? { ...a, live: true } : a)),
+    onEpisode: (ev) => { logFleet({ at: Date.now(), action: 'provider-episode', type: ev.type, provider: ev.provider, episode: ev.episode?.id }) } })
+  const handoffs = handoffMod?.createHandoffs ? handoffMod.createHandoffs({
+    dataDir, getProvider: handoffRefs.wrap((id) => {
+      const a = getProvider(id)
+      if (!a) return a
+      const w = Object.create(a)
+      w.run = (plan, ...rest) => launchWithToken(withPort(plan), { via: 'handoff', provider: id, parentAgentId: plan?.parentAgentId || null }, (p) => a.run(p, ...rest))
+      return w
+    }), settings: providerSettings,
+    agents: () => agentsOf(null), providerState: () => providerSwitch.status(), buildNote, notePrompt, readChanges,
+    // The start wrapper above records (and binds) every handoff launch with its token; the engine's own
+    // record of the same ref is then a no-op. reparent and the reads go to the ledger as they are.
+    launches: Object.assign(Object.create(launches), { record: (x) => (x?.ref && launches.refOf(x.ref) ? null : launches.record(x)) }),
+    fallbackTarget, providerOfAgent, selfId: selfId(),
+    projects: async () => knownProjects((await snapshot()).agents),
+    log: (e) => logFleet({ ...e, source: 'handoff' }),
+  }) : null
+  /** Usable as a start target now (§3.3): starts + takes handoffs, available, not exhausted. */
+  async function providerStatusOf(id) {
+    const a = getProvider(id)
+    if (!a) return { usable: false, why: 'not installed' }
+    if (!a.capabilities?.start) return { usable: false, why: 'display only' }
+    let av
+    try { av = await a.available() } catch { av = { ok: false, why: 'check failed' } }
+    if (!av?.ok) return { usable: false, why: av?.why || 'not available' }
+    if (providerSwitch.exhausted(id)) return { usable: false, why: 'out on every account' }
+    return { usable: true, why: '' }
+  }
+  /** GET /api/providers' list (§5). */
+  async function providerList() {
+    const st = providerSwitch.status()
+    return Promise.all(providers().map(async (p) => {
+      let av
+      try { av = await p.available() } catch { av = { ok: false, why: 'check failed' } }
+      let activeAccount = null
+      if (p.capabilities?.accounts) {
+        try { const l = await p.accounts.list(); const a = (l?.accounts || []).find((x) => x.active); activeAccount = a ? { id: a.id, label: a.label } : null } catch { activeAccount = null }
+      }
+      return { id: p.id, label: p.label, available: Boolean(av?.ok), why: av?.why || '', capabilities: { ...p.capabilities },
+        activeAccount, exhausted: st[p.id]?.exhausted || null }
+    }))
+  }
+  /** The plan's adapter: `plan.provider`, Claude for plans from before providers. */
+  const adapterOf = (provider) => {
+    const a = getProvider(provider || 'claude')
+    if (!a) throw Object.assign(new Error(`Unknown provider ${provider}`), { status: 400 })
+    return a
+  }
+  /** Every agent Agentville starts gets AGENTVILLE_PORT (§5), so it can call back. */
+  const withPort = (plan) => {
+    const port = server.address()?.port
+    return plan?.kind === 'start' && port ? { ...plan, env: { ...plan.env, AGENTVILLE_PORT: String(port) } } : plan
+  }
+  /**
+   * UI and handoff starts get a per-launch token too, so their children can start agents (security review):
+   * a pending ledger record before the spawn, the token in the child's env, then bind to the real ref or roll back.
+   */
+  async function launchWithToken(plan, { via, provider, parentAgentId = null }, runFn) {
+    if (plan?.kind !== 'start') return runFn(plan)
+    const token = newToken()
+    let rec = null
+    try { rec = launches.record({ ref: `pending-${crypto.randomUUID()}`, parentAgentId, provider, via, token, pending: true }) } catch (e) { logSafely(e) }
+    const r = await runFn({ ...plan, env: { ...plan.env, ...(rec && { [TOKEN_ENV]: token }) } })
+    if (rec) {
+      const ref = r?.ref?.runId || r?.ref?.jobId || r?.ref?.sessionId || r?.jobId || null
+      try { if (r?.ok && ref) launches.bind(rec.ref, ref, [r.id].filter(Boolean)); else launches.rollback(rec.ref) } catch (e) { logSafely(e) }
+    }
+    return r
+  }
+  /** Why starting/stopping on this provider can't run here ('' = it can). Claude keeps actionsBlocked()'s exact text. */
+  async function blockedFor(provider) {
+    if (!provider || provider === 'claude') return actionsBlocked()
+    const a = getProvider(provider)
+    if (!a || !a.capabilities?.start) return `${a?.label || provider} agents can't be started from here`
+    try { const av = await a.available(); return av?.ok ? '' : av?.why || 'not available' } catch { return 'not available' }
+  }
   let limitStops = new Map() // agent id -> { at: limitStopAt, text: the harness limit string }
   // Update check against GitHub's main (update.mjs); restarting needs `server`, so it's looked up late.
   const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, ...update })
   // Sub-agents the API terminated: once requests work again, tell each parent (once) to resume them (sub-limit.mjs).
   const subLimit = createSubLimitNudger({ dataDir, selfId: selfId(),
-    agents: async ({ fresh } = {}) => { if (fresh) cached = null; return (await snapshot()).agents },
+    agents: async ({ fresh } = {}) => { if (fresh) cached = null; return (await snapshot()).agents.filter((a) => !handoffs?.inFlight(a.id)) },
     changedAt: () => account.lastChangeAt(),
     canRequest: subLimitRoom,
     deliverTo: async (id, text) => {
@@ -163,8 +299,9 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     } })
   // Every account out (auto-switch blocked): tell the top-level agents once to checkpoint and wait, hold every
   // automated nudger, and tell them once to continue when an account has room again (usage-pause.mjs).
+  // Only agents the handoff flow left with no target are paused (§3.6: handoff.covers).
   const usagePause = createUsagePause({ dataDir, selfId: selfId(),
-    agents: async () => (await snapshot()).agents,
+    agents: async () => (await snapshot()).agents.filter((a) => !handoffs?.covers(a.id)),
     blocked: async () => (await sampler.info()).blocked,
     canRequest: subLimitRoom,
     deliverTo: async (id, text) => {
@@ -181,7 +318,6 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     if (!r || r.error || r.stale || !r.at || r.at < (await account.lastChangeAt())) return false
     return !(r.fiveHour?.used >= OUT_AT) && !(r.weekly?.used >= OUT_AT)
   }
-  claude.configureCache(dataDir)
   const startedAt = Date.now()
   const opens = []
   const since = new Map() // id -> { bucket, since }: when it entered its current bucket
@@ -191,14 +327,22 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   async function scanAll() {
     const now = Date.now()
     const warnings = []
-    const sources = { claude: fs.existsSync(claude.home()), codex: fs.existsSync(codex.home()) }
-    const results = await Promise.allSettled([sources.claude ? claude.scan(now) : [], sources.codex ? codex.scan(now) : []])
+    // One scan per registered provider (§1.3). Gemini always scans (its runs live in our data folder), except
+    // under test, where it would read the real ~/.gemini unless a fake home is named.
+    const adapters = providers()
+    const sources = {}
+    for (const p of adapters) sources[p.id] = p.id === 'gemini' ? !(testingEnv && !process.env.GEMINI_CLI_HOME) : fs.existsSync(p.home())
+    const results = await Promise.allSettled(adapters.map((p) => (sources[p.id] ? p.scan(now) : [])))
     const scanned = []
     let unreadable = 0
     results.forEach((r, i) => {
-      if (r.status === 'fulfilled') { scanned.push(...r.value); unreadable += r.value.unreadable || 0 }
-      else warnings.push(`${i ? 'Codex' : 'Claude Code'} scan failed: ${r.reason?.message || r.reason}`)
+      const id = adapters[i].id
+      if (r.status === 'fulfilled') {
+        for (const f of r.value) { f.provider ??= id; scanned.push(f) }
+        unreadable += r.value.unreadable || 0
+      } else warnings.push(`${SCAN_LABEL[id] || adapters[i].label} scan failed: ${r.reason?.message || r.reason}`)
     })
+    handoffRefs.annotate(scanned)
     if (unreadable) warnings.push(`${unreadable} session file${unreadable === 1 ? '' : 's'} couldn't be read (check file permissions).`)
     if (!sources.claude && !sources.codex) warnings.push(`No agent data found. Looked for Claude Code in ${claude.home()} and Codex in ${codex.home()}.`)
     const fleetData = await fleetStore.load()
@@ -207,7 +351,10 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // Quiet for over QUIET_REMOVE_DAYS (not live, not Important): gone from every view, before any work.
     const { kept: facts, removed } = dropQuiet(scanned, overrides, now)
     quietIds = removed
-    const agents = build(facts, overrides, now, pending)
+    const agents = build(facts, overrides, now, pending, {
+      startedBy: (id) => launches.startedBy(id),
+      handoff: handoffs ? (id) => handoffs.annotate(id) : undefined,
+    })
     const notices = await notifications.load()
     await notifications.prune(new Set(agents.map((a) => a.id))).catch(logSafely)
     for (const a of agents) { const n = Object.hasOwn(notices, a.id) ? notices[a.id] : null; a.notice = n ? { message: n.message, title: n.title, at: n.at, count: n.count } : null }
@@ -224,6 +371,8 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     modelInfo = new Map(facts.map((f) => [f.id, { kind: f.kind, harness: f.harness, parentId: f.parentId || null, file: f.transcriptFile || null, config: f.modelConfig || null }]))
     forks = new Map(facts.filter((f) => f.fork).map((f) => [f.id, f.fork]))
     limitStops = new Map(facts.filter((f) => f.limitStopAt).map((f) => [f.id, { at: f.limitStopAt, text: f.limitDetail || '' }]))
+    privateFacts = new Map(facts.map((f) => [f.id, { limitStop: f.limitStop && f.limitStopAt ? f.limitStop : null, handoffId: f.handoffId || null,
+      runId: f.runId || null, sessionId: f.sessionId || null, transcriptFile: f.transcriptFile || null }]))
     const keptIds = new Set(facts.map((f) => f.id))
     titles = results.flatMap((r) => (r.status === 'fulfilled' && r.value.titles) || [])
       .filter((t) => keptIds.has(t.id) || (!removed.has(t.id) && now - (t.at || 0) <= QUIET_REMOVE_MS))
@@ -262,6 +411,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   }
 
   function messageProblem(a) {
+    if (a.provider === 'gemini' || a.harness === 'gemini-cli') return "Gemini agents can't be messaged from here yet"
     if (a.harness !== 'claude-code') return "Codex threads can't be messaged from here. Reply in Codex."
     if (['subagent', 'teammate', 'thread'].includes(a.kind)) return "Subagents can't be messaged. Message its lead instead."
     if (!a.live) return "Not running, so there's no session to message. Open it to resume it."
@@ -605,7 +755,18 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         return send(res, 200, out)
       }
       // Saved Claude accounts (server/accounts.mjs). No response ever carries a token.
-      if (url.pathname === '/api/accounts' && req.method === 'GET') return send(res, 200, { ...(await account.accounts.list()), network: await network.status(), autoSwitch: await sampler.info() })
+      if (url.pathname === '/api/accounts' && req.method === 'GET') {
+        const top = { ...(await account.accounts.list()), network: await network.status(), autoSwitch: await sampler.info() }
+        // byProvider (§5): every provider with accounts; the top level stays Claude's.
+        const st = providerSwitch.status()
+        const byProvider = { claude: { ...top, exhausted: st.claude?.exhausted || null } }
+        for (const p of providers()) {
+          if (p.id === 'claude' || !p.capabilities?.accounts) continue
+          try { byProvider[p.id] = { ...(await p.accounts.list()), autoSwitch: await samplers[p.id]?.info?.().catch(() => null) ?? null, exhausted: st[p.id]?.exhausted || null } }
+          catch (e) { byProvider[p.id] = { accounts: [], error: e.status ? e.message : 'unavailable', exhausted: st[p.id]?.exhausted || null } }
+        }
+        return send(res, 200, { ...top, byProvider })
+      }
       // The network this Mac is on, and marking it as the work Wi-Fi (network.mjs).
       if (url.pathname === '/api/network' && req.method === 'GET') return send(res, 200, await network.status({ fresh: true }))
       if (url.pathname === '/api/network/work' && req.method === 'POST') {
@@ -620,6 +781,25 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         if (req.method !== 'DELETE' && !/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
         const body = req.method === 'DELETE' ? null : await readBody(req)
         const what = ac[1]
+        // Another provider's add flow (§5: POST /api/accounts/add/start { provider }).
+        const prov = typeof body?.provider === 'string' ? body.provider : 'claude'
+        if (prov !== 'claude' && req.method === 'POST' && what.startsWith('add/')) {
+          const p = getProvider(prov)
+          if (!p?.capabilities?.accounts) return send(res, 409, { error: `${p?.label || prov} accounts can't be added here` })
+          if (what === 'add/finish') return send(res, 200, await p.accounts.addFinish(body))
+          if (what === 'add/cancel') return send(res, 200, await p.accounts.addCancel())
+          // Step 1: the adapter makes a fresh home and returns the sign-in argv (ours, never the page's).
+          // `force` (start over) only from the page itself; bin and argv are always the server's.
+          const force = body?.force === true && req.headers['x-agentville-ui'] === '1'
+          let out
+          try { out = typeof p.addStart === 'function' ? await p.addStart({ force }) : await p.accounts.addStart({ bin: await p.bin(), force }) }
+          catch (e) { if (e.status) return send(res, e.status, { error: e.message, ...(typeof e.code === 'string' && { code: e.code }) }); throw e }
+          const { argv, env: _env, home: _home, ...shown } = out || {}
+          const term = Array.isArray(argv) && argv.length && await detectTerminal()
+          if (!term) return send(res, 200, { ...shown, opened: false, ...(!argv && { error: `${p.label} CLI not found` }) })
+          const r = await openInTerminal(term, argv, os.homedir())
+          return send(res, 200, { ...shown, opened: r.ok, terminal: term.name, ...(!r.ok && { error: r.error }) })
+        }
         const accounts = account.accounts
         if (req.method === 'POST' && what === 'capture') return send(res, 200, await accounts.capture(body))
         if (req.method === 'POST' && what === 'add/finish') return send(res, 200, await accounts.addFinish(body))
@@ -790,32 +970,155 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       }
       if (url.pathname === '/api/act/options' && req.method === 'GET') {
         const snap = await snapshot()
-        return send(res, 200, { blocked: actionsBlocked(), projects: knownProjects(snap.agents).map(({ dir, name }) => ({ dir, name })), models: MODELS, efforts: EFFORTS, modes: MODES, promptMax: PROMPT_MAX, nameMax: NAME_MAX })
+        // Per provider (§5): lists plus availability. The top-level lists stay Claude's for back-compat.
+        const provs = {}
+        for (const p of providers()) {
+          if (!p.capabilities?.start) continue
+          const st = await providerStatusOf(p.id)
+          let o = {}
+          try { o = p.options() } catch { o = {} }
+          provs[p.id] = { label: p.label, models: o.models || [''], efforts: o.efforts || [''], modes: o.modes || [''], promptMax: o.promptMax || PROMPT_MAX, nameMax: o.nameMax || NAME_MAX,
+            available: st.usable, why: st.usable ? '' : st.why }
+        }
+        return send(res, 200, { blocked: actionsBlocked(), projects: knownProjects(snap.agents).map(({ dir, name }) => ({ dir, name })), models: MODELS, efforts: EFFORTS, modes: MODES, promptMax: PROMPT_MAX, nameMax: NAME_MAX,
+          defaultProvider: providerSettings.defaultProvider(), providers: provs })
+      }
+      // ---- providers (docs/providers-design.md §5) ----
+      if (url.pathname === '/api/providers' && req.method === 'GET') {
+        const s = providerSettings.get()
+        return send(res, 200, { defaultProvider: s.defaultProvider, providerOrder: s.providerOrder, handoff: s.handoff, agentStarts: s.agentStarts, providers: await providerList() })
+      }
+      if (url.pathname === '/api/providers/settings' && req.method === 'PUT') {
+        json()
+        const body = await readBody(req)
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { error: 'Body must be a JSON object' })
+        const starts = body.agentStarts && typeof body.agentStarts === 'object' ? { ...body.agentStarts } : null
+        // Agents may call this API too: only the page (X-Agentville-UI: 1) may turn agent starts on.
+        if (starts?.enabled === true && !providerSettings.get().agentStarts?.enabled && req.headers['x-agentville-ui'] !== '1') {
+          return send(res, 403, { error: 'Turn agent starts on from Settings in Agentville' })
+        }
+        if (starts) {
+          if (Number.isFinite(Number(starts.perHour))) starts.perHour = Math.min(Number(starts.perHour), AGENT_STARTS_MAX_PER_HOUR)
+          if (Number.isFinite(Number(starts.maxDepth))) starts.maxDepth = Math.min(Number(starts.maxDepth), AGENT_STARTS_MAX_DEPTH)
+        }
+        let next
+        try { next = providerSettings.set(starts ? { ...body, agentStarts: starts } : body) } catch (e) { return send(res, e.status || 400, { error: e.message }) }
+        return send(res, 200, { ok: true, settings: next })
+      }
+      // An agent starts an agent (§5). Same guard as /api/notify: local only (above) and a JSON body.
+      if (url.pathname === '/api/agents/start' && req.method === 'POST') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        if (typeof req.headers.origin !== 'string') return send(res, 403, { ok: false, error: 'Origin required' }) // isLocalRequest checked it matches
+        const parsed = parseAgentStart(await readBody(req))
+        if (!parsed.ok) return send(res, parsed.status || 400, { ok: false, error: parsed.error })
+        const input = parsed.value // the plan is built from these fields only, never from the raw body
+        cached = null
+        const agents = (await snapshot()).agents // fresh: the caller must be live now
+        const byId = new Map(agents.map((a) => [a.id, a]))
+        const status = {}
+        for (const p of providers()) status[p.id] = await providerStatusOf(p.id)
+        const projects = knownProjects(agents)
+        const port = String(server.address()?.port || '')
+        // Synchronous from here to the record: two concurrent requests can't both pass the rate/depth checks.
+        const verdict = checkAndRecord(input, {
+          settings: providerSettings, launches,
+          resolveSession: (session) => {
+            const id = resolveSession(session, agents, (x) => forks.get(x)?.sid || null)
+              || agents.find((a) => privateFacts.get(a.id)?.runId === session || privateFacts.get(a.id)?.sessionId === session)?.id
+            const a = id && byId.get(id)
+            return a ? { ...a, isSubagent: SUB_KIND.has(a.kind) } : null
+          },
+          providerStatus: (id) => status[id] || { usable: false, why: 'not installed' },
+          knownProjects: () => projects,
+          startPlan: (provider, i) => adapterOf(provider).startPlan({ cwd: i.cwd, prompt: i.prompt, name: i.name, model: i.model, permissionMode: i.permissionMode }, projects),
+        })
+        if (!verdict.ok) return send(res, verdict.status || 400, { ok: false, error: verdict.error })
+        const undo = () => { try { rollback(verdict.launchId, { launches }) } catch (e) { logSafely(e) } }
+        // --skip-trust only for a trusted (known project) folder. plan.skipTrust carries it to the runner; until the
+        // runner honours it (it always passes --skip-trust today), an untrusted Gemini start is refused here.
+        if (verdict.provider === 'gemini' && !verdict.trusted && !GEMINI_RUNNER_SKIP_TRUST) { undo(); return send(res, 403, { ok: false, error: 'Gemini agent starts need a known project folder' }) }
+        if (verdict.provider === 'claude' && actionsBlocked()) { undo(); return send(res, 501, { ok: false, error: actionsBlocked() }) }
+        try { limit(runs, 10, 'starts and stops') } catch (e) { undo(); throw e }
+        const plan = { ...verdict.plan, parentAgentId: verdict.callerId, ...(verdict.provider === 'gemini' && { skipTrust: verdict.trusted === true }),
+          env: { ...verdict.plan?.env, AGENTVILLE_PARENT_ID: verdict.callerId, ...(port && { AGENTVILLE_PORT: port }) } }
+        const r = await adapterOf(verdict.provider).run(plan)
+        const ref = r.ref?.runId || r.ref?.jobId || r.ref?.sessionId || r.jobId || null
+        if (r.ok && ref) { try { launches.bind(verdict.launchId, ref, [r.id].filter(Boolean)) } catch (e) { logSafely(e) } }
+        else undo()
+        // Ids only: never the prompt, cwd or stderr.
+        await logFleet({ at: Date.now(), action: 'agent-start', source: 'api', parent: verdict.callerId, provider: verdict.provider, ok: Boolean(r.ok && ref), ...(ref && { ref }) })
+        cached = null
+        if (!r.ok || !ref) return send(res, 502, { ok: false, error: 'start failed' })
+        return send(res, 200, { ok: true, id: r.id || null, ref: r.ref || { jobId: r.jobId }, provider: verdict.provider })
+      }
+      const as = /^\/api\/agents\/([^/]+)\/status$/.exec(url.pathname)
+      if (as && req.method === 'GET') {
+        const id = decodeURIComponent(as[1])
+        const a = (await snapshot()).agents.find((x) => x.id === id || privateFacts.get(x.id)?.runId === id || x.jobId === id)
+        if (!a) return send(res, 404, { error: 'No such agent' })
+        return send(res, 200, { id: a.id, provider: a.provider, bucket: a.bucket, live: a.live, handoff: a.handoff || null })
+      }
+      // Handoffs (§3.5). Without the engine: an empty list, and 404 for the actions.
+      if (url.pathname === '/api/handoffs' && req.method === 'GET') {
+        return send(res, 200, handoffs ? { handoffs: handoffs.list(), episodes: handoffs.info().episodes } : { handoffs: [], episodes: {} })
+      }
+      const hm = /^\/api\/handoffs\/([0-9a-f]{16})\/(undo|retry|dismiss|approve)$/.exec(url.pathname)
+      if (hm && req.method === 'POST') {
+        json()
+        await readBody(req)
+        if (!handoffs) return send(res, 404, { error: 'Handoffs are not available in this build' })
+        const out = await handoffs[hm[2]](hm[1])
+        cached = null
+        return send(res, 200, out ?? { ok: true })
+      }
+      const mh = /^\/api\/agents\/([^/]+)\/handoff$/.exec(url.pathname)
+      if (mh && req.method === 'POST') {
+        json()
+        const body = await readBody(req)
+        if (!handoffs) return send(res, 404, { error: 'Handoffs are not available in this build' })
+        const to = body?.to == null || body.to === '' ? undefined : String(body.to)
+        if (to && !['claude', 'gemini'].includes(to)) return send(res, 400, { error: 'Unknown provider' })
+        const out = await handoffs.start(decodeURIComponent(mh[1]), { to })
+        cached = null
+        return send(res, 200, out)
       }
       if (url.pathname === '/api/act/preview' && req.method === 'POST') {
         json()
         const body = await readBody(req)
         const snap = await snapshot()
         const a = typeof body?.id === 'string' ? snap.agents.find((x) => x.id === body.id) : null
-        const plan = body?.kind === 'start' ? startPlan(body, knownProjects(snap.agents))
-          : body?.kind === 'stop' ? stopPlan(a)
-          : body?.kind === 'fork' ? forkPlan(a, a && forks.get(a.id), body.name)
+        // New agents: `provider` (default: defaultProvider, §5). Stop/fork: the agent's own provider.
+        const provider = body?.kind === 'start' ? (typeof body.provider === 'string' && body.provider ? body.provider : providerSettings.defaultProvider())
+          : a ? providerOfAgent(a) || 'claude' : 'claude'
+        const ad = body?.kind === 'start' || body?.kind === 'stop' ? adapterOf(provider) : null
+        if (body?.kind === 'start' && !ad.capabilities?.start) return send(res, 409, { error: `${ad.label} agents can't be started from here` })
+        const plan = provider === 'claude' || body?.kind === 'fork'
+          ? (body?.kind === 'start' ? startPlan(fromPage(body), knownProjects(snap.agents))
+            : body?.kind === 'stop' ? stopPlan(a)
+            : body?.kind === 'fork' ? forkPlan(a, a && forks.get(a.id), body.name)
+            : null)
+          : body?.kind === 'start' ? ad.startPlan(fromPage(body), knownProjects(snap.agents))
+          : body?.kind === 'stop' ? ad.stopPlan(withPrivate(a))
           : null
         if (!plan) return send(res, 400, { error: 'Unknown action' })
-        return send(res, 200, { kind: plan.kind, id: plan.id || null, name: plan.name, command: display(plan), cwd: plan.cwd, blocked: actionsBlocked(), confirm: token(plan) })
+        const p = { ...plan, provider: plan.provider || provider }
+        return send(res, 200, { kind: p.kind, provider: p.provider, id: p.id || null, name: p.name, command: adapterOf(p.provider).display(p), cwd: p.cwd, blocked: await blockedFor(p.provider), confirm: token(p) })
       }
       if (url.pathname === '/api/act/run' && req.method === 'POST') {
         json()
         const body = await readBody(req)
-        const blocked = actionsBlocked()
+        // The plan names its provider (set at preview); a token from before providers is Claude's.
+        const held = typeof body?.confirm === 'string' && oneOffs.get(body.confirm)
+        const provider = held?.provider || 'claude'
+        const blocked = await blockedFor(provider)
         if (blocked) return send(res, 501, { error: blocked })
         const plan = redeem(body?.confirm, ['start', 'stop', 'fork'])
         limit(runs, 10, 'starts and stops')
-        const r = await runPlan(plan)
+        const r = await launchWithToken(withPort(plan), { via: 'ui', provider }, (p) => (provider === 'claude' ? runPlan(p) : adapterOf(provider).run(p)))
         // Ids and outcomes only: never the prompt.
-        await logFleet({ at: Date.now(), action: plan.kind, ...(plan.id && { id: plan.id }), ...(plan.project && { project: plan.project }), ok: r.ok, ...(r.jobId && { jobId: r.jobId }), ...(r.error && { error: r.error }) })
+        await logFleet({ at: Date.now(), action: plan.kind, ...(provider !== 'claude' && { provider }), ...(plan.id && { id: plan.id }), ...(plan.project && { project: plan.project }), ok: r.ok, ...(r.jobId && { jobId: r.jobId }), ...(r.ref?.runId && { runId: r.ref.runId }), ...(r.error && { error: r.error }) })
         cached = null
-        return send(res, r.ok ? 200 : 502, r.ok ? { ok: true, kind: plan.kind, jobId: r.jobId || null, name: plan.name } : { error: r.error })
+        return send(res, r.ok ? 200 : 502, r.ok ? { ok: true, kind: plan.kind, provider, jobId: r.jobId || null, id: r.id || null, name: plan.name } : { error: r.error })
       }
       // ---- Restore after crash (restore.mjs, README "Restore after crash") ----
       if (url.pathname === '/api/restore' && req.method === 'GET') {
@@ -944,6 +1247,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     // then the usage pause (enter, hold, or resume), then sub-limit (held while paused; after a resume it picks up the killed sub-agents)
     const tick = () => {
       Promise.resolve(sampler.sample()).finally(() => Promise.resolve(usagePause.tick()).catch(() => {}).finally(() => { if (!usagePause.holding()) subLimit.tick() }))
+      for (const [id, s] of Object.entries(samplers)) if (id !== 'claude') Promise.resolve(s.sample()).catch(() => {})
       spend.update().catch(() => {})
     }
     const first = setTimeout(tick, Math.min(3000, sampleMs))
@@ -953,6 +1257,22 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
     first.unref(); every.unref(); watch.unref()
     server.on('close', () => { clearTimeout(first); clearInterval(every); clearInterval(watch) })
   }
+  // Provider exhaustion + handoffs (§3.2-3.4): once per loop, after the samplers, whatever accountsBlocked() says
+  // (a provider without accounts needs no account module). providerSwitch.tick() is called only here.
+  if (sampleMs) {
+    let busy = false
+    const providerTick = async () => {
+      if (busy) return
+      busy = true
+      try { await providerSwitch.tick(); await handoffs?.tick() } catch (e) { logSafely(e) } finally { busy = false }
+    }
+    const pFirst = setTimeout(providerTick, Math.min(5000, sampleMs))
+    const pEvery = setInterval(providerTick, sampleMs)
+    pFirst.unref(); pEvery.unref()
+    server.on('close', () => { clearTimeout(pFirst); clearInterval(pEvery) })
+  }
+  // Adapters that start processes inject AGENTVILLE_PORT; the port is known once listening.
+  server.on('listening', () => { for (const p of providers()) { try { if (p.id !== 'claude') p.configure({ port: server.address()?.port }) } catch (e) { logSafely(e) } } })
   updater.start().catch(() => {})
   server.on('close', () => updater.stop())
   prPoll.start(30_000) // after the first scans have filled in the PRs; no-op when the interval is 0 (the default under test)
@@ -961,7 +1281,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   // Before close, not on 'close': open WebSockets would otherwise keep the server from closing.
   const close = server.close.bind(server)
   server.close = (cb) => { terms.closeAll(); return close(cb) }
-  Object.assign(server, { sampler, spend, terms, updater, subLimit, usagePause, prewarm: () => snapshot().catch(() => {}) })
+  Object.assign(server, { sampler, samplers, providerSwitch, handoffs, providerSettings, launches, spend, terms, updater, subLimit, usagePause, prewarm: () => snapshot().catch(() => {}) })
   return server
 }
 

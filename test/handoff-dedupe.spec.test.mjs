@@ -2,7 +2,6 @@
  * Spec tests for docs/providers-design.md sections 2.4 and 3.4: handoff de-dupe key and note limits.
  * The createHandoffs constructor and its methods are not fixed by the spec beyond the name, so the engine
  * tests are only the ones that can be stated through buildNote/notePrompt and the ledger file format.
- * Waiting on P11 (note) and P12 (engine).
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -36,7 +35,7 @@ test('buildNote and notePrompt are exported functions', noteOpts, () => {
 const ev = (role, text, at = 1) => ({ role, at, text })
 
 test('buildNote: includes the first user prompt and the changed files', noteOpts, () => {
-  const n = note.buildNote([ev('user', 'Fix the parser bug'), ev('assistant', 'On it')], { files: ['src/parser.js'], changed: ['src/parser.js'] }, { name: 'job', cwd: '/w' })
+  const n = note.buildNote([ev('user', 'Fix the parser bug'), ev('assistant', 'On it')], { files: [{ path: 'src/parser.js', add: 3, del: 1 }] } /* changes.mjs readChanges shape */, { name: 'job', cwd: '/w' })
   const s = typeof n === 'string' ? n : JSON.stringify(n)
   assert.match(s, /Fix the parser bug/)
   assert.match(s, /src\/parser\.js/)

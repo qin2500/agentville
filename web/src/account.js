@@ -283,7 +283,14 @@ export function createAccount(app, { open: openAgent, termName }) {
       case 'switch': app.closePops(); return openSheet(id);
       case 'show': app.closePops(); sheet.showModal(); return focusTitle();
       case 'capture': return act('save', () => send('POST', '/api/accounts/capture', {}), 'Login saved').then(() => loadUsage(false));
-      case 'add-gemini': return act('add', async () => { A.addInfo = await send('POST', '/api/accounts/add/start', { provider: 'gemini' }); A.addLabel = ''; A.reloginId = ''; A.addProvider = 'gemini'; }, 'Step 2: sign in to Gemini, then choose I\'ve signed in')
+      case 'add-gemini': return act('add', async () => {
+        // Another sign-in started under 10 min ago: offer "Start over" (force is honoured only with the UI header).
+        try { A.addInfo = await send('POST', '/api/accounts/add/start', { provider: 'gemini' }); } catch (e) {
+          if (e.code !== 'add_in_progress' || !window.confirm(`${e.message}\n\nStart over? The sign-in in progress will be discarded.`)) throw e;
+          A.addInfo = await json('/api/accounts/add/start', { method: 'POST', headers: { 'content-type': 'application/json', 'x-agentville-ui': '1' }, body: JSON.stringify({ provider: 'gemini', force: true }) });
+        }
+        A.addLabel = ''; A.reloginId = ''; A.addProvider = 'gemini';
+      }, 'Step 2: sign in to Gemini, then choose I\'ve signed in')
         .then(() => pop.querySelector('#acct-add-label')?.focus());
       case 'add': return act('add', async () => { A.addProvider = 'claude'; A.addInfo = await send('POST', '/api/accounts/add/start'); A.addLabel = ''; A.reloginId = ''; }, 'Step 2: sign in, then choose I\'ve logged in')
         .then(() => pop.querySelector('#acct-add-label')?.focus());
