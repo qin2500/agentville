@@ -4,17 +4,18 @@
  * and untracked files by name. Paths and counts only: no diff content is ever read or returned.
  *
  * git runs with --no-optional-locks (it never takes the index lock an agent's own git needs), a
- * timeout, no prompts and no pager; results are cached per folder for 60 s and refreshed in the
- * background, a few folders at a time, so the 2 s agents poll never waits on git.
+ * timeout, no prompts and no pager; results are cached per folder for 5 min (longer when a read was slow) and refreshed in the
+ * background, one folder at a time, so the 2 s agents poll never waits on git.
  */
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-const TTL_MS = 60_000
+const TTL_MS = 5 * 60_000 // 5 min: big monorepo worktrees make each read expensive
 const TIMEOUT_MS = 5_000
 const MAX_FILES = 500
-const PARALLEL = 3
+const PARALLEL = 1 // one git at a time: many worktrees of one big repo otherwise pin the CPU
+const SLOW_FACTOR = 60 // a read that took t ms is not repeated for at least 60 t ms (5 s -> 5 min, 20 s -> 20 min)
 
 function git(dir, args, timeout = TIMEOUT_MS) {
   return new Promise((resolve) => {
@@ -76,14 +77,15 @@ export function createChanges({ ttlMs = TTL_MS, read = readChanges } = {}) {
       const dir = queue.shift()
       const e = cache.get(dir)
       running++
-      read(dir).catch(() => null).then((value) => { Object.assign(e, { at: Date.now(), value, busy: null }) })
+      const t0 = Date.now()
+      read(dir).catch(() => null).then((value) => { const took = Date.now() - t0; Object.assign(e, { at: Date.now(), value, busy: null, wait: Math.max(ttlMs, took * SLOW_FACTOR) }) })
         .finally(() => { running--; pump() })
     }
   }
   function refresh(dir) {
     let e = cache.get(dir)
     if (!e) cache.set(dir, (e = { at: 0, value: undefined }))
-    if (e.busy || Date.now() - e.at < ttlMs) return e
+    if (e.busy || Date.now() - e.at < (e.wait || ttlMs)) return e
     e.busy = true
     queue.push(dir)
     pump()
