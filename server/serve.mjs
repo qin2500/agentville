@@ -87,8 +87,13 @@ const CODEX_DIRS = cliDirs('codex')
 export const NEVER_STARTED = "This launch failed before it started, so there's no session to open"
 const refuse = (status, message) => Object.assign(new Error(message), { status })
 
-/** The argv and cwd to open an agent with, decided only from our own data. Throws a 4xx otherwise. */
-export async function openCommand(a) {
+/**
+ * The argv and cwd to open an agent with, decided only from our own data. Throws a 4xx otherwise.
+ * `bypassPermissions` (Gemini only, interactive terminal only): the user's own explicit, one-time
+ * choice to add `--dangerously-skip-permissions` to THIS open. Never used for a headless start/resume
+ * turn Agentville runs unattended — the "no yolo path" rule there (gemini/runner.mjs) is unchanged.
+ */
+export async function openCommand(a, { bypassPermissions = false } = {}) {
   if (!a) throw refuse(404, 'No such agent')
   if (['subagent', 'teammate', 'thread'].includes(a.kind)) throw refuse(409, 'Open its lead instead')
   if (a.neverStarted) throw refuse(409, NEVER_STARTED)
@@ -98,6 +103,18 @@ export async function openCommand(a) {
     const codexBin = await findExecutable('codex', CODEX_DIRS)
     if (!codexBin) throw refuse(409, 'Codex CLI not found')
     return { argv: [codexBin, 'resume', a.id.slice('codex:'.length)], cwd }
+  }
+  // Gemini (Antigravity) agents run headless, one turn per process; reopen interactively by conversation id
+  // (`agy --conversation <id>`, no `-p`), the same idea as Claude's `--resume`.
+  if (a.harness === 'gemini-cli') {
+    const agy = getProvider('gemini')
+    const agyBin = await agy?.bin?.()
+    if (!agyBin) throw refuse(409, 'Antigravity CLI not found')
+    // A headless turn still running on this conversation: a second, interactive agy would race the same session file.
+    if (a.live) throw refuse(409, 'Already running in another terminal')
+    const conv = agy?.conversationIdOf?.(a)
+    if (!conv) throw refuse(409, 'Not a resumable session')
+    return { argv: [agyBin, ...(bypassPermissions ? ['--dangerously-skip-permissions'] : []), '--conversation', conv], cwd }
   }
   const claudeBin = await findExecutable('claude', CLAUDE_DIRS)
   if (!claudeBin) throw refuse(409, 'Claude Code CLI not found')
@@ -644,14 +661,16 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       }
       const tm = /^\/api\/term\/([^/]+)(\/popout)?$/.exec(url.pathname)
       if (tm && (req.method === 'POST' || (req.method === 'DELETE' && !tm[2]))) {
-        let reattach = null, size = null
+        let reattach = null, size = null, bypassPermissions = false
         if (req.method === 'POST') {
           if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
           // The server decides the command; the body may only name the boot a page re-attaches from,
-          // and the size its terminal has (so a new PTY starts at that size; pty.mjs checks it).
+          // the size its terminal has (so a new PTY starts at that size; pty.mjs checks it), and this
+          // one well-known toggle (openCommand alone decides whether and how it applies).
           const body = await readBody(req)
           if (typeof body?.reattach === 'string' && body.reattach.length <= 64) reattach = body.reattach
           if (body?.cols != null && body?.rows != null) size = { cols: body.cols, rows: body.rows }
+          if (body?.bypassPermissions === true) bypassPermissions = true
         }
         const id = decodeURIComponent(tm[1])
         if (req.method === 'DELETE') {
@@ -675,7 +694,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         const agent = (await snapshot()).agents.find((a) => a.id === id)
         // An agent already in our PTY is re-attached; otherwise openCommand decides (and refuses).
         const own = plain.get(id) // a plain terminal: its command was fixed when it was created
-        const { argv, cwd } = running || own || await openCommand(agent)
+        const { argv, cwd } = running || own || await openCommand(agent, { bypassPermissions })
         const out = terms.open(id, { argv, cwd, kind: own ? 'shell' : argv[1] === 'attach' ? 'attach' : 'resume', name: own?.title || agent?.name || running?.name || id, size })
         cached = null
         return send(res, 200, out)

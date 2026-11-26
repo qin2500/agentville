@@ -160,8 +160,9 @@ export function createPanel(app) {
     if (['subagent', 'teammate', 'thread'].includes(a.kind)) return 'Open its lead instead';
     if (a.neverStarted) return "This launch failed before it started, so there's no session to open";
     if (embedded(a.id)) return 'Running in the built-in terminal; use Pop out';
-    // A job reopened in a terminal is that live session: attaching would start a second process.
-    if (a.harness === 'claude-code' && (a.kind === 'session' || a.reopened) && a.live) return 'Already running in another terminal';
+    // A job reopened in a terminal is that live session: attaching would start a second process. Same for a
+    // Gemini (Antigravity) agent with a headless turn still running: a second, interactive agy would race it.
+    if ((a.harness === 'claude-code' || a.harness === 'gemini-cli') && (a.kind === 'session' || a.reopened) && a.live) return 'Already running in another terminal';
     return null;
   }
   // The built-in terminal (term.js): same command and refusals as Open.
