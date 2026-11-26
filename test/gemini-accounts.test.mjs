@@ -47,7 +47,7 @@ test('addStart opens plain agy with the PATH fix; a second add within 10 min is 
 test('Windows sign-in argv runs agy under cmd /k and refuses unsafe paths', async () => {
   const { g } = await mk({ ok: true }, { platform: 'win32' })
   const argv = g.loginArgv('C:\\Users\\u\\AppData\\Local\\agy\\bin\\agy.exe')
-  assert.deepEqual(argv.slice(1), ['/d', '/k', '"C:\\Users\\u\\AppData\\Local\\agy\\bin\\agy.exe"'])
+  assert.deepEqual(argv.slice(1), ['/d', '/k', 'C:\\Users\\u\\AppData\\Local\\agy\\bin\\agy.exe'])
   assert.throws(() => g.loginArgv('C:\\a&b\\agy.exe'), /cmd\.exe/)
 })
 

@@ -287,7 +287,11 @@ export function createGeminiAccounts({ dataDir, bin = async () => null, probe = 
     if (platform === 'win32') {
       const cmd = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe'
       if (/["%&|<>^]/.test(String(binPath))) throw fail(400, 'The agy program path has a character that cmd.exe cannot take safely')
-      return [cmd, '/d', '/k', `"${binPath}"`]
+      // No manual quoting: this argv can be re-spawned through another cmd.exe (openInTerminal's
+      // 'cmd-start' fallback runs it via `cmd /c start ... <argv>`), and a pre-quoted arg gets its
+      // quotes escaped again at that outer layer, so cmd.exe ends up seeing literal `\"` characters
+      // instead of a real quoted token. Node's own Windows argv escaping quotes this for us if needed.
+      return [cmd, '/d', '/k', binPath]
     }
     // The terminal opens a fresh login shell whose PATH may differ: hand it the server's PATH, node's folder first.
     const PATHv = [path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(':')
