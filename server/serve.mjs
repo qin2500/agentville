@@ -289,7 +289,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   }
   let limitStops = new Map() // agent id -> { at: limitStopAt, text: the harness limit string }
   // Update check against GitHub's main (update.mjs); restarting needs `server`, so it's looked up late.
-  const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, ...update })
+  const updater = createUpdater({ restart: canRestartSelf() ? () => restartSelf(server) : null, settingsFile: path.join(dataDir, 'update.json'), terminalsOpen: () => terms.info().running.length, ...update })
   // Sub-agents the API terminated: once requests work again, tell each parent (once) to resume them (sub-limit.mjs).
   const subLimit = createSubLimitNudger({ dataDir, selfId: selfId(),
     agents: async ({ fresh } = {}) => { if (fresh) cached = null; return (await snapshot()).agents.filter((a) => !handoffs?.inFlight(a.id)) },
@@ -1241,6 +1241,12 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
       // Update check (update.mjs): ?fresh asks GitHub again (at most once a minute).
       if (url.pathname === '/api/update' && req.method === 'GET') {
         return send(res, 200, url.searchParams.has('fresh') ? await updater.check() : await updater.status())
+      }
+      if (url.pathname === '/api/update/settings' && req.method === 'PUT') {
+        if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })
+        const body = await readBody(req)
+        if (body?.autoUpdate !== undefined && typeof body.autoUpdate !== 'boolean') return send(res, 400, { error: 'autoUpdate must be true or false' })
+        return send(res, 200, updater.configure({ autoUpdate: body?.autoUpdate, dismissAppBuild: body?.dismissAppBuild === true }))
       }
       if (url.pathname === '/api/update/apply' && req.method === 'POST') {
         if (!/^application\/json\b/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Expected application/json' })

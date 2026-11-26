@@ -15,7 +15,7 @@ let n = 0
 async function setup() {
   const r = makeRepos(path.join(tmp, `case-${++n}`))
   const gh = await fakeGithub(r.origin)
-  const env = { ...GIT_ENV, AGENTVILLE_TEST: '1', ...gh.env }
+  const env = { ...GIT_ENV, AGENTVILLE_TEST: '1', AGENTVILLE_AUTO_UPDATE: '0', ...gh.env }
   return { r, gh, env, make: (o = {}) => createUpdater({ env, root: r.install, ...o }) }
 }
 /** A stand-in npm that records its arguments, so tests see `ci` without installing anything. */
@@ -230,7 +230,7 @@ test('the next try backs off: 30 min when offline, not before the rate-limit res
     assert.ok(rate.nextCheckAt >= Date.now() + 3500e3, 'waits for x-ratelimit-reset (an hour out)')
     gh.mode = 'ok'
     const ok = await u.check()
-    assert.ok(Math.abs(ok.nextCheckAt - Date.now() - 6 * 3600e3) < 5000, 'then every 6 hours')
+    assert.ok(Math.abs(ok.nextCheckAt - Date.now() - 30 * 60e3) < 5000, 'then every 30 minutes')
   } finally { u.stop(); await gh.close() }
 })
 

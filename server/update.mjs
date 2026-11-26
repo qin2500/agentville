@@ -1,12 +1,12 @@
 /**
  * Update check: is this git checkout behind GitHub's `main`, and (when it's safe) update it in place.
  *
- * Shortly after start, then every 6 hours, the server compares its own checkout's HEAD with `main`
+ * Shortly after start, then every 30 minutes, the server compares its own checkout's HEAD with `main`
  * on GitHub through the public API, without auth: one GET whose URL carries the local commit sha
  * and nothing else. Offline, rate limits and unknown commits are expected: the last good answer is
  * kept and the next try backs off.
  *
- * Env: AGENTVILLE_UPDATE_CHECK=0 turns it off. AGENTVILLE_UPDATE_REPO (owner/repo) and
+ * Env: AGENTVILLE_UPDATE_CHECK=0 turns it off; AGENTVILLE_AUTO_UPDATE=0 makes automatic updating off by default (the setting still wins once saved). AGENTVILLE_UPDATE_REPO (owner/repo) and
  * AGENTVILLE_UPDATE_API (base URL) override what is checked; AGENTVILLE_UPDATE_DIR, the checkout.
  * Under test (AGENTVILLE_TEST=1 / NODE_ENV=test) it never calls the network unless
  * AGENTVILLE_UPDATE_API is set, and never updates this install's own checkout.
@@ -19,7 +19,9 @@ import { fileURLToPath } from 'node:url'
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const API = 'https://api.github.com'
 const USER_AGENT = 'agentville-update-check'
-const EVERY_MS = 6 * 3600e3
+const EVERY_MS = 30 * 60e3
+/** Automatic updates wait for open in-app terminals this long, then go ahead anyway. */
+export const DEFER_CAP_MS = 3 * 3600e3
 const FIRST_MS = 15_000
 const OFFLINE_RETRY_MS = 30 * 60e3
 const MIN_FRESH_MS = 60e3
@@ -41,6 +43,33 @@ export function title(message) {
   const line = String(message || '').split('\n')[0].trim()
   return line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE - 1).trimEnd()}…` : line
 }
+
+/**
+ * The commands that install and build, as { cmd, args, env } each. Elsewhere that is plain npm.
+ * On Windows nothing goes through npm.cmd (Node 20+ refuses to spawn a .cmd without a shell, and
+ * through cmd it has hit a %~dp0 MODULE_NOT_FOUND): npm's own npm-cli.js and vite's vite.js run
+ * with this node, as server/cli.mjs does. Under Electron that node is the app binary, so those
+ * children (and only they) get ELECTRON_RUN_AS_NODE=1.
+ */
+export function installCommands({ platform = process.platform, execPath = process.execPath, npm = 'npm', env = process.env, exists = fs.existsSync } = {}) {
+  if (platform !== 'win32') {
+    return { ci: { cmd: npm, args: ['ci', '--no-audit', '--no-fund'] }, build: [{ cmd: npm, args: ['run', 'build'] }] }
+  }
+  const p = path.win32
+  const nodeDir = p.dirname(execPath)
+  const cli = [p.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'), p.join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')]
+  const npmCli = cli.find((c) => exists(c)) || cli[0]
+  const childEnv = env.AGENTVILLE_DESKTOP === '1' || process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}
+  const node = (...args) => ({ cmd: execPath, args, env: childEnv })
+  return {
+    ci: node(npmCli, 'ci', '--no-audit', '--no-fund'),
+    // The build script is prebuild (the mods index) then `vite build web`.
+    build: [node(p.join('tools', 'mods-index.mjs')), node(p.join('node_modules', 'vite', 'bin', 'vite.js'), 'build', 'web')],
+  }
+}
+
+/** True when a `git diff --name-only` listing names something under desktop/. */
+export const touchesDesktop = (names) => String(names || '').split(/\r?\n/).some((l) => /^desktop\//.test(l.trim()))
 
 function run(cmd, args, { cwd, timeout = 30_000, env = process.env } = {}) {
   return new Promise((resolve) => {
@@ -111,8 +140,12 @@ export function restartSelf(server) {
  * @param {Function} [o.fetch]
  * @param {string} [o.git] [o.npm]  binaries
  * @param {Function|null} [o.restart]  called after a successful update; returns true if it restarts
+ * @param {string|null} [o.settingsFile]  small JSON file kept across restarts: autoUpdate, the last applied update, the app-rebuild notice
+ * @param {Function} [o.terminalsOpen]  how many in-app terminals are open (sync or async); automatic updates wait for 0
+ * @param {Function} [o.runner]  stand-in for running a command (tests), same shape as the default
  */
-export function createUpdater({ env = process.env, root, fetch: fetchImpl = globalThis.fetch, git = 'git', npm = defaultNpm(), restart = null, now = Date.now } = {}) {
+export function createUpdater({ env = process.env, root, fetch: fetchImpl = globalThis.fetch, git = 'git', npm = defaultNpm(), restart = null, now = Date.now,
+  platform = process.platform, execPath = process.execPath, runner = run, settingsFile = null, terminalsOpen = () => 0 } = {}) {
   const dir = path.resolve(root || env.AGENTVILLE_UPDATE_DIR || ROOT)
   const apiBase = (env.AGENTVILLE_UPDATE_API || API).replace(/\/+$/, '')
   const startedAt = now()
@@ -121,12 +154,28 @@ export function createUpdater({ env = process.env, root, fetch: fetchImpl = glob
     current: null, branch: null, latest: null, behindBy: 0, changes: [], compare: null,
     dirty: false, originRepo: null, note: null, error: null, checkedAt: null, nextAt: null, applying: false,
   }
+  // Kept across restarts (settingsFile): autoUpdate (default on), applied (last update), appBuild (sha that changed desktop/).
+  const P = { autoUpdate: env.AGENTVILLE_AUTO_UPDATE !== '0', applied: null, appBuild: null }
+  try {
+    const raw = settingsFile && JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+    if (raw && typeof raw === 'object') {
+      if (typeof raw.autoUpdate === 'boolean') P.autoUpdate = raw.autoUpdate
+      if (raw.applied && typeof raw.applied.short === 'string') P.applied = raw.applied
+      if (typeof raw.appBuild === 'string') P.appBuild = raw.appBuild
+    }
+  } catch { /* none yet, or unreadable: defaults */ }
+  const persist = () => {
+    if (!settingsFile) return
+    try { fs.mkdirSync(path.dirname(settingsFile), { recursive: true }); fs.writeFileSync(settingsFile, JSON.stringify(P)) } catch { /* read-only data dir: stays in memory */ }
+  }
+  let deferredSince = null
+  let autoError = null
   let timer = null
   let inflight = null
   let ready = null
 
   // --no-optional-locks: a background check never takes the index lock from the user's own git.
-  const g = (args, o) => run(git, ['--no-optional-locks', ...args], { cwd: dir, env, ...o })
+  const g = (args, o) => runner(git, ['--no-optional-locks', ...args], { cwd: dir, env, ...o })
   const off = (why) => { S.enabled = false; S.why = why; return false }
 
   /** Decide once whether the feature can run here at all, and read the local version. */
@@ -249,7 +298,7 @@ export function createUpdater({ env = process.env, root, fetch: fetchImpl = glob
     if (!(await (ready ??= init()))) return status()
     // A page asking for a fresh answer gets one at most once a minute (tests: every time).
     if (!fresh || (S.checkedAt && now() - S.checkedAt < MIN_FRESH_MS && !testing(env))) return status()
-    inflight ??= doCheck().finally(() => { inflight = null })
+    inflight ??= doCheck().then(autoApply).catch(() => {}).finally(() => { inflight = null })
     await inflight
     return status()
   }
@@ -285,6 +334,11 @@ export function createUpdater({ env = process.env, root, fetch: fetchImpl = glob
       // What to run by hand, in this checkout, when the button can't.
       commands: S.enabled ? [`cd ${JSON.stringify(dir)}`, ...(S.branch && S.branch !== 'main' ? ['git switch main'] : []), 'git pull origin main', './setup.sh'] : [],
       canRestart: !!restart,
+      autoUpdate: P.autoUpdate,
+      ...(deferredSince != null && { deferredSince }),
+      ...(autoError && { autoError }),
+      ...(P.applied && { applied: P.applied }),
+      needsAppBuild: !!P.appBuild && env.AGENTVILLE_DESKTOP === '1',
       applying: S.applying,
       checkedAt: S.checkedAt,
       nextCheckAt: started ? S.nextAt : null,
@@ -317,22 +371,55 @@ export function createUpdater({ env = process.env, root, fetch: fetchImpl = glob
       }
       await readLocal()
       const lock = await g(['diff', '--name-only', before, S.current, '--', 'package-lock.json'])
+      const cmds = installCommands({ platform, execPath, npm, env })
       const later = (what, r) => `The code is updated, but ${what} failed (${tail(r)}). Run ./setup.sh in ${dir}, then restart Agentville.`
       if (lock.stdout.trim()) {
-        const ci = await run(npm, ['ci', '--no-audit', '--no-fund'], { cwd: dir, env, timeout: 15 * 60e3 })
+        const ci = await runner(cmds.ci.cmd, cmds.ci.args, { cwd: dir, env: { ...env, ...cmds.ci.env }, timeout: 15 * 60e3 })
         if (!step('npm ci', ci)) return { ok: false, updated: true, error: later('npm ci', ci), steps }
       }
-      const build = await run(npm, ['run', 'build'], { cwd: dir, env, timeout: 10 * 60e3 })
-      if (!step('npm run build', build)) return { ok: false, updated: true, error: later('the build', build), steps }
+      for (const b of cmds.build) {
+        const build = await runner(b.cmd, b.args, { cwd: dir, env: { ...env, ...b.env }, timeout: 10 * 60e3 })
+        if (!step(platform === 'win32' ? path.win32.basename(b.args[0]) : 'npm run build', build)) return { ok: false, updated: true, error: later('the build', build), steps }
+      }
+      // Pulled commits that touched desktop/ need the app shell rebuilt by hand (app:build): the running exe can't be replaced.
+      const shell = await g(['diff', '--name-only', before, S.current, '--', 'desktop'])
+      const desktopChanged = shell.ok && touchesDesktop(shell.stdout)
+      P.applied = { sha: S.current, short: short(S.current), title: S.changes[0]?.title || '', at: now() }
+      if (desktopChanged) P.appBuild = S.current
+      persist()
       Object.assign(S, { behindBy: 0, changes: [], compare: 'identical', latest: { sha: S.current, short: short(S.current), date: null }, note: null })
-      return { ok: true, steps, sha: S.current, short: short(S.current), restarting: !!restart }
+      return { ok: true, steps, sha: S.current, short: short(S.current), desktopChanged, restarting: !!restart }
     } finally {
       S.applying = false
     }
   }
 
+  /** After a check: with automatic updates on, apply what's available when the usual safety checks pass. */
+  async function autoApply() {
+    if (!P.autoUpdate || !S.enabled || !S.behindBy || S.applying || blocked()) { deferredSince = null; return }
+    // An open in-app terminal closes on restart: wait for it, retried at each check, but not past the cap.
+    let terms = 0
+    try { terms = Number(await terminalsOpen()) || 0 } catch { /* unknown: don't hold the update back */ }
+    if (terms > 0) {
+      deferredSince ??= now()
+      if (now() - deferredSince < DEFER_CAP_MS) return
+    }
+    deferredSince = null
+    const out = await apply()
+    autoError = out.ok ? null : out.error || 'The automatic update failed.'
+    if (out.ok && out.restarting) setTimeout(() => restart?.(), 500).unref?.()
+  }
+
   return {
     dir,
+    /** The saved choices: { autoUpdate?: boolean, dismissAppBuild?: true }. */
+    configure(patch = {}) {
+      if (typeof patch.autoUpdate === 'boolean') P.autoUpdate = patch.autoUpdate
+      if (patch.dismissAppBuild) P.appBuild = null
+      if (!P.autoUpdate) deferredSince = null
+      persist()
+      return status()
+    },
     /** Read the local version now and check GitHub after a short wait (AGENTVILLE_UPDATE_DELAY_MS). */
     async start() {
       started = true

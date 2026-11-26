@@ -177,25 +177,34 @@ npm run app                      # run it straight from the checkout, without bu
 
 ## Updates
 
-Agentville checks GitHub for a newer version shortly after it starts and then every 6 hours. When
-there is one, it asks you **once**: "Agentville update available", with the list of what changed,
-**Update now** and **Later**. After Later it doesn't ask again for that version; a quiet **Update
-available** item stays in the Settings (⚙) menu. A later version asks once more.
+Agentville updates itself. It checks GitHub for a newer version shortly after it starts and then
+every 30 minutes. When there is one and it is safe, it applies it without asking: it pulls
+(`git pull --ff-only origin main`), reinstalls dependencies if they changed, and runs the build (on
+Windows without `npm.cmd`, with Node directly), then restarts and reloads the page. Your agents keep
+running. A small toast says "Updated to `<sha>` · `<what changed>`". If the pull fails, your copy is
+left as it was.
 
-**Update now** runs `git pull --ff-only origin main`, `npm ci` if the dependencies changed, and
-`npm run build`, then restarts Agentville and reloads the page. Your agents keep running; a built-in
-terminal open in the page closes. If the pull fails, your copy is left as it was. It only offers the
-button when that's safe: on the `main` branch, with no local edits to tracked files and no commits of
-your own. Otherwise it says why and shows the commands to run yourself:
+- **Safe** means: on the `main` branch, no local edits to tracked files, and no commits of your own.
+  Otherwise nothing is applied, and Agentville asks once ("Agentville update available") and says
+  why, with the commands to run yourself:
 
-```sh
-cd agentville
-git pull origin main
-./setup.sh      # then quit and reopen Agentville
-```
+  ```sh
+  cd agentville
+  git pull origin main
+  ./setup.sh      # then quit and reopen Agentville
+  ```
+
+- **A built-in terminal open in the page** holds the update back (the restart would close it). It
+  tries again at each check, and applies anyway after 3 hours.
+- **To turn automatic updates off**, untick **Update Agentville automatically** in the Settings (⚙)
+  menu. Then it asks once per new version with **Update now** / **Later**, and a quiet **Update
+  available** item stays in the Settings menu. (`AGENTVILLE_AUTO_UPDATE=0` makes it off by default.)
+- **The desktop app shell** can't replace itself while it runs. When an update changes anything under
+  `desktop/`, a notice stays on screen: run `npm run app:build -- --install` once (Copy puts it on
+  the clipboard). Most updates don't need this; only the server and web page part updates itself.
 
 The check needs a `git clone` of Agentville and `git` on your PATH; anywhere else it is quietly off.
-To turn it off, set `AGENTVILLE_UPDATE_CHECK=0`. A fork checks its own `origin`.
+To turn the whole check off, set `AGENTVILLE_UPDATE_CHECK=0`. A fork checks its own `origin`.
 
 ## Requirements
 

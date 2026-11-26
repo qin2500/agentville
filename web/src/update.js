@@ -1,9 +1,11 @@
 // Update available: one prompt per new version of Agentville on GitHub, then a quiet Settings item.
-// The server does the checking (server/update.mjs); this only asks it, every 15 minutes.
+// The server does the checking and, by default, the updating (server/update.mjs); this only asks it, every minute.
 import { esc, store, agoLong } from './ui.js';
 
 const SEEN = 'va.update.seen'; // the latest sha we've already prompted about
-const EVERY_MS = 15 * 60e3;
+const EVERY_MS = 60e3;
+const TOASTED = 'va.update.toasted'; // the applied sha we've already announced
+const BUILD_CMD = 'npm run app:build -- --install';
 const BACK_MS = 90e3; // how long a restart may take before we say so
 
 export function createUpdate(app) {
@@ -11,6 +13,7 @@ export function createUpdate(app) {
   const dlg = $('update');
   const U = { info: null, view: 'offer', busy: false, error: '', result: null, timer: 0 };
   let opener = null;
+  let seenStart = null;
 
   const available = () => !!(U.info?.enabled && U.info.behindBy > 0 && U.info.latest?.sha);
   const changes = n => `${n} new change${n === 1 ? '' : 's'}`;
@@ -20,15 +23,35 @@ export function createUpdate(app) {
       const res = await fetch('/api/update', { cache: 'no-store' });
       if (res.ok) U.info = await res.json();
     } catch { /* the main poll reports the server being away */ }
+    // A new server start means an update was applied (or the app restarted): load the new page.
+    if (U.info?.startedAt) { if (seenStart && seenStart !== U.info.startedAt && !U.busy && U.view !== 'restarting') return location.reload(); seenStart = U.info.startedAt; }
+    announce();
     clearTimeout(U.timer);
     // Until the server's first check is in, look again soon.
     U.timer = setTimeout(load, U.info?.enabled && !U.info.checkedAt ? 20e3 : EVERY_MS);
     maybePrompt();
   }
 
+  /** After an automatic (or manual) update: one toast per applied version, and the app-rebuild notice while it's needed. */
+  function announce() {
+    const a = U.info?.applied;
+    if (a?.sha && store.get(TOASTED, null) !== a.sha) {
+      store.set(TOASTED, a.sha);
+      app.toast?.(`Updated to ${a.short}${a.title ? ` · ${a.title}` : ''}`, null, 8000);
+    }
+    let bar = $('upd-shell');
+    if (!U.info?.needsAppBuild) { bar?.remove(); return; }
+    if (bar) return;
+    bar = document.createElement('div');
+    bar.id = 'upd-shell'; bar.className = 'toast upd-shell'; bar.setAttribute('role', 'status');
+    bar.innerHTML = `<span>Part of this update needs the app rebuilt: run <code>${esc(BUILD_CMD)}</code> once</span><button class="textbtn" type="button" data-upd="copy-build">Copy</button><button class="textbtn" type="button" data-upd="dismiss-build">Dismiss</button>`;
+    document.body.append(bar);
+  }
+
   /** Once per latest version: shown means seen, so a reload or Later never brings it back. */
   function maybePrompt() {
-    if (!available() || store.get(SEEN, null) === U.info.latest.sha) return;
+    // Automatic updates apply it themselves when it's safe; only a blocked one still asks (and says why).
+    if (!available() || (U.info.autoUpdate && U.info.canApply) || store.get(SEEN, null) === U.info.latest.sha) return;
     if (document.querySelector('dialog[open]')) return; // never on top of another sheet; next load tries again
     store.set(SEEN, U.info.latest.sha);
     open();
@@ -138,8 +161,32 @@ export function createUpdate(app) {
     else if (act === 'apply' && !U.busy) apply();
   });
 
+  // The page-level notice sits outside the dialog.
+  document.addEventListener('click', async e => {
+    const act = e.target.closest('#upd-shell [data-upd]')?.dataset.upd;
+    if (act === 'copy-build') {
+      try { await navigator.clipboard.writeText(BUILD_CMD); e.target.textContent = 'Copied'; } catch { e.target.textContent = 'Copy failed'; }
+    } else if (act === 'dismiss-build') {
+      $('upd-shell')?.remove();
+      try { await fetch('/api/update/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dismissAppBuild: true }) }); } catch { /* shows again next load */ }
+      if (U.info) U.info.needsAppBuild = false;
+    }
+  });
+
+  async function setAuto(on) {
+    try {
+      const res = await fetch('/api/update/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ autoUpdate: on }) });
+      if (res.ok) U.info = await res.json();
+    } catch { /* the main poll reports the server being away */ }
+  }
+
   return {
     start: load,
+    setAuto,
+    /** The automatic-updates toggle (when the server can update at all), in the Settings menu. */
+    autoHTML: () => U.info?.enabled
+      ? `<label><input type="checkbox" data-set="autoupdate" ${U.info.autoUpdate ? 'checked' : ''}>Update Agentville automatically</label>`
+      : '',
     /** The quiet Settings item, only while an update is available. */
     menuHTML: () => available()
       ? `<hr><button class="menuitem" type="button" data-update="open"><b>Update available</b><span>${changes(U.info.behindBy)} · see what's new</span></button>`

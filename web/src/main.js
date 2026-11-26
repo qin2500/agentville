@@ -668,7 +668,7 @@ function fillPop(name) {
       <label><input type="checkbox" data-set="helper" ${S.data?.helper?.enabled ? 'checked' : ''}>Helper (Haiku)</label>
       <p class="helper">Uses a small Haiku model, through your Claude login, for small background jobs. Off by default.</p>
       <p class="helper" id="helper-status" role="status"></p>
-      ${classicToggleHtml(store)}<div id="prov-settings"></div></div>${update.menuHTML()}`;
+      ${classicToggleHtml(store)}${update.autoHTML()}<div id="prov-settings"></div></div>${update.menuHTML()}`;
     mountProvidersSettings(el.querySelector('#prov-settings'));
     loadHelper();
     return;
@@ -748,6 +748,8 @@ document.addEventListener('change', e => {
     store.set(PLAN_SYNC_KEY, t.checked);
   } else if (t.dataset.set === 'world') {
     applyWorld(t.value, store);
+  } else if (t.dataset.set === 'autoupdate') {
+    update.setAuto(t.checked);
   } else if (t.dataset.set === 'helper') {
     setHelper(t.checked, t);
   } else if (t.dataset.f) {
