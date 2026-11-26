@@ -206,7 +206,7 @@ export function createAccount(app, { open: openAgent, termName }) {
       const gu = A.usage.get(a.id), ex = extraTip(gu), gact = !!(a.signedIn || G.active === a.id);
       gemRows += rowHTML({ id: a.id, name: a.label, tip: ex ? `${gname}\n${ex}` : gname, active: gact, usage: true, edit: editHTML(a), quarantine: a.quarantine, lowPriority: a.lowPriority, menu: true });
     }
-    const gemAdding = L?.adding && A.addProvider === 'gemini';
+    const gemAdding = G?.adding && A.addProvider === 'gemini';
     const gemAdd = gemAdding
       ? `<div class="acct-add" role="group" aria-labelledby="acct-gadd-h"><p id="acct-gadd-h"><b>Add Gemini account · step 2 of 2</b></p>
           <p>${info?.opened ? `A ${esc(termName() || 'terminal')} window is running <code>agy</code>.` : `Run <code>agy</code> in a terminal${info?.error ? ` (${esc(info.error)})` : ''}.`} ${GEMINI_SIGNIN} Then come back.</p>
