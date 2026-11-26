@@ -102,7 +102,7 @@ you opened stay live, so switching back shows one at once, as you left it. Cmd-C
 Cmd-V pastes, Cmd-F finds, Cmd-K clears the view and Cmd-click opens a link; Shift+Enter inserts a
 newline instead of sending. The wheel goes to the program when it tracks the mouse (Claude Code's
 full-screen mode), as in any terminal. Keys typed while a terminal is still attaching are held for a
-moment and sent once it's live.
+moment and sent once it's live. Paste an image (Ctrl+Shift+V or Cmd-V) or drop an image file onto a terminal to attach it: the image is saved under the data folder (`term-uploads`, pruned after 7 days) and its path is typed in for Claude Code. Alt+V sends Claude Code's own image-paste key.
 
 **Splits.** Drag an agent from the list onto the terminal to put it beside the one there, as in
 Ghostty: the pane under the pointer lights up the half the new terminal will take, and dropping

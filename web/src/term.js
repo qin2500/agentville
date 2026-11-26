@@ -44,6 +44,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { BUCKET_NAME, ROLE_NAME, isError, bucketIcon, icon, esc } from './ui.js';
 
+import { imageFiles, hasFiles, pathsToInput, isAltV, MAX_IMAGE_BYTES } from './term-paste.js';
 const MIN_COLS = 20, MIN_ROWS = 5; // as server/term-screen.mjs
 const MAX_COLS = 500, MAX_ROWS = 300;
 const KEEP = 4; // live terminals kept for instant switching (the one on screen included)
@@ -95,7 +96,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
       <div class="termnotice" role="status" aria-live="polite" hidden></div>
       <button class="termjump" type="button" data-tact="bottom" hidden>↓ Latest</button>
     </div>
-    <p class="helper termhint">Every key goes to the terminal, Esc included. Shift+Esc closes it; the session keeps running. ${MOD}F finds, ${MOD}K clears the view, ${MOD}-click opens a link. Drag an agent from the list onto the terminal to split it.</p>`;
+    <p class="helper termhint">Every key goes to the terminal, Esc included. Shift+Esc closes it; the session keeps running. ${MOD}F finds, ${MOD}K clears the view, ${MOD}-click opens a link. Drag an agent from the list onto the terminal to split it. Paste or drop an image to attach it.</p>`;
   const wrap = stage.querySelector('.termwrap');
   const notice = stage.querySelector('.termnotice');
   const jump = stage.querySelector('.termjump');
@@ -553,6 +554,33 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
       if (c !== cur || find.hidden) return;
       findCount.textContent = resultCount ? `${resultIndex + 1} of ${resultCount}${resultCount >= 1000 ? '+' : ''}` : 'No matches';
     });
+    // Images: pasted from the clipboard or dropped as files, saved by the server, the path typed in.
+    pane.addEventListener('paste', e => {
+      const files = imageFiles(e.clipboardData);
+      if (!files.length) return; // text pastes are xterm's, as before
+      e.preventDefault(); e.stopPropagation();
+      attachImages(c, files);
+    }, true);
+    let dragDepth = 0;
+    const hideDrop = () => { dragDepth = 0; if (!dragId) { drop.hidden = true; drop.classList.remove('no'); } };
+    pane.addEventListener('dragenter', e => { if (!dragId && hasFiles(e.dataTransfer)) dragDepth++; });
+    pane.addEventListener('dragover', e => {
+      if (dragId || !hasFiles(e.dataTransfer)) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+      const w = wrap.getBoundingClientRect(), r = pane.getBoundingClientRect();
+      Object.assign(drop.style, { left: `${r.left - w.left}px`, top: `${r.top - w.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+      drop.classList.remove('no'); delete drop.dataset.side;
+      drop.firstElementChild.textContent = 'Drop an image to attach it';
+      drop.hidden = false;
+    });
+    pane.addEventListener('dragleave', e => { if (!dragId && hasFiles(e.dataTransfer) && --dragDepth <= 0) hideDrop(); });
+    pane.addEventListener('drop', e => {
+      if (dragId || !hasFiles(e.dataTransfer)) return;
+      e.preventDefault(); hideDrop();
+      const files = imageFiles(e.dataTransfer);
+      if (files.length) attachImages(c, files);
+      else setNotice(c, 'Only PNG, JPEG, GIF or WebP images can be dropped here.');
+    });
     // A click or the keyboard landing in a pane focuses it.
     pane.addEventListener('pointerdown', () => focusPane(c), true);
     pane.addEventListener('focusin', () => focusPane(c));
@@ -579,6 +607,24 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     } catch { c.renderer = 'dom'; }
   }
 
+  /** Upload each image, then type the saved paths into the terminal (Claude Code turns them into attachments). */
+  async function attachImages(c, files) {
+    const paths = [];
+    for (const f of files) {
+      if (f.size > MAX_IMAGE_BYTES) { setNotice(c, `${f.name || 'Image'} is over 20 MB and was not attached.`); continue; }
+      try {
+        const res = await fetch('/api/term/upload', { method: 'POST', headers: { 'content-type': f.type, 'X-Agentville-UI': '1' }, body: f });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || !body.path) { setNotice(c, body.error || `Could not attach the image (${res.status}).`); continue; }
+        paths.push(body.path);
+      } catch { setNotice(c, 'Could not attach the image: the Agentville server is not reachable.'); }
+    }
+    if (!paths.length || c.disposed) return;
+    if (c.notice && !c.notice.dropped) setNotice(c, '');
+    c.term.paste(pathsToInput(paths));
+    c.term.focus();
+  }
+
   /** Keys the terminal does not get: Shift+Esc (close), the split keys, copy with a selection, paste, clear, find. */
   function keys(c, e) {
     if (e.key === 'Escape' && e.shiftKey) {
@@ -588,6 +634,11 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     // Shift+Enter: a new line, not send. ESC CR is what Claude Code's own terminal setup binds it to.
     if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.type === 'keydown') { e.preventDefault(); c.term.input('\x1b\r', true); }
+      return false;
+    }
+    // Alt+V: Claude Code's image paste off macOS. Send ESC v ourselves; the browser or Electron may eat the key.
+    if (isAltV(e)) {
+      if (e.type === 'keydown') { e.preventDefault(); c.term.input('\x1bv', true); }
       return false;
     }
     const split = muxKey(c, e);

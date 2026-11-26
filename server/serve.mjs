@@ -44,6 +44,7 @@ import { cliDirs, isWin } from './platform.mjs'
 import { detectTerminal, findExecutable, openInTerminal, runAppleScript } from './terminal.mjs'
 import { normalizeLayout, layoutLeaves, ghosttyLayoutLaunch } from './ghostty-layout.mjs'
 import { createTerminals } from './pty.mjs'
+import { createTermUploads, termUploadRoute } from './term-upload.mjs'
 import { createPlainTerms } from './plain-term.mjs'
 import { canRestartSelf, createUpdater, restartSelf } from './update.mjs'
 import * as claude from './claude-code.mjs'
@@ -116,6 +117,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
   const store = createStore(dataDir)
   const worldPlan = worldPlanRoute(createWorldPlan(dataDir)) // D5: GET/PUT /api/world-plan
   const loops = createLoops(dataDir)
+  const termUploads = createTermUploads({ dataDir })
   const notifications = createNotifications(dataDir)
   const helper = createHelper({ dir: dataDir, claudeHome: claude.home })
   // The built-in terminal (server/pty.mjs): one PTY per agent, the command always from openCommand.
@@ -593,6 +595,7 @@ export function createServer({ dataDir = defaultDataDir(), termIdleMs, termEndWa
         return await serveStatic(req, res, url)
       }
       if (!isLocalRequest(req)) return send(res, 403, { error: 'Local requests only' })
+      if (await termUploadRoute(req, res, url, termUploads, send)) return
       if (url.pathname === '/api/agents' && req.method === 'GET') {
         const snap = await snapshot()
         const info = terms.info()
