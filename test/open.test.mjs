@@ -232,6 +232,12 @@ test('a launch that failed before it started is refused: there is no session to 
     (e) => e.status === 409 && e.message === NEVER_STARTED)
 })
 
+test('a Gemini session is refused, never routed into the Claude resume logic', async () => {
+  const { openCommand } = await import('../server/serve.mjs')
+  await assert.rejects(openCommand({ id: 'gemini:f0000001-0000-4000-8000-000000000000', harness: 'gemini-cli', kind: 'session', cwd: os.tmpdir() }),
+    (e) => e.status === 409 && e.message === "Gemini sessions can't be opened in a terminal yet")
+})
+
 test('a job reopened in a terminal is opened like the live interactive session it is: never attached', async () => {
   const { openCommand } = await import('../server/serve.mjs')
   const job = { id: `claude-code:${ids.job}`, harness: 'claude-code', kind: 'job', jobId: 'aaaaaaa1', cwd: os.tmpdir() }

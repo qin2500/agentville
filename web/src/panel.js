@@ -162,6 +162,7 @@ export function createPanel(app) {
     if (embedded(a.id)) return 'Running in the built-in terminal; use Pop out';
     // A job reopened in a terminal is that live session: attaching would start a second process.
     if (a.harness === 'claude-code' && (a.kind === 'session' || a.reopened) && a.live) return 'Already running in another terminal';
+    if (a.harness === 'gemini-cli') return "Gemini sessions can't be opened in a terminal yet";
     return null;
   }
   // The built-in terminal (term.js): same command and refusals as Open.
