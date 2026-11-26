@@ -99,8 +99,18 @@ export async function openCommand(a) {
     if (!codexBin) throw refuse(409, 'Codex CLI not found')
     return { argv: [codexBin, 'resume', a.id.slice('codex:'.length)], cwd }
   }
-  // Gemini (Antigravity) agents run headless, one turn per process; there's no interactive session to attach to.
-  if (a.harness === 'gemini-cli') throw refuse(409, "Gemini sessions can't be opened in a terminal yet")
+  // Gemini (Antigravity) agents run headless, one turn per process; reopen interactively by conversation id
+  // (`agy --conversation <id>`, no `-p`), the same idea as Claude's `--resume`.
+  if (a.harness === 'gemini-cli') {
+    const agy = getProvider('gemini')
+    const agyBin = await agy?.bin?.()
+    if (!agyBin) throw refuse(409, 'Antigravity CLI not found')
+    // A headless turn still running on this conversation: a second, interactive agy would race the same session file.
+    if (a.live) throw refuse(409, 'Already running in another terminal')
+    const conv = agy?.conversationIdOf?.(a)
+    if (!conv) throw refuse(409, 'Not a resumable session')
+    return { argv: [agyBin, '--conversation', conv], cwd }
+  }
   const claudeBin = await findExecutable('claude', CLAUDE_DIRS)
   if (!claudeBin) throw refuse(409, 'Claude Code CLI not found')
   // A job reopened in a terminal is that interactive session now: attaching would start a second process.

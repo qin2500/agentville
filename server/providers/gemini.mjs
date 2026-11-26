@@ -113,6 +113,22 @@ const runIdOf = (agent) => {
   const key = id.slice(7)
   return listRuns().find((r) => r.runId === key || r.sessionId === key)?.runId || null
 }
+/** `^[A-Za-z0-9][\w.\-]*$` (runner.mjs's CONV_RE, mirrored): agy never sees an id we didn't validate. */
+const CONV_RE = /^[A-Za-z0-9][\w.\-]*$/
+/**
+ * The agy conversation id to resume `agent` interactively (`agy --conversation <id>`), or null when the
+ * id isn't ours or fails validation. For a run Agentville started, the id in `gemini:<id>` is the run id,
+ * not agy's own conversation id, so look up the run's recorded conversation id; for a session the user ran
+ * by hand (not in the runner's registry) the id in `gemini:<id>` already IS agy's conversation id.
+ */
+function conversationIdOf(agent) {
+  const id = String(agent?.id || '')
+  if (!id.startsWith('gemini:')) return null
+  const key = id.slice(7)
+  const run = listRuns().find((r) => r.runId === key || r.sessionId === key)
+  const conv = run?.conversationId || run?.sessionId || key
+  return conv && CONV_RE.test(conv) ? conv : null
+}
 
 /** Runner state -> the extra fact fields the scan doesn't derive (limit, error, idle turns, activity time). */
 function applyRun(f, run, now) {
@@ -312,4 +328,7 @@ export default {
     const file = agent?.transcriptFile || privateOf.get(agent?.id)?.transcriptFile
     return transcript.readTranscript({ ...agent, transcriptFile: file }, opts)
   },
+
+  // open in terminal: the real agy conversation id behind `agent.id`, for an interactive `--conversation` resume
+  conversationIdOf,
 }
