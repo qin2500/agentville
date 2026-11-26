@@ -46,6 +46,9 @@ export function createMenu(app, deps) {
       const why = deps.termBlock(a);
       const there = S.term === a.id || deps.embedded(a.id);
       out.push({ act: 'term', label: there ? 'In the terminal' : 'Open in terminal', why, pressed: S.term === a.id });
+      // One-time choice, made before the terminal opens: agy can't be asked to switch mode once it's
+      // running there (same as Claude's bypass toggle refusing a session already open in a terminal).
+      if (a.harness === 'gemini-cli' && !there && !why) out.push({ act: 'term-bypass', label: 'Open with bypass permissions…' });
     } else if (term) {
       out.push({ act: 'open', label: `Open in ${deps.termName()}`, why: deps.openBlock(a) });
     }
@@ -158,6 +161,11 @@ export function createMenu(app, deps) {
       case 'term':
         if (S.term === a.id) return app.focusTerminal?.();
         if (!deps.termBlock(a)) app.openTerminal(a.id);
+        return;
+      case 'term-bypass':
+        if (deps.termBlock(a)) return;
+        if (!confirm(`Open ${a.name} with --dangerously-skip-permissions? It will run every command without asking. Only do this if you trust what it's about to do.`)) return;
+        app.openTerminal(a.id, { bypass: true });
         return;
       case 'open': return deps.openAgent(a.id);
       case 'showvillage': return app.showInVillage(a.id);

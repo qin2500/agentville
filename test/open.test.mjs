@@ -245,6 +245,21 @@ test('a Gemini session resumes interactively by conversation id, never routed in
   }
 })
 
+test('a Gemini session opens with --dangerously-skip-permissions only when explicitly asked', async () => {
+  const { openCommand } = await import('../server/serve.mjs')
+  const saved = process.env.AGENTVILLE_AGY_BIN
+  process.env.AGENTVILLE_AGY_BIN = path.join(bin, 'agy-fake')
+  try {
+    const agent = { id: 'gemini:f0000001-0000-4000-8000-000000000000', harness: 'gemini-cli', kind: 'session', cwd: os.tmpdir() }
+    const plain = await openCommand(agent)
+    assert.ok(!plain.argv.includes('--dangerously-skip-permissions'), 'not asked, not added')
+    const bypassed = await openCommand(agent, { bypassPermissions: true })
+    assert.deepEqual(bypassed.argv, [process.env.AGENTVILLE_AGY_BIN, '--dangerously-skip-permissions', '--conversation', 'f0000001-0000-4000-8000-000000000000'])
+  } finally {
+    if (saved === undefined) delete process.env.AGENTVILLE_AGY_BIN; else process.env.AGENTVILLE_AGY_BIN = saved
+  }
+})
+
 test('a Gemini session with a headless turn still running is refused, not raced by a second interactive agy', async () => {
   const { openCommand } = await import('../server/serve.mjs')
   const saved = process.env.AGENTVILLE_AGY_BIN

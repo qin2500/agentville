@@ -207,7 +207,7 @@ function animateLayout() {
   tvTimer = setTimeout(() => { tvAnim = false; $('main').classList.remove('tv-anim'); termView.fit(); }, 170);
 }
 app.openPlain = (kind, cwd) => plainTerm.open(kind, cwd); // the new-agent sheet's "Terminal here" / "Claude here"
-app.openTerminal = id => {
+app.openTerminal = (id, opts) => {
   // An agent that runs inside a plain terminal opens that pane (never a second terminal for it).
   id = plainTerm.paneOf(id) || id;
   const a = S.byId.get(id) || plainTerm.stub(id);
@@ -230,7 +230,7 @@ app.openTerminal = id => {
   writeHash();
   village.setSelected(aid, { pan: false });
   render();
-  termView.attach(a);
+  termView.attach(a, opts);
   village.setActive();
 };
 app.closeTerminal = () => {

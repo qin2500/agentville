@@ -69,6 +69,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
   let open = false; // the view is showing
   let lastSize = null; // the size the focused terminal last had: a new one starts at it
   let resizing = false; // a divider is being dragged: fits wait for it to rest
+  let pendingBypass = null; // agent id of the next fresh open that should ask for --dangerously-skip-permissions
 
   stage.innerHTML = `<header class="termhead">
       <button class="ghost tback" type="button" data-tact="close" aria-label="Back (Shift+Esc)">← Back</button>
@@ -260,9 +261,10 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     let res, body;
     try {
       const size = { cols: c.term.cols, rows: c.term.rows }; // a new PTY starts at the size we show
+      const bypass = c.bypassPermissions; c.bypassPermissions = false; // a one-time ask, never resent on reconnect
       res = await fetch(`/api/term/${encodeURIComponent(c.id)}`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(auto && c.boot ? { reattach: c.boot, ...size } : size),
+        body: JSON.stringify(auto && c.boot ? { reattach: c.boot, ...size } : { ...size, ...(bypass ? { bypassPermissions: true } : {}) }),
       });
       body = await res.json().catch(() => ({}));
     } catch (e) {
@@ -502,6 +504,8 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
   // A session's pane: its own bar (name, state, ×; shown with two or more panes) over its xterm. The
   // xterm opens once the pane is laid out (never measured in a hidden host).
   function create(a) {
+    const bypassPermissions = pendingBypass === a.id;
+    if (bypassPermissions) pendingBypass = null;
     const pane = document.createElement('div');
     pane.className = 'tpane';
     pane.dataset.id = a.id;
@@ -536,7 +540,7 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
     c = {
       id: a.id, name: a.name, pane, bar, host, wait, term, fit, search, ws: null, exited: false, status: null, notice: null, err: '',
       cols: 0, rows: 0, boot: null, tries: 0, timer: 0, busy: false, restarting: false, ping: 0, live: false, opened: false,
-      snapshot: false, repaint: false, sizeTimer: 0, waitTimer: 0, hideTimer: 0, unseen: false, disposed: false, renderer: 'dom',
+      snapshot: false, repaint: false, sizeTimer: 0, waitTimer: 0, hideTimer: 0, unseen: false, disposed: false, renderer: 'dom', bypassPermissions,
     };
     host._session = c;
     term.attachCustomKeyEventHandler(e => keys(c, e));
@@ -763,7 +767,8 @@ export function createTermView(app, { termName, terminal, onClose, onFocus = () 
    * has one, else it takes the focused pane (as one terminal always did). Opening the view: the
    * layout it was left with comes back when it holds this agent; otherwise `a` opens alone.
    */
-  function attach(a) {
+  function attach(a, { bypass = false } = {}) {
+    if (bypass) pendingBypass = a.id;
     if (!agentOf(a.id) && a.name) names.set(a.id, a.name);
     if (open && cur?.id === a.id && onScreen(cur)) { cur.term.focus(); return; }
     if (!open) {
