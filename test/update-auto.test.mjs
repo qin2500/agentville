@@ -14,7 +14,7 @@ const HOUR = 3600e3
 const OLD = 'a'.repeat(40), NEW = 'b'.repeat(40)
 
 /** One fake install: a folder with a .git, a scripted git, and a record of every other command. */
-function rig({ dirty = false, desktop = '', lock = '', terminals = 0, platform = process.platform, env: extra = {}, settings = false } = {}) {
+function rig({ dirty = false, desktop = '', lock = '', terminals = 0, platform = 'linux', env: extra = {}, settings = false } = {}) {
   const dir = path.join(tmp, `case-${++n}`)
   fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
   const R = { head: OLD, dirty, terminals, clock: 1_000_000, calls: [], restarts: 0, desktop, lock }
@@ -39,11 +39,11 @@ function rig({ dirty = false, desktop = '', lock = '', terminals = 0, platform =
   })
   const u = createUpdater({
     root: dir, env: { AGENTVILLE_TEST: '1', AGENTVILLE_UPDATE_API: 'http://fake.invalid', ...extra }, fetch, runner, platform,
-    execPath: platform === 'win32' ? 'C:\\node\\node.exe' : process.execPath, npm: 'npm', now: () => R.clock,
+    execPath: platform === 'win32' ? 'C:\\node\\node.exe' : '/usr/bin/node', npm: 'npm', now: () => R.clock,
     restart: () => { R.restarts++; return true }, terminalsOpen: () => R.terminals, settingsFile: R.settingsFile,
   })
   const ran = (what) => R.calls.some((c) => c.cmd === what || c.args?.[0] === what)
-  return { R, u, ran, make: (o = {}) => createUpdater({ root: dir, env: { AGENTVILLE_TEST: '1', AGENTVILLE_UPDATE_API: 'http://fake.invalid', ...extra }, fetch, runner, now: () => R.clock, settingsFile: R.settingsFile, ...o }) }
+  return { R, u, ran, make: (o = {}) => createUpdater({ root: dir, env: { AGENTVILLE_TEST: '1', AGENTVILLE_UPDATE_API: 'http://fake.invalid', ...extra }, fetch, runner, platform, now: () => R.clock, settingsFile: R.settingsFile, ...o }) }
 }
 
 test('auto on (the default): an available update is applied without asking, then restarts', async () => {
