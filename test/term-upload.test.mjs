@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import { withServer } from './support/with-server.mjs'
 import { sniff, createTermUploads, MAX_BYTES } from '../server/term-upload.mjs'
@@ -90,7 +91,7 @@ test('GET is not allowed', () => withServer(async ({ base }) => {
 }))
 
 test('saving prunes files older than 7 days and keeps newer ones', async () => {
-  const dataDir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || '/tmp'), 'agv-up-'))
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agv-up-'))
   try {
     const u = createTermUploads({ dataDir })
     const fresh = (await u.save(PNG)).path
